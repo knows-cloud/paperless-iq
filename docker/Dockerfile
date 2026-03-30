@@ -1,9 +1,10 @@
 # Paperless IQ — single-container build
+
 # Stage 1: Build frontend
 FROM node:20-alpine AS frontend-build
 WORKDIR /app/frontend
 COPY frontend/package.json frontend/package-lock.json* ./
-RUN npm ci --ignore-scripts
+RUN npm install
 COPY frontend/ ./
 RUN npm run build
 
@@ -11,17 +12,23 @@ RUN npm run build
 FROM python:3.12-slim
 WORKDIR /app
 
-# Install uv for dependency management
-RUN pip install --no-cache-dir uv
+# Install system deps for chromadb (needs build tools)
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    build-essential && \
+    rm -rf /var/lib/apt/lists/*
 
-# Copy backend dependencies and install
-COPY pyproject.toml uv.lock ./
-RUN uv sync --frozen --no-dev
+# Install Python dependencies from requirements.txt
+COPY backend/requirements.txt ./
+RUN pip install --no-cache-dir -r requirements.txt
 
 # Copy backend source
 COPY backend/ ./backend/
 COPY main.py ./
 COPY alembic.ini ./
+COPY pyproject.toml ./
+
+# Copy Alembic config
+COPY backend/alembic/ ./backend/alembic/
 
 # Copy built frontend
 COPY --from=frontend-build /app/frontend/dist ./frontend/dist
@@ -36,5 +43,4 @@ ENV PYTHONUNBUFFERED=1
 EXPOSE 8080
 VOLUME ["/data"]
 
-# Startup: run migrations, then start uvicorn
-CMD ["sh", "-c", "uv run alembic upgrade head && uv run uvicorn backend.main:app --host 0.0.0.0 --port 8080"]
+CMD ["sh", "-c", "python -m alembic upgrade head 2>/dev/null; uvicorn backend.main:app --host 0.0.0.0 --port 8080"]

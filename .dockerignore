@@ -1,10 +1,12 @@
-.kiro
+.git
 .venv
 .pytest_cache
+.hypothesis
 __pycache__
 *.pyc
-.hypothesis
 frontend/node_modules
 frontend/dist
 data/
 *.db
+.kiro
+tests/
