@@ -9,7 +9,6 @@ Validates: Requirements 4.1, 4.2, 4.3, 4.6, 4.7, 4.8
 from __future__ import annotations
 
 import asyncio
-import json
 import logging
 import os
 from typing import Any

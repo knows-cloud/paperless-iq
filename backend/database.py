@@ -14,7 +14,7 @@ from sqlalchemy.orm import DeclarativeBase
 
 DATABASE_URL = os.getenv(
     "DATABASE_URL",
-    "sqlite+aiosqlite:///./data/paperless_iq.db",
+    "sqlite+aiosqlite:////data/paperless_iq.db",
 )
 
 engine = create_async_engine(

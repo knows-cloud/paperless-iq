@@ -7,7 +7,6 @@ Validates: Requirements 5.2, 5.3, 13.1, 13.2, 13.3, 13.4, 13.5
 
 from __future__ import annotations
 
-import json
 import logging
 from typing import Any
 

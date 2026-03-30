@@ -18,7 +18,7 @@ from backend.approval_queue import ApprovalQueueService
 from backend.audit_log import AuditLogService
 from backend.auth import require_auth
 from backend.database import get_session
-from backend.models import AuditLogEntry, MetadataSuggestion
+from backend.models import MetadataSuggestion
 from backend.settings_service import SettingsService
 
 logger = logging.getLogger(__name__)
@@ -31,6 +31,16 @@ _settings_svc = SettingsService()
 async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     """Application lifespan: startup and shutdown hooks."""
     logger.info("Paperless IQ starting up")
+    # Ensure data directory exists for SQLite
+    import os
+    from pathlib import Path
+    db_url = os.getenv("DATABASE_URL", "")
+    if "////data/" in db_url or db_url == "":
+        os.makedirs("/data", exist_ok=True)
+    elif "///./" in db_url:
+        # Relative path — ensure parent dir exists
+        db_path = db_url.split("///")[-1]
+        Path(db_path).parent.mkdir(parents=True, exist_ok=True)
     # Ensure DB tables exist (dev convenience; production uses Alembic)
     from backend.database import engine
     from backend.orm_models import Base  # noqa: F401 — registers all ORM models
@@ -302,7 +312,7 @@ async def get_settings() -> dict:
 async def update_settings(body: dict[str, Any] = Body(...)) -> dict:
     """Update settings with validation."""
     try:
-        config = _settings_svc.update(body)
+        _settings_svc.update(body)
         return _settings_svc.get_masked()
     except ValueError as exc:
         raise HTTPException(

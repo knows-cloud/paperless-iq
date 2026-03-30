@@ -37,7 +37,7 @@ COPY --from=frontend-build /app/frontend/dist ./frontend/dist
 RUN mkdir -p /data
 
 # Environment defaults
-ENV DATABASE_URL=sqlite+aiosqlite:///./data/paperless_iq.db
+ENV DATABASE_URL=sqlite+aiosqlite:////data/paperless_iq.db
 ENV PYTHONUNBUFFERED=1
 
 EXPOSE 8080

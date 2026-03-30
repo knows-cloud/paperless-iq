@@ -14,12 +14,9 @@ import os
 
 from fastapi import HTTPException, Request, status
 
-# Token derived from SECRET_KEY for Bearer auth
-# In production, this would be a proper JWT or session-based system
-SECRET_KEY = os.getenv("SECRET_KEY", "")
-
-# Valid session tokens (in production, stored in DB with expiry)
-_VALID_SESSIONS: set[str] = set()
+def _get_secret_key() -> str:
+    """Read SECRET_KEY at call time so Docker env vars are picked up."""
+    return os.getenv("SECRET_KEY", "")
 
 
 def _derive_api_token(secret: str) -> str:
@@ -27,6 +24,10 @@ def _derive_api_token(secret: str) -> str:
     if not secret:
         return ""
     return hashlib.sha256(f"paperless-iq-api:{secret}".encode()).hexdigest()
+
+
+# Valid session tokens (in production, stored in DB with expiry)
+_VALID_SESSIONS: set[str] = set()
 
 
 def register_session(session_id: str) -> None:
@@ -54,7 +55,8 @@ async def require_auth(request: Request) -> None:
     auth_header = request.headers.get("Authorization", "")
     if auth_header.startswith("Bearer "):
         token = auth_header[7:]
-        expected = _derive_api_token(SECRET_KEY)
+        secret_key = _get_secret_key()
+        expected = _derive_api_token(secret_key)
         if expected and hmac.compare_digest(token, expected):
             return
 
@@ -64,7 +66,7 @@ async def require_auth(request: Request) -> None:
         return
 
     # For development: if SECRET_KEY is not set, allow any non-empty auth
-    if not SECRET_KEY:
+    if not _get_secret_key():
         if auth_header or session_cookie:
             return
 
