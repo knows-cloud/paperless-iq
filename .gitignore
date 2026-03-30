@@ -1,0 +1,11 @@
+.kiro
+.venv
+.pytest_cache
+__pycache__
+*.pyc
+.hypothesis
+frontend/node_modules
+frontend/dist
+data/
+*.db
+uv.lock

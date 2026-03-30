@@ -1,0 +1,130 @@
+"""Pydantic v2 data models for Paperless IQ."""
+
+from __future__ import annotations
+
+from datetime import datetime
+from typing import Any, Literal
+from uuid import UUID
+
+from pydantic import BaseModel, ConfigDict, field_validator
+
+# Type alias for encrypted credential blobs
+EncryptedBlob = bytes
+
+
+class MetadataSuggestion(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+    id: UUID
+    document_id: int
+    status: Literal["pending", "approved", "rejected"]
+    created_at: datetime
+
+    # Suggested values
+    title: str | None = None
+    tags: list[str] = []
+    correspondent: str | None = None
+    document_type: str | None = None
+    storage_path: str | None = None
+    custom_fields: dict[str, Any] = {}
+
+    # Provenance
+    llm_provider: str
+    llm_model: str
+    analysis_mode: Literal["ocr", "full_document"]
+    prompt_used: str
+    raw_llm_response: str
+
+
+class AuditLogEntry(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+    id: UUID
+    document_id: int
+    field_name: str
+    previous_value: str | None = None
+    new_value: str | None = None
+    change_source: Literal["ai", "human"]
+    changed_at: datetime  # UTC
+    suggestion_id: UUID | None = None
+
+
+class SearchResult(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+    document_id: int
+    document_title: str
+    passage: str          # verbatim quoted passage
+    score: float
+    deeplink_url: str     # URL to document in Paperless NGX
+
+
+class DocumentTrackingRecord(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+    document_id: int
+    first_seen_at: datetime
+    last_analyzed_at: datetime | None = None
+    embedding_stored: bool = False
+
+
+class PaperlessIQConfig(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+    # LLM
+    llm_provider: Literal["bedrock", "anthropic", "ollama", "openai"]
+    llm_model: str
+    llm_credentials: EncryptedBlob = b""  # never returned to UI
+
+    # Vector store
+    vector_store_backend: Literal["local", "bedrock_kb"] = "local"
+    bedrock_kb_id: str | None = None
+
+    # Analysis defaults
+    default_analysis_mode: Literal["ocr", "full_document"] = "ocr"
+    per_doctype_analysis_mode: dict[int, Literal["ocr", "full_document"]] = {}
+
+    # Prompt templates
+    global_prompt_template: str = ""
+    per_field_prompt_templates: dict[str, str] = {}
+    per_doctype_prompt_templates: dict[int, str] = {}
+
+    # Creation policies
+    tag_creation_policy: Literal["existing_only", "allow_new"] = "existing_only"
+    correspondent_creation_policy: Literal["existing_only", "allow_new"] = "existing_only"
+    doctype_creation_policy: Literal["existing_only", "allow_new"] = "existing_only"
+
+    # Automation
+    inbox_tag_id: int | None = None
+    auto_apply: bool = False
+    poll_interval_seconds: int = 10
+    batch_size: int = 10
+    schedule_cron: str | None = None
+    automation_enabled: bool = False
+
+    # Audit
+    audit_retention_days: int = 90  # minimum 90
+
+    # Localization
+    target_language: str | None = None
+
+    @field_validator("audit_retention_days")
+    @classmethod
+    def validate_retention(cls, v: int) -> int:
+        if v < 90:
+            raise ValueError("audit_retention_days must be at least 90")
+        return v
+
+    @field_validator("poll_interval_seconds")
+    @classmethod
+    def validate_poll_interval(cls, v: int) -> int:
+        if v < 1:
+            raise ValueError("poll_interval_seconds must be at least 1")
+        return v
+
+    @field_validator("batch_size")
+    @classmethod
+    def validate_batch_size(cls, v: int) -> int:
+        if v < 1:
+            raise ValueError("batch_size must be at least 1")
+        return v
