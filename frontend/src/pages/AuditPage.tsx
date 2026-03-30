@@ -1,12 +1,11 @@
 import { useState } from "react";
-import { useQuery, useMutation } from "@tanstack/react-query";
+import { useQuery } from "@tanstack/react-query";
 import { api } from "../api";
 
 export default function AuditPage() {
   const [filters, setFilters] = useState<Record<string, string>>({});
   const { data, isLoading } = useQuery({ queryKey: ["audit", filters], queryFn: () => api.getAuditLog(filters) });
 
-  const exportMut = useMutation({ mutationFn: api.exportConfig });
   const [importMsg, setImportMsg] = useState("");
 
   const handleExport = async () => {

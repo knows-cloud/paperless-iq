@@ -4,12 +4,12 @@ import { api } from "../api";
 
 export default function ManualPage() {
   const [searchQuery, setSearchQuery] = useState("");
-  const [searchResults, setSearchResults] = useState<unknown[]>([]);
+  const [searchResults, setSearchResults] = useState<Record<string, string>[]>([]);
   const [docId, setDocId] = useState("");
 
   const searchMut = useMutation({
     mutationFn: (q: string) => api.search(q),
-    onSuccess: (data) => setSearchResults(data.results ?? []),
+    onSuccess: (data) => setSearchResults((data.results ?? []) as Record<string, string>[]),
   });
 
   const analyzeMut = useMutation({
@@ -42,15 +42,12 @@ export default function ManualPage() {
         </button>
         {searchResults.length > 0 && (
           <ul style={{ marginTop: "1rem" }}>
-            {searchResults.map((r, i) => {
-              const result = r as Record<string, unknown>;
-              return (
+            {searchResults.map((result, i) => (
                 <li key={i} style={{ marginBottom: "0.5rem" }}>
-                  <strong>{String(result.document_title)}</strong>: {String(result.passage)}
-                  {result.deeplink_url && <a href={String(result.deeplink_url)} target="_blank" rel="noreferrer"> [open]</a>}
+                  <strong>{result.document_title}</strong>: {result.passage}
+                  {result.deeplink_url && <a href={result.deeplink_url} target="_blank" rel="noreferrer"> [open]</a>}
                 </li>
-              );
-            })}
+            ))}
           </ul>
         )}
       </div>
