@@ -1,0 +1,18 @@
+services:
+  paperless-iq:
+    build:
+      context: .
+      dockerfile: docker/Dockerfile
+    ports:
+      - "8080:8080"
+    volumes:
+      - paperless_iq_data:/data
+    environment:
+      PAPERLESS_URL: ${PAPERLESS_URL:-http://paperless-ngx:8000}
+      PAPERLESS_TOKEN: ${PAPERLESS_TOKEN:-}
+      SECRET_KEY: ${SECRET_KEY:-change-me-in-production}
+      DATABASE_URL: sqlite+aiosqlite:///./data/paperless_iq.db
+    restart: unless-stopped
+
+volumes:
+  paperless_iq_data:
