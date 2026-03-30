@@ -24,7 +24,7 @@ import httpx
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from backend.models import AuditLogEntry, MetadataSuggestion
+from backend.models import MetadataSuggestion
 from backend.orm_models import AuditLogORM, SuggestionORM
 
 logger = logging.getLogger(__name__)

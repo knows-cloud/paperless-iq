@@ -75,15 +75,6 @@ class ManualAnalysisService:
 
         suggestion = await analyzer.analyze(document_id)
 
-        # Verify global config was NOT modified
-        assert self._config.llm_provider == self._config.llm_provider  # identity check
-        if provider_override:
-            # The original config must still have its original provider
-            logger.debug(
-                "Override used provider=%s for doc %d; global config unchanged.",
-                provider_override, document_id,
-            )
-
         return suggestion
 
 
@@ -107,9 +98,8 @@ async def list_documents_by_tag(
         params["tags__id__in"] = tag_id
 
     url = f"{paperless_client._base_url.rstrip('/')}/api/documents/"
-    headers = {"Authorization": f"Token {paperless_client._token}"}
 
-    async with httpx.AsyncClient(headers=headers, timeout=30) as client:
+    async with httpx.AsyncClient(headers=paperless_client._headers, timeout=30) as client:
         resp = await client.get(url, params=params)
         resp.raise_for_status()
         data = resp.json()
