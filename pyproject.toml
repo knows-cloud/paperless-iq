@@ -1,12 +1,9 @@
 [project]
 name = "paperless-iq"
 version = "0.1.0"
-description = "Add your description here"
+description = "AI-powered metadata suggestions for Paperless NGX"
 requires-python = ">=3.12"
-dependencies = []
-
-[dependency-groups]
-dev = [
+dependencies = [
     "aiosqlite>=0.22.1",
     "anthropic>=0.86.0",
     "boto3>=1.42.78",
@@ -15,11 +12,16 @@ dev = [
     "fastapi>=0.135.2",
     "greenlet>=3.3.2",
     "httpx>=0.28.1",
-    "hypothesis>=6.151.10",
     "ollama>=0.6.1",
     "openai>=2.30.0",
     "pydantic>=2.12.5",
+    "sqlalchemy>=2.0.48",
+    "uvicorn>=0.34.0",
+]
+
+[dependency-groups]
+dev = [
+    "hypothesis>=6.151.10",
     "pytest>=9.0.2",
     "pytest-asyncio>=1.3.0",
-    "sqlalchemy>=2.0.48",
 ]
