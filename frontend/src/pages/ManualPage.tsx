@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useState, useCallback } from "react";
 import { useQuery, useMutation } from "@tanstack/react-query";
 import { api, type PaperlessEntity, type PaperlessCustomField, type DocumentItem, type MetadataSuggestionResponse } from "../api";
 
@@ -13,9 +13,11 @@ export default function ManualPage() {
 
   const [analysisResults, setAnalysisResults] = useState<Record<number, MetadataSuggestionResponse>>({});
   const [analysisErrors, setAnalysisErrors] = useState<Record<number, string>>({});
-  const [analyzingDoc, setAnalyzingDoc] = useState<number | null>(null);
+  const [analyzingDocs, setAnalyzingDocs] = useState<Set<number>>(new Set());
   const [dismissed, setDismissed] = useState<Set<number>>(new Set());
   const [approvedDocs, setApprovedDocs] = useState<Set<number>>(new Set());
+  const [selectedDocs, setSelectedDocs] = useState<Set<number>>(new Set());
+  const [batchRunning, setBatchRunning] = useState(false);
 
   const tags = useQuery({ queryKey: ["tags"], queryFn: api.getTags, retry: false });
   const correspondents = useQuery({ queryKey: ["correspondents"], queryFn: api.getCorrespondents, retry: false });
@@ -41,21 +43,33 @@ export default function ManualPage() {
     retry: false,
   });
 
+  const analyzeOne = useCallback(async (docId: number) => {
+    setAnalyzingDocs(prev => new Set(prev).add(docId));
+    setAnalysisErrors(prev => { const next = { ...prev }; delete next[docId]; return next; });
+    try {
+      const data = await api.analyze(docId);
+      setAnalysisResults(prev => ({ ...prev, [docId]: data }));
+    } catch (err: unknown) {
+      setAnalysisErrors(prev => ({ ...prev, [docId]: (err as Error).message }));
+    } finally {
+      setAnalyzingDocs(prev => { const next = new Set(prev); next.delete(docId); return next; });
+    }
+  }, []);
+
   const analyzeMut = useMutation({
-    mutationFn: (id: number) => api.analyze(id),
-    onMutate: (id) => {
-      setAnalyzingDoc(id);
-      setAnalysisErrors((prev) => { const next = { ...prev }; delete next[id]; return next; });
-    },
-    onSuccess: (data, id) => {
-      setAnalysisResults((prev) => ({ ...prev, [id]: data }));
-      setAnalyzingDoc(null);
-    },
-    onError: (err: Error, id) => {
-      setAnalysisErrors((prev) => ({ ...prev, [id]: err.message }));
-      setAnalyzingDoc(null);
-    },
+    mutationFn: (id: number) => analyzeOne(id),
   });
+
+  const handleBatchAnalyze = useCallback(async () => {
+    if (selectedDocs.size === 0) return;
+    setBatchRunning(true);
+    const ids = Array.from(selectedDocs);
+    for (const id of ids) {
+      await analyzeOne(id);
+    }
+    setBatchRunning(false);
+    setSelectedDocs(new Set());
+  }, [selectedDocs, analyzeOne]);
 
   const approveMut = useMutation({
     mutationFn: async (suggestion: MetadataSuggestionResponse) => {
@@ -64,23 +78,41 @@ export default function ManualPage() {
       return enqueued;
     },
     onSuccess: (_data, suggestion) => {
-      setApprovedDocs((prev) => new Set(prev).add(suggestion.document_id));
+      setApprovedDocs(prev => new Set(prev).add(suggestion.document_id));
     },
   });
 
-  const handleSearch = () => { setPage(1); setShouldSearch(true); };
+  const handleSearch = () => { setPage(1); setShouldSearch(true); setSelectedDocs(new Set()); };
   const handleKeyDown = (e: React.KeyboardEvent) => { if (e.key === "Enter") handleSearch(); };
   const updateCustomFieldFilter = (fieldId: string, value: string) => {
     setCustomFieldFilters(prev => ({ ...prev, [fieldId]: value }));
   };
 
   const handleDismiss = (docId: number) => {
-    setDismissed((prev) => new Set(prev).add(docId));
-    setAnalysisResults((prev) => { const next = { ...prev }; delete next[docId]; return next; });
+    setDismissed(prev => new Set(prev).add(docId));
+    setAnalysisResults(prev => { const next = { ...prev }; delete next[docId]; return next; });
+  };
+
+  const toggleDocSelection = (docId: number) => {
+    setSelectedDocs(prev => {
+      const next = new Set(prev);
+      if (next.has(docId)) next.delete(docId); else next.add(docId);
+      return next;
+    });
+  };
+
+  const toggleSelectAll = () => {
+    if (!docs.data) return;
+    const allIds = docs.data.items.map((d: DocumentItem) => d.id);
+    const allSelected = allIds.every((id: number) => selectedDocs.has(id));
+    if (allSelected) {
+      setSelectedDocs(new Set());
+    } else {
+      setSelectedDocs(new Set(allIds));
+    }
   };
 
   const paperlessUnavailable = tags.isError;
-
   const tagMap = new Map((tags.data ?? []).map((t: PaperlessEntity) => [t.id, t.name]));
   const corrMap = new Map((correspondents.data ?? []).map((c: PaperlessEntity) => [c.id, c.name]));
   const dtMap = new Map((docTypes.data ?? []).map((d: PaperlessEntity) => [d.id, d.name]));
@@ -92,9 +124,7 @@ export default function ManualPage() {
     if (suggestion.correspondent) fields.push({ label: "Correspondent", value: suggestion.correspondent });
     if (suggestion.document_type) fields.push({ label: "Document Type", value: suggestion.document_type });
     if (suggestion.storage_path) fields.push({ label: "Storage Path", value: suggestion.storage_path });
-
     const customFieldEntries = Object.entries(suggestion.custom_fields ?? {});
-
     const isApproved = approvedDocs.has(docId);
     const isApproving = approveMut.isPending && approveMut.variables?.document_id === docId;
 
@@ -102,13 +132,13 @@ export default function ManualPage() {
       <div style={{ marginTop: "0.5rem", padding: "0.75rem", background: "#f8f9fa", borderRadius: "6px", border: "1px solid #e0e0e0" }}>
         <strong style={{ fontSize: "0.9rem" }}>Suggested Metadata</strong>
         <div style={{ marginTop: "0.5rem", fontSize: "0.85rem" }}>
-          {fields.map((f) => (
+          {fields.map(f => (
             <div key={f.label} style={{ display: "flex", gap: "0.5rem", marginBottom: "0.25rem" }}>
               <span style={{ fontWeight: 600, minWidth: "120px", color: "#555" }}>{f.label}:</span>
               <span>{f.value}</span>
             </div>
           ))}
-          {customFieldEntries.length > 0 && customFieldEntries.map(([key, val]) => (
+          {customFieldEntries.map(([key, val]) => (
             <div key={key} style={{ display: "flex", gap: "0.5rem", marginBottom: "0.25rem" }}>
               <span style={{ fontWeight: 600, minWidth: "120px", color: "#555" }}>{key}:</span>
               <span>{String(val)}</span>
@@ -122,9 +152,7 @@ export default function ManualPage() {
             <button className="btn btn-primary" onClick={() => approveMut.mutate(suggestion)} disabled={isApproving}>
               {isApproving ? "Approving…" : "Approve"}
             </button>
-            <button className="btn" onClick={() => handleDismiss(docId)} disabled={isApproving}>
-              Reject
-            </button>
+            <button className="btn" onClick={() => handleDismiss(docId)} disabled={isApproving}>Reject</button>
           </div>
         )}
         {approveMut.isError && approveMut.variables?.document_id === docId && (
@@ -211,27 +239,49 @@ export default function ManualPage() {
 
       {docs.isSuccess && (
         <div>
-          <p style={{ margin: "0.75rem 0 0.5rem" }}>{docs.data.total} document{docs.data.total !== 1 ? "s" : ""} found</p>
+          <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", margin: "0.75rem 0 0.5rem" }}>
+            <p style={{ margin: 0 }}>{docs.data.total} document{docs.data.total !== 1 ? "s" : ""} found</p>
+            {docs.data.items.length > 0 && (
+              <div style={{ display: "flex", gap: "0.5rem", alignItems: "center" }}>
+                <label style={{ fontSize: "0.85rem", cursor: "pointer", display: "flex", alignItems: "center", gap: "0.25rem" }}>
+                  <input type="checkbox"
+                    checked={docs.data.items.length > 0 && docs.data.items.every((d: DocumentItem) => selectedDocs.has(d.id))}
+                    onChange={toggleSelectAll} />
+                  Select all
+                </label>
+                <button className="btn btn-primary"
+                  onClick={handleBatchAnalyze}
+                  disabled={selectedDocs.size === 0 || batchRunning}>
+                  {batchRunning ? `Analyzing ${analyzingDocs.size > 0 ? "…" : ""}` : `Analyze Selected (${selectedDocs.size})`}
+                </button>
+              </div>
+            )}
+          </div>
           {docs.data.items.map((doc: DocumentItem) => {
-            const isAnalyzing = analyzingDoc === doc.id;
+            const isAnalyzing = analyzingDocs.has(doc.id);
             const result = analysisResults[doc.id];
             const error = analysisErrors[doc.id];
             const isDismissed = dismissed.has(doc.id);
+            const isSelected = selectedDocs.has(doc.id);
 
             return (
               <div key={doc.id} className="card" style={{ marginBottom: "0.5rem" }}>
                 <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start" }}>
-                  <div>
-                    <strong>{doc.title || `Document #${doc.id}`}</strong>
-                    <div style={{ fontSize: "0.85rem", color: "#666", marginTop: "0.25rem" }}>
-                      {doc.correspondent ? <span>Correspondent: {corrMap.get(doc.correspondent) ?? doc.correspondent} · </span> : null}
-                      {doc.document_type ? <span>Type: {dtMap.get(doc.document_type) ?? doc.document_type} · </span> : null}
-                      {doc.tags.length > 0 && <span>Tags: {doc.tags.map(t => tagMap.get(t) ?? t).join(", ")}</span>}
+                  <div style={{ display: "flex", gap: "0.5rem", alignItems: "flex-start" }}>
+                    <input type="checkbox" checked={isSelected} onChange={() => toggleDocSelection(doc.id)}
+                      style={{ marginTop: "0.3rem" }} />
+                    <div>
+                      <strong>{doc.title || `Document #${doc.id}`}</strong>
+                      <div style={{ fontSize: "0.85rem", color: "#666", marginTop: "0.25rem" }}>
+                        {doc.correspondent ? <span>Correspondent: {corrMap.get(doc.correspondent) ?? doc.correspondent} · </span> : null}
+                        {doc.document_type ? <span>Type: {dtMap.get(doc.document_type) ?? doc.document_type} · </span> : null}
+                        {doc.tags.length > 0 && <span>Tags: {doc.tags.map(t => tagMap.get(t) ?? t).join(", ")}</span>}
+                      </div>
                     </div>
                   </div>
                   <button className="btn btn-primary" style={{ whiteSpace: "nowrap", marginLeft: "1rem" }}
                     onClick={() => analyzeMut.mutate(doc.id)}
-                    disabled={isAnalyzing}>
+                    disabled={isAnalyzing || batchRunning}>
                     {isAnalyzing ? "Analyzing…" : "Analyze"}
                   </button>
                 </div>

@@ -466,12 +466,24 @@ async def manual_analyze(body: AnalyzeBody, request: Request) -> dict:
             status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
             detail="Analysis service not configured. Configure an LLM provider in settings.",
         )
-    suggestion = await svc.analyze(
-        document_id=body.document_id,
-        provider_override=body.provider,
-        model_override=body.model,
-        mode_override=body.mode,
-    )
+    try:
+        suggestion = await svc.analyze(
+            document_id=body.document_id,
+            provider_override=body.provider,
+            model_override=body.model,
+            mode_override=body.mode,
+        )
+    except ConnectionError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_502_BAD_GATEWAY,
+            detail=f"Could not connect to LLM provider: {exc}",
+        )
+    except Exception as exc:
+        logger.exception("Analysis failed for document %d", body.document_id)
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Analysis failed: {exc}",
+        )
     return suggestion.model_dump(mode="json")
 
 
