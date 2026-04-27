@@ -85,9 +85,28 @@ class PaperlessIQConfig(BaseModel):
     per_doctype_analysis_mode: dict[int, Literal["ocr", "full_document"]] = {}
 
     # Prompt templates
-    global_prompt_template: str = ""
+    global_prompt_template: str = (
+        "You are a document metadata classifier for a Paperless NGX document management system.\n"
+        "Your task is to analyze the provided document content and suggest appropriate metadata values.\n\n"
+        "You will receive:\n"
+        "- The document's OCR text or full content\n"
+        "- A list of existing tags, correspondents, document types, and custom fields from the system\n\n"
+        "You must return a JSON object with these keys (omit keys you cannot determine):\n"
+        '{\n  "title": "<descriptive document title>",\n'
+        '  "tags": ["<tag1>", "<tag2>", ...],\n'
+        '  "correspondent": "<person or organization name>",\n'
+        '  "document_type": "<type of document>",\n'
+        '  "storage_path": "<folder path or null>",\n'
+        '  "custom_fields": {"<field_name>": "<value>", ...}\n}\n\n'
+        "Only use values from the provided lists for tags, correspondents, and document types "
+        "unless instructed otherwise by the creation policy.\n"
+        "Return ONLY the raw JSON object, no markdown, no explanation."
+    )
     per_field_prompt_templates: dict[str, str] = {}
     per_doctype_prompt_templates: dict[int, str] = {}
+
+    # Per-field descriptions: instructions for the LLM on how to populate each metadata field
+    field_descriptions: dict[str, str] = {}
 
     # Creation policies
     tag_creation_policy: Literal["existing_only", "allow_new"] = "existing_only"

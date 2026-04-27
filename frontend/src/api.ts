@@ -9,9 +9,38 @@ async function request<T>(path: string, options?: RequestInit): Promise<T> {
   });
   if (!resp.ok) {
     const body = await resp.json().catch(() => ({ detail: resp.statusText }));
-    throw new Error(body.detail || resp.statusText);
+    const detail = typeof body.detail === "string" ? body.detail : JSON.stringify(body.detail ?? resp.statusText);
+    throw new Error(detail);
   }
   return resp.json();
+}
+
+export interface PaperlessEntity { id: number; name: string; }
+export interface PaperlessCustomField { id: number; name: string; data_type: string; }
+export interface DocumentItem {
+  id: number; title: string; correspondent: number | null;
+  document_type: number | null; tags: number[]; created: string; added: string;
+}
+export interface PagedResult<T> { items: T[]; total: number; page: number; page_size: number; }
+
+export interface MetadataSuggestionResponse {
+  id: string;
+  document_id: number;
+  status: string;
+  title: string | null;
+  tags: string[];
+  correspondent: string | null;
+  document_type: string | null;
+  storage_path: string | null;
+  custom_fields: Record<string, unknown>;
+  llm_provider: string;
+  llm_model: string;
+}
+
+export interface ConnectionTestResult {
+  status: "ok" | "error";
+  detail?: string;
+  version?: string;
 }
 
 export const api = {
@@ -37,9 +66,23 @@ export const api = {
     request<{ results: unknown[] }>(`/search?q=${encodeURIComponent(q)}&top_n=${topN}`),
 
   analyze: (documentId: number, overrides?: Record<string, unknown>) =>
-    request("/analyze", { method: "POST", body: JSON.stringify({ document_id: documentId, ...overrides }) }),
+    request<MetadataSuggestionResponse>("/analyze", { method: "POST", body: JSON.stringify({ document_id: documentId, ...overrides }) }),
 
   exportConfig: () => request<Record<string, unknown>>("/config/export"),
   importConfig: (data: Record<string, unknown>) =>
     request<{ applied: string[]; skipped: unknown[] }>("/config/import", { method: "POST", body: JSON.stringify(data) }),
+
+  testPaperlessConnection: () => request<ConnectionTestResult>("/paperless/test"),
+  enqueueSuggestion: (suggestion: MetadataSuggestionResponse) =>
+    request<MetadataSuggestionResponse>("/queue", { method: "POST", body: JSON.stringify(suggestion) }),
+
+  // Paperless NGX proxy
+  getTags: () => request<PaperlessEntity[]>("/paperless/tags"),
+  getCorrespondents: () => request<PaperlessEntity[]>("/paperless/correspondents"),
+  getDocumentTypes: () => request<PaperlessEntity[]>("/paperless/document_types"),
+  getCustomFields: () => request<PaperlessCustomField[]>("/paperless/custom_fields"),
+  getDocuments: (params?: Record<string, string>) => {
+    const qs = params ? "?" + new URLSearchParams(params).toString() : "";
+    return request<PagedResult<DocumentItem>>(`/documents${qs}`);
+  },
 };

@@ -65,10 +65,12 @@ async def require_auth(request: Request) -> None:
     if session_cookie and session_cookie in _VALID_SESSIONS:
         return
 
-    # For development: if SECRET_KEY is not set, allow any non-empty auth
-    if not _get_secret_key():
-        if auth_header or session_cookie:
-            return
+    # Allow unauthenticated access when SECRET_KEY is not configured
+    # (default / first-run experience). Once the user sets a real key,
+    # all API routes are protected.
+    secret = _get_secret_key()
+    if not secret or secret == "change-me-in-production":
+        return
 
     raise HTTPException(
         status_code=status.HTTP_401_UNAUTHORIZED,

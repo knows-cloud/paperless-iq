@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import os
 from collections.abc import AsyncGenerator
+from pathlib import Path
 
 from sqlalchemy.ext.asyncio import (
     AsyncSession,
@@ -14,8 +15,13 @@ from sqlalchemy.orm import DeclarativeBase
 
 DATABASE_URL = os.getenv(
     "DATABASE_URL",
-    "sqlite+aiosqlite:////data/paperless_iq.db",
+    "sqlite+aiosqlite:///./data/paperless_iq.db",
 )
+
+# Ensure the SQLite parent directory exists before creating the engine
+if "sqlite" in DATABASE_URL:
+    _db_path = DATABASE_URL.split("///")[-1]
+    Path(_db_path).parent.mkdir(parents=True, exist_ok=True)
 
 engine = create_async_engine(
     DATABASE_URL,
