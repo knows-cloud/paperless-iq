@@ -90,6 +90,7 @@ export default function SettingsPage() {
     if (values.audit_retention_days) values.audit_retention_days = Number(values.audit_retention_days);
     if (values.poll_interval_seconds) values.poll_interval_seconds = Number(values.poll_interval_seconds);
     if (values.batch_size) values.batch_size = Number(values.batch_size);
+    if (values.context_window_chars) values.context_window_chars = Number(values.context_window_chars);
     if (values.inbox_tag_id) values.inbox_tag_id = values.inbox_tag_id ? Number(values.inbox_tag_id) : null;
     else values.inbox_tag_id = null;
 
@@ -215,6 +216,12 @@ export default function SettingsPage() {
               <option value="ocr">OCR Text</option>
               <option value="full_document">Full Document</option>
             </select>
+          </div>
+          <div className="form-group">
+            <label htmlFor="context_window_chars">Context Window (characters)</label>
+            <input id="context_window_chars" name="context_window_chars" type="number" min="1000"
+              defaultValue={String(s.context_window_chars ?? 128000)} />
+            <small>Maximum characters of document content sent to the LLM. Increase for models with large context windows. Default: 128,000.</small>
           </div>
         </div>
 

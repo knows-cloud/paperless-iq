@@ -44,6 +44,7 @@ _ENV_MAP: dict[str, tuple[str, type]] = {
     "vector_store_backend":        ("PIQ_VECTOR_STORE_BACKEND", str),
     "bedrock_kb_id":               ("PIQ_BEDROCK_KB_ID", str),
     "default_analysis_mode":       ("PIQ_DEFAULT_ANALYSIS_MODE", str),
+    "context_window_chars":        ("PIQ_CONTEXT_WINDOW_CHARS", int),
     "tag_creation_policy":         ("PIQ_TAG_CREATION_POLICY", str),
     "correspondent_creation_policy": ("PIQ_CORRESPONDENT_CREATION_POLICY", str),
     "doctype_creation_policy":     ("PIQ_DOCTYPE_CREATION_POLICY", str),

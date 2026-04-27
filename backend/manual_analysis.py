@@ -71,6 +71,7 @@ class ManualAnalysisService:
             paperless_client=self._paperless,
             config=run_config,
             provider_name=provider_name,
+            context_window_chars=run_config.context_window_chars,
         )
 
         suggestion = await analyzer.analyze(document_id)

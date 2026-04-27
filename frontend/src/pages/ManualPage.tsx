@@ -117,34 +117,76 @@ export default function ManualPage() {
   const corrMap = new Map((correspondents.data ?? []).map((c: PaperlessEntity) => [c.id, c.name]));
   const dtMap = new Map((docTypes.data ?? []).map((d: PaperlessEntity) => [d.id, d.name]));
 
+  const updateSuggestionField = (docId: number, field: string, value: unknown) => {
+    setAnalysisResults(prev => {
+      const current = prev[docId];
+      if (!current) return prev;
+      return { ...prev, [docId]: { ...current, [field]: value } };
+    });
+  };
+
   const renderSuggestion = (suggestion: MetadataSuggestionResponse, docId: number) => {
-    const fields: Array<{ label: string; value: string }> = [];
-    if (suggestion.title) fields.push({ label: "Title", value: suggestion.title });
-    if (suggestion.tags.length > 0) fields.push({ label: "Tags", value: suggestion.tags.join(", ") });
-    if (suggestion.correspondent) fields.push({ label: "Correspondent", value: suggestion.correspondent });
-    if (suggestion.document_type) fields.push({ label: "Document Type", value: suggestion.document_type });
-    if (suggestion.storage_path) fields.push({ label: "Storage Path", value: suggestion.storage_path });
     const customFieldEntries = Object.entries(suggestion.custom_fields ?? {});
     const isApproved = approvedDocs.has(docId);
     const isApproving = approveMut.isPending && approveMut.variables?.document_id === docId;
+    const hasFields = suggestion.title || suggestion.tags.length > 0 || suggestion.correspondent ||
+      suggestion.document_type || suggestion.storage_path || customFieldEntries.length > 0;
 
     return (
       <div style={{ marginTop: "0.5rem", padding: "0.75rem", background: "#f8f9fa", borderRadius: "6px", border: "1px solid #e0e0e0" }}>
         <strong style={{ fontSize: "0.9rem" }}>Suggested Metadata</strong>
+        {!hasFields && (
+          <p style={{ color: "#888", fontStyle: "italic", fontSize: "0.85rem", marginTop: "0.5rem" }}>No metadata could be determined for this document.</p>
+        )}
         <div style={{ marginTop: "0.5rem", fontSize: "0.85rem" }}>
-          {fields.length === 0 && customFieldEntries.length === 0 && (
-            <p style={{ color: "#888", fontStyle: "italic" }}>No metadata could be determined for this document.</p>
-          )}
-          {fields.map(f => (
-            <div key={f.label} style={{ display: "flex", gap: "0.5rem", marginBottom: "0.25rem" }}>
-              <span style={{ fontWeight: 600, minWidth: "120px", color: "#555" }}>{f.label}:</span>
-              <span>{f.value}</span>
+          <div className="form-group" style={{ marginBottom: "0.4rem" }}>
+            <label style={{ fontWeight: 600, color: "#555", fontSize: "0.85rem" }}>Title</label>
+            <input value={suggestion.title ?? ""} style={{ fontSize: "0.85rem" }}
+              onChange={e => updateSuggestionField(docId, "title", e.target.value || null)} />
+          </div>
+          <div className="form-group" style={{ marginBottom: "0.4rem" }}>
+            <label style={{ fontWeight: 600, color: "#555", fontSize: "0.85rem" }}>Tags</label>
+            <div style={{ display: "flex", flexWrap: "wrap", gap: "0.25rem", marginBottom: "0.25rem" }}>
+              {suggestion.tags.map((tag, i) => (
+                <span key={i} style={{ background: "#e0e0e0", borderRadius: "3px", padding: "2px 8px", fontSize: "0.8rem", display: "inline-flex", alignItems: "center", gap: "4px" }}>
+                  {tag}
+                  <button type="button" onClick={() => updateSuggestionField(docId, "tags", suggestion.tags.filter((_, j) => j !== i))}
+                    style={{ background: "none", border: "none", cursor: "pointer", padding: 0, fontSize: "0.9rem", color: "#888", lineHeight: 1 }}>×</button>
+                </span>
+              ))}
             </div>
-          ))}
+            <input placeholder="Add tag and press Enter" style={{ fontSize: "0.85rem" }}
+              onKeyDown={e => {
+                if (e.key === "Enter") {
+                  e.preventDefault();
+                  const val = (e.target as HTMLInputElement).value.trim();
+                  if (val && !suggestion.tags.includes(val)) {
+                    updateSuggestionField(docId, "tags", [...suggestion.tags, val]);
+                    (e.target as HTMLInputElement).value = "";
+                  }
+                }
+              }} />
+          </div>
+          <div className="form-group" style={{ marginBottom: "0.4rem" }}>
+            <label style={{ fontWeight: 600, color: "#555", fontSize: "0.85rem" }}>Correspondent</label>
+            <input value={suggestion.correspondent ?? ""} style={{ fontSize: "0.85rem" }}
+              onChange={e => updateSuggestionField(docId, "correspondent", e.target.value || null)} />
+          </div>
+          <div className="form-group" style={{ marginBottom: "0.4rem" }}>
+            <label style={{ fontWeight: 600, color: "#555", fontSize: "0.85rem" }}>Document Type</label>
+            <input value={suggestion.document_type ?? ""} style={{ fontSize: "0.85rem" }}
+              onChange={e => updateSuggestionField(docId, "document_type", e.target.value || null)} />
+          </div>
+          <div className="form-group" style={{ marginBottom: "0.4rem" }}>
+            <label style={{ fontWeight: 600, color: "#555", fontSize: "0.85rem" }}>Storage Path</label>
+            <input value={suggestion.storage_path ?? ""} style={{ fontSize: "0.85rem" }}
+              onChange={e => updateSuggestionField(docId, "storage_path", e.target.value || null)} />
+          </div>
           {customFieldEntries.map(([key, val]) => (
-            <div key={key} style={{ display: "flex", gap: "0.5rem", marginBottom: "0.25rem" }}>
-              <span style={{ fontWeight: 600, minWidth: "120px", color: "#555" }}>{key}:</span>
-              <span>{String(val)}</span>
+            <div className="form-group" style={{ marginBottom: "0.4rem" }} key={key}>
+              <label style={{ fontWeight: 600, color: "#555", fontSize: "0.85rem" }}>{key}</label>
+              <input value={String(val ?? "")} style={{ fontSize: "0.85rem" }}
+                onChange={e => updateSuggestionField(docId, "custom_fields", { ...suggestion.custom_fields, [key]: e.target.value || null })} />
             </div>
           ))}
         </div>
