@@ -132,6 +132,9 @@ export default function ManualPage() {
       <div style={{ marginTop: "0.5rem", padding: "0.75rem", background: "#f8f9fa", borderRadius: "6px", border: "1px solid #e0e0e0" }}>
         <strong style={{ fontSize: "0.9rem" }}>Suggested Metadata</strong>
         <div style={{ marginTop: "0.5rem", fontSize: "0.85rem" }}>
+          {fields.length === 0 && customFieldEntries.length === 0 && (
+            <p style={{ color: "#888", fontStyle: "italic" }}>No metadata could be determined for this document.</p>
+          )}
           {fields.map(f => (
             <div key={f.label} style={{ display: "flex", gap: "0.5rem", marginBottom: "0.25rem" }}>
               <span style={{ fontWeight: 600, minWidth: "120px", color: "#555" }}>{f.label}:</span>

@@ -298,6 +298,9 @@ class ApprovalQueueService:
         """
         PATCH document metadata to Paperless NGX.
 
+        Resolves entity names (tags, correspondent, document_type) to Paperless
+        NGX IDs before sending the PATCH request.
+
         Validates: Requirements 7.6
         """
         if not PAPERLESS_URL or not PAPERLESS_TOKEN:
@@ -307,16 +310,91 @@ class ApprovalQueueService:
             )
             return
 
-        url = f"{PAPERLESS_URL.rstrip('/')}/api/documents/{document_id}/"
         headers = {"Authorization": f"Token {PAPERLESS_TOKEN}"}
+        base = PAPERLESS_URL.rstrip("/")
 
-        try:
-            async with httpx.AsyncClient(headers=headers, timeout=30) as client:
-                resp = await client.patch(url, json=payload)
+        # Resolve names → IDs for Paperless NGX
+        patch: dict[str, Any] = {}
+
+        async with httpx.AsyncClient(headers=headers, timeout=30) as client:
+            # Title — string, pass directly
+            if payload.get("title"):
+                patch["title"] = payload["title"]
+
+            # Tags — list of name strings → list of tag IDs
+            if payload.get("tags"):
+                tag_ids = await self._resolve_entity_ids(
+                    client, base, "tags", payload["tags"]
+                )
+                if tag_ids:
+                    patch["tags"] = tag_ids
+
+            # Correspondent — name string → ID
+            if payload.get("correspondent"):
+                corr_ids = await self._resolve_entity_ids(
+                    client, base, "correspondents", [payload["correspondent"]]
+                )
+                if corr_ids:
+                    patch["correspondent"] = corr_ids[0]
+
+            # Document type — name string → ID
+            if payload.get("document_type"):
+                dt_ids = await self._resolve_entity_ids(
+                    client, base, "document_types", [payload["document_type"]]
+                )
+                if dt_ids:
+                    patch["document_type"] = dt_ids[0]
+
+            # Storage path — string, pass directly
+            if payload.get("storage_path"):
+                patch["storage_path"] = payload["storage_path"]
+
+            # Custom fields — pass as-is (Paperless NGX handles these by name)
+            if payload.get("custom_fields"):
+                patch["custom_fields"] = payload["custom_fields"]
+
+            if not patch:
+                logger.info("No fields to patch for document %d.", document_id)
+                return
+
+            url = f"{base}/api/documents/{document_id}/"
+            try:
+                resp = await client.patch(url, json=patch)
                 resp.raise_for_status()
                 logger.info("Patched Paperless NGX document %d.", document_id)
-        except httpx.HTTPError as exc:
-            logger.error(
-                "Failed to patch Paperless NGX document %d: %s", document_id, exc
-            )
-            raise
+            except httpx.HTTPError as exc:
+                logger.error(
+                    "Failed to patch Paperless NGX document %d: %s", document_id, exc
+                )
+                raise
+
+    async def _resolve_entity_ids(
+        self,
+        client: httpx.AsyncClient,
+        base_url: str,
+        entity_type: str,
+        names: list[str],
+    ) -> list[int]:
+        """Resolve entity names to Paperless NGX IDs by fetching the entity list."""
+        ids: list[int] = []
+        url: str | None = f"{base_url}/api/{entity_type}/?page_size=100"
+        name_to_id: dict[str, int] = {}
+
+        while url:
+            resp = await client.get(url)
+            if resp.status_code != 200:
+                break
+            data = resp.json()
+            for item in data.get("results", []):
+                name_to_id[item.get("name", "").lower()] = item["id"]
+            url = data.get("next")
+
+        for name in names:
+            eid = name_to_id.get(name.lower())
+            if eid is not None:
+                ids.append(eid)
+            else:
+                logger.warning(
+                    "Could not resolve %s name %r to an ID; skipping.", entity_type, name
+                )
+        return ids
