@@ -185,7 +185,7 @@ async def test_property_19_approval_applies_edited_values(
 
     captured_payload: dict[str, Any] = {}
 
-    async def _capture_patch(document_id: int, payload: dict[str, Any]) -> None:
+    async def _capture_patch(document_id: int, payload: dict[str, Any], **kwargs: Any) -> None:
         captured_payload.update(payload)
 
     try:
@@ -240,7 +240,7 @@ async def test_property_20_bulk_state_transition(
 
     patch_call_count = 0
 
-    async def _count_patch(document_id: int, payload: dict[str, Any]) -> None:
+    async def _count_patch(document_id: int, payload: dict[str, Any], **kwargs: Any) -> None:
         nonlocal patch_call_count
         patch_call_count += 1
 

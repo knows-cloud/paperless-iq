@@ -1,4 +1,4 @@
-import { useState, useCallback } from "react";
+import { useState, useCallback, useMemo } from "react";
 import { useQuery, useMutation } from "@tanstack/react-query";
 import { api, type PaperlessEntity, type PaperlessCustomField, type DocumentItem, type MetadataSuggestionResponse } from "../api";
 
@@ -18,11 +18,19 @@ export default function ManualPage() {
   const [approvedDocs, setApprovedDocs] = useState<Set<number>>(new Set());
   const [selectedDocs, setSelectedDocs] = useState<Set<number>>(new Set());
   const [batchRunning, setBatchRunning] = useState(false);
+  // Per-document options
+  const [mergeTagsMap, setMergeTagsMap] = useState<Record<number, boolean>>({});
+  const [createMissingMap, setCreateMissingMap] = useState<Record<number, boolean>>({});
 
   const tags = useQuery({ queryKey: ["tags"], queryFn: api.getTags, retry: false });
   const correspondents = useQuery({ queryKey: ["correspondents"], queryFn: api.getCorrespondents, retry: false });
   const docTypes = useQuery({ queryKey: ["docTypes"], queryFn: api.getDocumentTypes, retry: false });
   const customFields = useQuery({ queryKey: ["customFields"], queryFn: api.getCustomFields, retry: false });
+
+  // Build lookup sets for existence checking (lowercased for case-insensitive match)
+  const tagNames = useMemo(() => new Set((tags.data ?? []).map((t: PaperlessEntity) => t.name.toLowerCase())), [tags.data]);
+  const corrNames = useMemo(() => new Set((correspondents.data ?? []).map((c: PaperlessEntity) => c.name.toLowerCase())), [correspondents.data]);
+  const dtNames = useMemo(() => new Set((docTypes.data ?? []).map((d: PaperlessEntity) => d.name.toLowerCase())), [docTypes.data]);
 
   const buildParams = () => {
     const p: Record<string, string> = { page: String(page), page_size: "20" };
@@ -49,6 +57,7 @@ export default function ManualPage() {
     try {
       const data = await api.analyze(docId);
       setAnalysisResults(prev => ({ ...prev, [docId]: data }));
+      setMergeTagsMap(prev => ({ ...prev, [docId]: true }));
     } catch (err: unknown) {
       setAnalysisErrors(prev => ({ ...prev, [docId]: (err as Error).message }));
     } finally {
@@ -56,28 +65,23 @@ export default function ManualPage() {
     }
   }, []);
 
-  const analyzeMut = useMutation({
-    mutationFn: (id: number) => analyzeOne(id),
-  });
+  const analyzeMut = useMutation({ mutationFn: (id: number) => analyzeOne(id) });
 
   const handleBatchAnalyze = useCallback(async () => {
     if (selectedDocs.size === 0) return;
     setBatchRunning(true);
-    const ids = Array.from(selectedDocs);
-    for (const id of ids) {
-      await analyzeOne(id);
-    }
+    for (const id of Array.from(selectedDocs)) await analyzeOne(id);
     setBatchRunning(false);
     setSelectedDocs(new Set());
   }, [selectedDocs, analyzeOne]);
 
   const approveMut = useMutation({
-    mutationFn: async (suggestion: MetadataSuggestionResponse) => {
+    mutationFn: async ({ suggestion, mergeTags, createMissing }: { suggestion: MetadataSuggestionResponse; mergeTags: boolean; createMissing: boolean }) => {
       const enqueued = await api.enqueueSuggestion(suggestion);
-      await api.approveItem(enqueued.id);
+      await api.approveItem(enqueued.id, { merge_tags: mergeTags, create_missing: createMissing });
       return enqueued;
     },
-    onSuccess: (_data, suggestion) => {
+    onSuccess: (_data, { suggestion }) => {
       setApprovedDocs(prev => new Set(prev).add(suggestion.document_id));
     },
   });
@@ -87,29 +91,20 @@ export default function ManualPage() {
   const updateCustomFieldFilter = (fieldId: string, value: string) => {
     setCustomFieldFilters(prev => ({ ...prev, [fieldId]: value }));
   };
-
   const handleDismiss = (docId: number) => {
     setDismissed(prev => new Set(prev).add(docId));
     setAnalysisResults(prev => { const next = { ...prev }; delete next[docId]; return next; });
   };
-
   const toggleDocSelection = (docId: number) => {
-    setSelectedDocs(prev => {
-      const next = new Set(prev);
-      if (next.has(docId)) next.delete(docId); else next.add(docId);
-      return next;
-    });
+    setSelectedDocs(prev => { const next = new Set(prev); if (next.has(docId)) next.delete(docId); else next.add(docId); return next; });
   };
-
   const toggleSelectAll = () => {
     if (!docs.data) return;
     const allIds = docs.data.items.map((d: DocumentItem) => d.id);
-    const allSelected = allIds.every((id: number) => selectedDocs.has(id));
-    if (allSelected) {
-      setSelectedDocs(new Set());
-    } else {
-      setSelectedDocs(new Set(allIds));
-    }
+    setSelectedDocs(allIds.every((id: number) => selectedDocs.has(id)) ? new Set() : new Set(allIds));
+  };
+  const updateSuggestionField = (docId: number, field: string, value: unknown) => {
+    setAnalysisResults(prev => { const c = prev[docId]; if (!c) return prev; return { ...prev, [docId]: { ...c, [field]: value } }; });
   };
 
   const paperlessUnavailable = tags.isError;
@@ -117,20 +112,25 @@ export default function ManualPage() {
   const corrMap = new Map((correspondents.data ?? []).map((c: PaperlessEntity) => [c.id, c.name]));
   const dtMap = new Map((docTypes.data ?? []).map((d: PaperlessEntity) => [d.id, d.name]));
 
-  const updateSuggestionField = (docId: number, field: string, value: unknown) => {
-    setAnalysisResults(prev => {
-      const current = prev[docId];
-      if (!current) return prev;
-      return { ...prev, [docId]: { ...current, [field]: value } };
-    });
-  };
+  // Style for unknown (new) values
+  const newValueStyle = { color: "#c62828", fontWeight: 700 } as const;
+  const existingChipStyle = { background: "#e0e0e0", borderRadius: "3px", padding: "2px 8px", fontSize: "0.8rem", display: "inline-flex" as const, alignItems: "center" as const, gap: "4px" };
+  const newChipStyle = { ...existingChipStyle, background: "#ffcdd2", color: "#b71c1c", fontWeight: 700 };
 
   const renderSuggestion = (suggestion: MetadataSuggestionResponse, docId: number) => {
     const customFieldEntries = Object.entries(suggestion.custom_fields ?? {});
     const isApproved = approvedDocs.has(docId);
-    const isApproving = approveMut.isPending && approveMut.variables?.document_id === docId;
+    const isApproving = approveMut.isPending && approveMut.variables?.suggestion.document_id === docId;
     const hasFields = suggestion.title || suggestion.tags.length > 0 || suggestion.correspondent ||
       suggestion.document_type || suggestion.storage_path || customFieldEntries.length > 0;
+    const mergeTags = mergeTagsMap[docId] ?? true;
+    const createMissing = createMissingMap[docId] ?? false;
+
+    // Check which values are new (don't exist in Paperless NGX)
+    const isNewTag = (t: string) => !tagNames.has(t.toLowerCase());
+    const isNewCorr = suggestion.correspondent ? !corrNames.has(suggestion.correspondent.toLowerCase()) : false;
+    const isNewDt = suggestion.document_type ? !dtNames.has(suggestion.document_type.toLowerCase()) : false;
+    const hasAnyNew = suggestion.tags.some(isNewTag) || isNewCorr || isNewDt;
 
     return (
       <div style={{ marginTop: "0.5rem", padding: "0.75rem", background: "#f8f9fa", borderRadius: "6px", border: "1px solid #e0e0e0" }}>
@@ -148,10 +148,10 @@ export default function ManualPage() {
             <label style={{ fontWeight: 600, color: "#555", fontSize: "0.85rem" }}>Tags</label>
             <div style={{ display: "flex", flexWrap: "wrap", gap: "0.25rem", marginBottom: "0.25rem" }}>
               {suggestion.tags.map((tag, i) => (
-                <span key={i} style={{ background: "#e0e0e0", borderRadius: "3px", padding: "2px 8px", fontSize: "0.8rem", display: "inline-flex", alignItems: "center", gap: "4px" }}>
-                  {tag}
-                  <button type="button" onClick={() => updateSuggestionField(docId, "tags", suggestion.tags.filter((_, j) => j !== i))}
-                    style={{ background: "none", border: "none", cursor: "pointer", padding: 0, fontSize: "0.9rem", color: "#888", lineHeight: 1 }}>×</button>
+                <span key={i} style={isNewTag(tag) ? newChipStyle : existingChipStyle}>
+                  {tag}{isNewTag(tag) && " (new)"}
+                  <button type="button" onClick={() => updateSuggestionField(docId, "tags", suggestion.tags.filter((_: string, j: number) => j !== i))}
+                    style={{ background: "none", border: "none", cursor: "pointer", padding: 0, fontSize: "0.9rem", color: isNewTag(tag) ? "#b71c1c" : "#888", lineHeight: 1 }}>×</button>
                 </span>
               ))}
             </div>
@@ -169,13 +169,15 @@ export default function ManualPage() {
           </div>
           <div className="form-group" style={{ marginBottom: "0.4rem" }}>
             <label style={{ fontWeight: 600, color: "#555", fontSize: "0.85rem" }}>Correspondent</label>
-            <input value={suggestion.correspondent ?? ""} style={{ fontSize: "0.85rem" }}
+            <input value={suggestion.correspondent ?? ""} style={isNewCorr ? { fontSize: "0.85rem", ...newValueStyle } : { fontSize: "0.85rem" }}
               onChange={e => updateSuggestionField(docId, "correspondent", e.target.value || null)} />
+            {isNewCorr && <small style={{ color: "#c62828" }}>New — will be created if "Create missing values" is checked</small>}
           </div>
           <div className="form-group" style={{ marginBottom: "0.4rem" }}>
             <label style={{ fontWeight: 600, color: "#555", fontSize: "0.85rem" }}>Document Type</label>
-            <input value={suggestion.document_type ?? ""} style={{ fontSize: "0.85rem" }}
+            <input value={suggestion.document_type ?? ""} style={isNewDt ? { fontSize: "0.85rem", ...newValueStyle } : { fontSize: "0.85rem" }}
               onChange={e => updateSuggestionField(docId, "document_type", e.target.value || null)} />
+            {isNewDt && <small style={{ color: "#c62828" }}>New — will be created if "Create missing values" is checked</small>}
           </div>
           <div className="form-group" style={{ marginBottom: "0.4rem" }}>
             <label style={{ fontWeight: 600, color: "#555", fontSize: "0.85rem" }}>Storage Path</label>
@@ -191,16 +193,33 @@ export default function ManualPage() {
           ))}
         </div>
         {isApproved ? (
-          <p className="success" style={{ marginTop: "0.5rem" }}>Approved and enqueued.</p>
+          <p className="success" style={{ marginTop: "0.5rem" }}>Approved and applied.</p>
         ) : (
-          <div style={{ display: "flex", gap: "0.5rem", marginTop: "0.5rem" }}>
-            <button className="btn btn-primary" onClick={() => approveMut.mutate(suggestion)} disabled={isApproving}>
-              {isApproving ? "Approving…" : "Approve"}
-            </button>
-            <button className="btn" onClick={() => handleDismiss(docId)} disabled={isApproving}>Reject</button>
+          <div style={{ marginTop: "0.5rem" }}>
+            <div style={{ display: "flex", gap: "1rem", marginBottom: "0.5rem", fontSize: "0.85rem" }}>
+              <label style={{ cursor: "pointer", display: "flex", alignItems: "center", gap: "0.25rem" }}>
+                <input type="checkbox" checked={mergeTags}
+                  onChange={e => setMergeTagsMap(prev => ({ ...prev, [docId]: e.target.checked }))} />
+                Keep existing tags
+              </label>
+              {hasAnyNew && (
+                <label style={{ cursor: "pointer", display: "flex", alignItems: "center", gap: "0.25rem" }}>
+                  <input type="checkbox" checked={createMissing}
+                    onChange={e => setCreateMissingMap(prev => ({ ...prev, [docId]: e.target.checked }))} />
+                  Create missing values
+                </label>
+              )}
+            </div>
+            <div style={{ display: "flex", gap: "0.5rem" }}>
+              <button className="btn btn-primary" disabled={isApproving}
+                onClick={() => approveMut.mutate({ suggestion, mergeTags, createMissing })}>
+                {isApproving ? "Approving…" : "Approve"}
+              </button>
+              <button className="btn" onClick={() => handleDismiss(docId)} disabled={isApproving}>Reject</button>
+            </div>
           </div>
         )}
-        {approveMut.isError && approveMut.variables?.document_id === docId && (
+        {approveMut.isError && approveMut.variables?.suggestion.document_id === docId && (
           <p className="error" style={{ marginTop: "0.5rem" }}>Approval failed: {(approveMut.error as Error).message}</p>
         )}
       </div>
@@ -210,15 +229,9 @@ export default function ManualPage() {
   return (
     <div>
       <h2>Document Search &amp; Analysis</h2>
-
       {paperlessUnavailable && (
-        <div className="card">
-          <p className="error">
-            Cannot connect to Paperless NGX. Make sure PAPERLESS_URL and PAPERLESS_TOKEN are configured.
-          </p>
-        </div>
+        <div className="card"><p className="error">Cannot connect to Paperless NGX. Make sure PAPERLESS_URL and PAPERLESS_TOKEN are configured.</p></div>
       )}
-
       <div className="card">
         <div className="form-group">
           <label htmlFor="title-search">Search documents</label>
@@ -256,21 +269,17 @@ export default function ManualPage() {
                 {cf.data_type === "boolean" ? (
                   <select id={`cf-${cf.id}`} value={customFieldFilters[String(cf.id)] ?? ""}
                     onChange={e => updateCustomFieldFilter(String(cf.id), e.target.value)}>
-                    <option value="">All</option>
-                    <option value="true">Yes</option>
-                    <option value="false">No</option>
+                    <option value="">All</option><option value="true">Yes</option><option value="false">No</option>
                   </select>
                 ) : cf.data_type === "date" ? (
                   <input id={`cf-${cf.id}`} type="date" value={customFieldFilters[String(cf.id)] ?? ""}
                     onChange={e => updateCustomFieldFilter(String(cf.id), e.target.value)} />
                 ) : ["integer", "float", "monetary"].includes(cf.data_type) ? (
                   <input id={`cf-${cf.id}`} type="number" value={customFieldFilters[String(cf.id)] ?? ""}
-                    onChange={e => updateCustomFieldFilter(String(cf.id), e.target.value)}
-                    placeholder={`Filter by ${cf.name}…`} />
+                    onChange={e => updateCustomFieldFilter(String(cf.id), e.target.value)} placeholder={`Filter by ${cf.name}…`} />
                 ) : (
                   <input id={`cf-${cf.id}`} type="text" value={customFieldFilters[String(cf.id)] ?? ""}
-                    onChange={e => updateCustomFieldFilter(String(cf.id), e.target.value)}
-                    placeholder={`Filter by ${cf.name}…`} />
+                    onChange={e => updateCustomFieldFilter(String(cf.id), e.target.value)} placeholder={`Filter by ${cf.name}…`} />
                 )}
               </div>
             ))}
@@ -278,10 +287,8 @@ export default function ManualPage() {
         )}
         <button className="btn btn-primary" onClick={handleSearch} disabled={paperlessUnavailable}>Search</button>
       </div>
-
       {docs.isLoading && <p>Searching…</p>}
       {docs.isError && <p className="error">Search failed. Check Paperless NGX connection.</p>}
-
       {docs.isSuccess && (
         <div>
           <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", margin: "0.75rem 0 0.5rem" }}>
@@ -289,15 +296,11 @@ export default function ManualPage() {
             {docs.data.items.length > 0 && (
               <div style={{ display: "flex", gap: "0.5rem", alignItems: "center" }}>
                 <label style={{ fontSize: "0.85rem", cursor: "pointer", display: "flex", alignItems: "center", gap: "0.25rem" }}>
-                  <input type="checkbox"
-                    checked={docs.data.items.length > 0 && docs.data.items.every((d: DocumentItem) => selectedDocs.has(d.id))}
-                    onChange={toggleSelectAll} />
+                  <input type="checkbox" checked={docs.data.items.length > 0 && docs.data.items.every((d: DocumentItem) => selectedDocs.has(d.id))} onChange={toggleSelectAll} />
                   Select all
                 </label>
-                <button className="btn btn-primary"
-                  onClick={handleBatchAnalyze}
-                  disabled={selectedDocs.size === 0 || batchRunning}>
-                  {batchRunning ? `Analyzing ${analyzingDocs.size > 0 ? "…" : ""}` : `Analyze Selected (${selectedDocs.size})`}
+                <button className="btn btn-primary" onClick={handleBatchAnalyze} disabled={selectedDocs.size === 0 || batchRunning}>
+                  {batchRunning ? "Analyzing…" : `Analyze Selected (${selectedDocs.size})`}
                 </button>
               </div>
             )}
@@ -308,13 +311,11 @@ export default function ManualPage() {
             const error = analysisErrors[doc.id];
             const isDismissed = dismissed.has(doc.id);
             const isSelected = selectedDocs.has(doc.id);
-
             return (
               <div key={doc.id} className="card" style={{ marginBottom: "0.5rem" }}>
                 <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start" }}>
                   <div style={{ display: "flex", gap: "0.5rem", alignItems: "flex-start" }}>
-                    <input type="checkbox" checked={isSelected} onChange={() => toggleDocSelection(doc.id)}
-                      style={{ marginTop: "0.3rem" }} />
+                    <input type="checkbox" checked={isSelected} onChange={() => toggleDocSelection(doc.id)} style={{ marginTop: "0.3rem" }} />
                     <div>
                       <strong>{doc.title || `Document #${doc.id}`}</strong>
                       <div style={{ fontSize: "0.85rem", color: "#666", marginTop: "0.25rem" }}>
@@ -325,26 +326,21 @@ export default function ManualPage() {
                     </div>
                   </div>
                   <button className="btn btn-primary" style={{ whiteSpace: "nowrap", marginLeft: "1rem" }}
-                    onClick={() => analyzeMut.mutate(doc.id)}
-                    disabled={isAnalyzing || batchRunning}>
+                    onClick={() => analyzeMut.mutate(doc.id)} disabled={isAnalyzing || batchRunning}>
                     {isAnalyzing ? "Analyzing…" : "Analyze"}
                   </button>
                 </div>
-                {isAnalyzing && (
-                  <p style={{ marginTop: "0.5rem", color: "#666", fontStyle: "italic" }}>Analyzing document…</p>
-                )}
-                {error && (
-                  <p className="error" style={{ marginTop: "0.5rem" }}>Analysis failed: {error}</p>
-                )}
+                {isAnalyzing && <p style={{ marginTop: "0.5rem", color: "#666", fontStyle: "italic" }}>Analyzing document…</p>}
+                {error && <p className="error" style={{ marginTop: "0.5rem" }}>Analysis failed: {error}</p>}
                 {result && !isDismissed && renderSuggestion(result, doc.id)}
               </div>
             );
           })}
           {docs.data.total > 20 && (
             <div style={{ display: "flex", gap: "0.5rem", marginTop: "0.5rem" }}>
-              <button className="btn" disabled={page <= 1} onClick={() => { setPage(p => p - 1); }}>Previous</button>
+              <button className="btn" disabled={page <= 1} onClick={() => setPage(p => p - 1)}>Previous</button>
               <span style={{ lineHeight: "2rem" }}>Page {page} of {Math.ceil(docs.data.total / 20)}</span>
-              <button className="btn" disabled={page * 20 >= docs.data.total} onClick={() => { setPage(p => p + 1); }}>Next</button>
+              <button className="btn" disabled={page * 20 >= docs.data.total} onClick={() => setPage(p => p + 1)}>Next</button>
             </div>
           )}
         </div>

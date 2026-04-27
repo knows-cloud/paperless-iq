@@ -299,6 +299,8 @@ async def login() -> dict:
 
 class ApproveBody(BaseModel):
     edits: dict[str, Any] | None = None
+    merge_tags: bool = False
+    create_missing: bool = False
 
 
 class BulkIdsBody(BaseModel):
@@ -347,7 +349,12 @@ async def approve_suggestion(
 ) -> MetadataSuggestion:
     """Approve a suggestion, optionally with field edits."""
     try:
-        return await svc.approve(suggestion_id, edits=body.edits)
+        return await svc.approve(
+            suggestion_id,
+            edits=body.edits,
+            merge_tags=body.merge_tags,
+            create_missing=body.create_missing,
+        )
     except ValueError as exc:
         raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(exc))
 
