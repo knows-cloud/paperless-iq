@@ -103,6 +103,31 @@ class PaperlessNGXClient:
                 url = data.get("next")  # follow pagination
         return names
 
+    async def list_custom_field_definitions(self) -> list[dict[str, Any]]:
+        """
+        Fetch all custom field definitions from Paperless NGX.
+
+        Returns a list of dicts with ``id``, ``name``, and ``data_type`` per field.
+        Follows pagination (``next`` links) to retrieve the complete set.
+
+        Validates: Requirements 12.4
+        """
+        fields: list[dict[str, Any]] = []
+        url: str | None = f"{self._base_url}/api/custom_fields/"
+        async with httpx.AsyncClient(headers=self._headers, timeout=30) as client:
+            while url:
+                resp = await client.get(url)
+                resp.raise_for_status()
+                data = resp.json()
+                for item in data.get("results", []):
+                    fields.append({
+                        "id": item["id"],
+                        "name": item["name"],
+                        "data_type": item.get("data_type", ""),
+                    })
+                url = data.get("next")
+        return fields
+
     async def create_entity(self, entity_type: str, name: str) -> None:
         """
         Create a new entity (tag, correspondent, or document type) in Paperless NGX.
@@ -297,13 +322,16 @@ class DocumentAnalyzer:
     Steps:
       1. Determine analysis mode (ocr vs full_document) per config
       2. Fetch OCR text or full document bytes from Paperless NGX
-      3. Resolve prompt template (per-doctype → per-field → global → default)
-      4. Truncate input to context window, logging a warning if needed
-      5. Call LLMProvider.complete() with the resolved prompt
-      6. Parse JSON response into MetadataSuggestion
-      7. Enforce creation policies (existing_only / allow_new) for tags, correspondents, document types
+      3. Fetch entity lists (tags, correspondents, document types, custom fields) for prompt context
+      4. Resolve prompt template (per-doctype → per-field → global → default)
+      5. Truncate input to context window, logging a warning if needed
+      6. Build final prompt with entity context injected between template and document content
+      7. Call LLMProvider.complete() with the resolved prompt
+      8. Parse JSON response into MetadataSuggestion
+      9. Enforce creation policies (existing_only / allow_new) for tags, correspondents, document types
 
-    Validates: Requirements 1.1, 1.2, 1.3, 1.4, 2.1, 2.2, 2.3, 2.4, 2.5, 2.6, 2.7, 2.8
+    Validates: Requirements 1.1, 1.2, 1.3, 1.4, 2.1, 2.2, 2.3, 2.4, 2.5, 2.6, 2.7, 2.8,
+               12.1, 12.2, 12.3, 12.4, 12.5, 12.6
     """
 
     def __init__(
@@ -321,6 +349,91 @@ class DocumentAnalyzer:
         self._provider_name = provider_name
         self._context_window_chars = context_window_chars
         self._max_tokens = max_tokens
+        self._custom_field_defs: list[dict[str, Any]] = []
+
+    async def _fetch_entity_context(self) -> str:
+        """
+        Fetch entity lists from Paperless NGX and build a context block for the LLM prompt.
+
+        Fetches tags, correspondents, document types, and custom field definitions.
+        Stores custom field definitions on ``self._custom_field_defs`` for later use
+        (e.g., resolving ``cf:<id>`` keys in field descriptions).
+
+        On any failure, logs a warning and returns an empty string so analysis
+        can proceed without entity context (Req 12.6).
+
+        Validates: Requirements 12.1, 12.2, 12.3, 12.4, 12.5, 12.6
+        """
+        try:
+            tags = await self._paperless.list_entities("tags")
+            correspondents = await self._paperless.list_entities("correspondents")
+            document_types = await self._paperless.list_entities("document_types")
+            custom_field_defs = await self._paperless.list_custom_field_definitions()
+        except Exception:
+            logger.warning(
+                "Failed to fetch entity lists from Paperless NGX; "
+                "proceeding without entity context.",
+                exc_info=True,
+            )
+            self._custom_field_defs: list[dict[str, Any]] = []
+            return ""
+
+        self._custom_field_defs = custom_field_defs
+
+        sections: list[str] = []
+        if tags:
+            sections.append(f"Available tags: {', '.join(tags)}")
+        if correspondents:
+            sections.append(f"Available correspondents: {', '.join(correspondents)}")
+        if document_types:
+            sections.append(f"Available document types: {', '.join(document_types)}")
+        if custom_field_defs:
+            cf_parts = [
+                f"{cf['name']} ({cf['data_type']})" for cf in custom_field_defs
+            ]
+            sections.append(f"Available custom fields: {', '.join(cf_parts)}")
+
+        return "\n".join(sections)
+
+    def _build_field_instructions(self) -> str:
+        """
+        Build per-field instruction lines from ``config.field_descriptions``.
+
+        For keys starting with ``cf:<id>``, resolves the custom field name from
+        ``self._custom_field_defs``.  For other keys, uses the key directly as
+        the field name.  Only fields that have a non-empty description are
+        included.
+
+        Returns a newline-joined string of instruction lines, or an empty
+        string if there are no descriptions.
+
+        Validates: Requirements 9.1, 9.2, 9.3, 9.4, 5.5
+        """
+        lines: list[str] = []
+        cf_lookup: dict[int, str] = {
+            cf["id"]: cf["name"] for cf in self._custom_field_defs
+        }
+
+        for key, description in self._config.field_descriptions.items():
+            if not description:
+                continue
+
+            if key.startswith("cf:"):
+                # Resolve custom field name from definitions
+                try:
+                    cf_id = int(key[3:])
+                except (ValueError, IndexError):
+                    continue
+                field_name = cf_lookup.get(cf_id)
+                if field_name is None:
+                    # Custom field definition not found; skip
+                    continue
+            else:
+                field_name = key
+
+            lines.append(f"Instructions for {field_name}: {description}")
+
+        return "\n".join(lines)
 
     def _resolve_analysis_mode(self, document_type_id: int | None) -> str:
         """
@@ -355,23 +468,43 @@ class DocumentAnalyzer:
         else:
             content = await self._paperless.get_document_ocr_text(document_id)
 
-        # 3. Resolve prompt template
+        # 3. Fetch entity lists for prompt context (Req 12.1–12.6)
+        entity_context = await self._fetch_entity_context()
+
+        # 4. Build per-field instructions from config (Req 9.1–9.4, 5.5)
+        field_instructions = self._build_field_instructions()
+
+        # 5. Resolve prompt template
         template = resolve_prompt_template(self._config, document_type_id)
 
-        # 4. Truncate to context window
+        # 6. Truncate to context window
         content = truncate_to_context_window(
             content, self._context_window_chars, document_id
         )
 
-        # 5. Build final prompt and call LLM
+        # 7. Build final prompt and call LLM
+        # Entity context and field instructions are inserted between the
+        # template and document content.
+        context_parts = [p for p in (entity_context, field_instructions) if p]
+        context_block = "\n\n".join(context_parts)
+
         if "{content}" in template:
-            prompt = template.format(content=content) + _SYSTEM_SUFFIX
+            combined_content = (
+                (context_block + "\n\n" + content) if context_block else content
+            )
+            prompt = template.format(content=combined_content) + _SYSTEM_SUFFIX
         else:
-            prompt = template + f"\n\nDocument content:\n{content}\n" + _SYSTEM_SUFFIX
+            context_section = f"\n\n{context_block}" if context_block else ""
+            prompt = (
+                template
+                + context_section
+                + f"\n\nDocument content:\n{content}\n"
+                + _SYSTEM_SUFFIX
+            )
 
         raw_response = await self._provider.complete(prompt, self._max_tokens)
 
-        # 6. Parse response into MetadataSuggestion
+        # 7. Parse response into MetadataSuggestion
         parsed = _parse_llm_response(raw_response)
 
         suggestion = _build_suggestion(
@@ -384,7 +517,7 @@ class DocumentAnalyzer:
             raw_llm_response=raw_response,
         )
 
-        # 7. Enforce creation policies for tags, correspondents, document types
+        # 8. Enforce creation policies for tags, correspondents, document types
         suggestion = await _apply_creation_policy(
             suggestion=suggestion,
             config=self._config,

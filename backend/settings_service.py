@@ -71,6 +71,11 @@ class SettingsService:
             )
             raise ValueError(f"Invalid settings: {errors}") from exc
 
+        # Revert global_prompt_template to default if cleared (Req 6.5)
+        if not new_config.global_prompt_template.strip():
+            default_prompt = PaperlessIQConfig.model_fields["global_prompt_template"].default
+            new_config = new_config.model_copy(update={"global_prompt_template": default_prompt})
+
         self._config = new_config
         return self._config
 

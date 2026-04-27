@@ -198,3 +198,86 @@ async def test_property_16_tag_filter_correctness(
     assert result_ids.isdisjoint(non_matching), (
         f"Docs without tag appeared in results: {result_ids & non_matching}"
     )
+
+
+# ---------------------------------------------------------------------------
+# Strategies for MetadataSuggestion
+# ---------------------------------------------------------------------------
+
+from datetime import timezone
+from uuid import UUID as _UUID
+
+_metadata_suggestion_strategy = st.builds(
+    lambda **kwargs: kwargs,
+    id=st.uuids(),
+    document_id=st.integers(min_value=1, max_value=99999),
+    status=st.sampled_from(["pending", "approved", "rejected"]),
+    created_at=st.datetimes(timezones=st.just(timezone.utc)),
+    title=st.one_of(st.none(), st.text(min_size=1, max_size=100)),
+    tags=st.lists(st.text(min_size=1, max_size=30), max_size=10),
+    correspondent=st.one_of(st.none(), st.text(min_size=1, max_size=100)),
+    document_type=st.one_of(st.none(), st.text(min_size=1, max_size=100)),
+    storage_path=st.one_of(st.none(), st.text(min_size=1, max_size=100)),
+    custom_fields=st.dictionaries(
+        keys=st.text(min_size=1, max_size=30),
+        values=st.one_of(
+            st.none(),
+            st.booleans(),
+            st.integers(min_value=-10000, max_value=10000),
+            st.text(min_size=0, max_size=50),
+        ),
+        max_size=5,
+    ),
+    llm_provider=st.sampled_from(["bedrock", "anthropic", "ollama", "openai"]),
+    llm_model=st.text(
+        alphabet=st.characters(whitelist_categories=("Lu", "Ll", "Nd")),
+        min_size=3,
+        max_size=20,
+    ),
+    analysis_mode=st.sampled_from(["ocr", "full_document"]),
+    prompt_used=st.text(min_size=1, max_size=200),
+    raw_llm_response=st.text(min_size=1, max_size=200),
+)
+
+
+# ---------------------------------------------------------------------------
+# Property 8: MetadataSuggestion JSON round-trip
+# ---------------------------------------------------------------------------
+
+from backend.models import MetadataSuggestion
+
+
+@settings(max_examples=100, suppress_health_check=[HealthCheck.too_slow])
+@given(data=_metadata_suggestion_strategy)
+def test_property_8_metadata_suggestion_json_round_trip(
+    data: dict[str, Any],
+) -> None:
+    """
+    # Feature: paperless-live-integration, Property 8: MetadataSuggestion JSON round-trip
+
+    For any valid MetadataSuggestion instance, serializing to JSON via
+    model_dump(mode="json") and deserializing back via MetadataSuggestion(**data)
+    shall produce an equivalent object with all fields preserved.
+
+    **Validates: Requirements 10.6**
+    """
+    original = MetadataSuggestion(**data)
+    json_data = original.model_dump(mode="json")
+    restored = MetadataSuggestion(**json_data)
+
+    assert restored.id == original.id
+    assert restored.document_id == original.document_id
+    assert restored.status == original.status
+    assert restored.created_at == original.created_at
+    assert restored.title == original.title
+    assert restored.tags == original.tags
+    assert restored.correspondent == original.correspondent
+    assert restored.document_type == original.document_type
+    assert restored.storage_path == original.storage_path
+    assert restored.custom_fields == original.custom_fields
+    assert restored.llm_provider == original.llm_provider
+    assert restored.llm_model == original.llm_model
+    assert restored.analysis_mode == original.analysis_mode
+    assert restored.prompt_used == original.prompt_used
+    assert restored.raw_llm_response == original.raw_llm_response
+    assert restored == original

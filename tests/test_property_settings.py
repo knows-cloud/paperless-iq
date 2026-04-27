@@ -144,3 +144,91 @@ async def test_property_14_authentication_enforcement(
     assert "items" not in body or body.get("items") == [], (
         f"{method} {path} exposed protected data without auth"
     )
+
+
+# ---------------------------------------------------------------------------
+# Strategies for settings round-trip dicts
+# ---------------------------------------------------------------------------
+
+# Field names: core fields or custom field keys like "cf:1", "cf:42"
+_field_name_strategy = st.one_of(
+    st.sampled_from(["title", "tags", "correspondent", "document_type", "storage_path"]),
+    st.integers(min_value=1, max_value=9999).map(lambda i: f"cf:{i}"),
+)
+
+_field_descriptions_strategy = st.dictionaries(
+    keys=_field_name_strategy,
+    values=st.text(min_size=1, max_size=200),
+    min_size=0,
+    max_size=10,
+)
+
+_per_field_prompt_templates_strategy = st.dictionaries(
+    keys=st.sampled_from(["title", "tags", "correspondent", "document_type", "storage_path"]),
+    values=st.text(min_size=1, max_size=200),
+    min_size=0,
+    max_size=5,
+)
+
+_per_doctype_prompt_templates_strategy = st.dictionaries(
+    keys=st.integers(min_value=1, max_value=9999),
+    values=st.text(min_size=1, max_size=200),
+    min_size=0,
+    max_size=10,
+)
+
+
+# ---------------------------------------------------------------------------
+# Property 3: Settings round-trip
+# ---------------------------------------------------------------------------
+
+
+@settings(max_examples=100, suppress_health_check=[HealthCheck.too_slow])
+@given(
+    field_descriptions=_field_descriptions_strategy,
+    per_field_prompts=_per_field_prompt_templates_strategy,
+    per_doctype_prompts=_per_doctype_prompt_templates_strategy,
+)
+def test_property_3_settings_round_trip(
+    field_descriptions: dict[str, str],
+    per_field_prompts: dict[str, str],
+    per_doctype_prompts: dict[int, str],
+) -> None:
+    """
+    # Feature: paperless-live-integration, Property 3: Settings round-trip
+
+    For any valid partial settings update containing field_descriptions,
+    per_field_prompt_templates, or per_doctype_prompt_templates, calling
+    SettingsService.update() with those values and then reading back via
+    SettingsService.config shall return a config whose corresponding fields
+    match the values that were set.
+
+    **Validates: Requirements 5.3, 5.4, 17.4, 17.5**
+    """
+    svc = SettingsService()
+
+    # Update field_descriptions
+    svc.update({"field_descriptions": field_descriptions})
+    assert svc.config.field_descriptions == field_descriptions, (
+        f"field_descriptions mismatch: expected {field_descriptions}, "
+        f"got {svc.config.field_descriptions}"
+    )
+
+    # Update per_field_prompt_templates
+    svc.update({"per_field_prompt_templates": per_field_prompts})
+    assert svc.config.per_field_prompt_templates == per_field_prompts, (
+        f"per_field_prompt_templates mismatch: expected {per_field_prompts}, "
+        f"got {svc.config.per_field_prompt_templates}"
+    )
+
+    # Update per_doctype_prompt_templates
+    svc.update({"per_doctype_prompt_templates": per_doctype_prompts})
+    assert svc.config.per_doctype_prompt_templates == per_doctype_prompts, (
+        f"per_doctype_prompt_templates mismatch: expected {per_doctype_prompts}, "
+        f"got {svc.config.per_doctype_prompt_templates}"
+    )
+
+    # Verify all three fields are still correct after sequential updates
+    assert svc.config.field_descriptions == field_descriptions
+    assert svc.config.per_field_prompt_templates == per_field_prompts
+    assert svc.config.per_doctype_prompt_templates == per_doctype_prompts
