@@ -74,3 +74,12 @@ class DocumentTrackingORM(Base):
         DateTime(timezone=True), nullable=True
     )
     embedding_stored: Mapped[bool] = mapped_column(default=False)
+
+
+class SettingsORM(Base):
+    """Single-row table that persists PaperlessIQConfig as JSON."""
+
+    __tablename__ = "settings"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, default=1)
+    config_json: Mapped[str] = mapped_column(Text, nullable=False, default="{}")

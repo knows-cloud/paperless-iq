@@ -154,6 +154,9 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     async with engine.begin() as conn:
         await conn.run_sync(Base.metadata.create_all)
 
+    # Load persisted settings from DB (seeds from env vars on first run)
+    await _settings_svc.load_from_db()
+
     # Initialize all app.state attributes to safe defaults
     app.state.providers = None
     app.state.paperless_client = None
@@ -662,7 +665,7 @@ async def update_settings(request: Request, body: dict[str, Any] = Body(...)) ->
     old_automation = _settings_svc.config.automation_enabled
 
     try:
-        _settings_svc.update(body)
+        await _settings_svc.update_and_persist(body)
     except ValueError as exc:
         raise HTTPException(
             status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
@@ -751,6 +754,7 @@ async def export_config() -> dict:
 async def import_config(body: dict[str, Any] = Body(...)) -> dict:
     """Import configuration, skipping unknown/invalid fields."""
     summary = _settings_svc.import_config(body)
+    await _settings_svc._persist()
     return summary
 
 
