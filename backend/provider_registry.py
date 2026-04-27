@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import logging
 import os
 
 from backend.models import PaperlessIQConfig
@@ -14,6 +15,8 @@ from backend.providers import (
     OpenAIProvider,
 )
 from backend.providers.encryption import encrypt_credential
+
+logger = logging.getLogger(__name__)
 
 
 def build_providers(
@@ -31,6 +34,7 @@ def build_providers(
 
     if provider_name == "ollama":
         base_url = config.ollama_url or os.environ.get("OLLAMA_URL", "http://localhost:11434")
+        logger.info("Building Ollama provider with base_url=%s, model=%s", base_url, model)
         provider = OllamaProvider(base_url=base_url, model=model)
 
     elif provider_name in ("anthropic", "openai"):
