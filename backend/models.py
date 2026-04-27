@@ -83,6 +83,7 @@ class PaperlessIQConfig(BaseModel):
 
     # Analysis defaults
     default_analysis_mode: Literal["ocr", "full_document"] = "ocr"
+    context_window_chars: int = 128_000  # max chars sent to LLM (truncates if exceeded)
     per_doctype_analysis_mode: dict[int, Literal["ocr", "full_document"]] = {}
 
     # Prompt templates
