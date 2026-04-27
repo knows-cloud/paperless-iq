@@ -348,7 +348,7 @@ async def test_property_26_audit_log_failure_isolation(
 
         paperless_called = False
 
-        async def _track_patch(doc_id: int, payload: dict[str, Any]) -> None:
+        async def _track_patch(doc_id: int, payload: dict[str, Any], **kwargs: Any) -> None:
             nonlocal paperless_called
             paperless_called = True
 

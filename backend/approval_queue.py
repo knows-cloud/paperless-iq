@@ -131,6 +131,8 @@ class ApprovalQueueService:
         suggestion_id: UUID,
         edits: dict | None = None,
         change_source: str = "human",
+        merge_tags: bool = False,
+        create_missing: bool = False,
     ) -> MetadataSuggestion:
         """
         Approve a suggestion, optionally applying field edits.
@@ -169,7 +171,10 @@ class ApprovalQueueService:
             patch_payload[field] = getattr(row, field)
 
         # Write to Paperless NGX
-        await self._patch_paperless(row.document_id, patch_payload)
+        await self._patch_paperless(
+            row.document_id, patch_payload,
+            merge_tags=merge_tags, create_missing=create_missing,
+        )
 
         # Write audit log entries — one per changed field
         now = datetime.now(timezone.utc)
@@ -294,14 +299,19 @@ class ApprovalQueueService:
     # Internal: Paperless NGX write
     # ------------------------------------------------------------------
 
-    async def _patch_paperless(self, document_id: int, payload: dict[str, Any]) -> None:
+    async def _patch_paperless(
+        self,
+        document_id: int,
+        payload: dict[str, Any],
+        merge_tags: bool = False,
+        create_missing: bool = False,
+    ) -> None:
         """
         PATCH document metadata to Paperless NGX.
 
-        Resolves entity names (tags, correspondent, document_type) to Paperless
-        NGX IDs before sending the PATCH request.
-
-        Validates: Requirements 7.6
+        Resolves entity names to IDs. When merge_tags is True, fetches the
+        document's existing tags and merges them with the suggested ones.
+        When create_missing is True, creates entities that don't exist yet.
         """
         if not PAPERLESS_URL or not PAPERLESS_TOKEN:
             logger.warning(
@@ -312,44 +322,43 @@ class ApprovalQueueService:
 
         headers = {"Authorization": f"Token {PAPERLESS_TOKEN}"}
         base = PAPERLESS_URL.rstrip("/")
-
-        # Resolve names → IDs for Paperless NGX
         patch: dict[str, Any] = {}
 
         async with httpx.AsyncClient(headers=headers, timeout=30) as client:
-            # Title — string, pass directly
             if payload.get("title"):
                 patch["title"] = payload["title"]
 
-            # Tags — list of name strings → list of tag IDs
+            # Tags — resolve names to IDs, optionally merge with existing
             if payload.get("tags"):
-                tag_ids = await self._resolve_entity_ids(
-                    client, base, "tags", payload["tags"]
+                tag_ids = await self._resolve_or_create_entity_ids(
+                    client, base, "tags", payload["tags"], create_missing
                 )
+                if merge_tags:
+                    existing = await self._get_document_tag_ids(client, base, document_id)
+                    merged = list(dict.fromkeys(existing + tag_ids))  # preserve order, dedupe
+                    tag_ids = merged
                 if tag_ids:
                     patch["tags"] = tag_ids
 
-            # Correspondent — name string → ID
+            # Correspondent
             if payload.get("correspondent"):
-                corr_ids = await self._resolve_entity_ids(
-                    client, base, "correspondents", [payload["correspondent"]]
+                corr_ids = await self._resolve_or_create_entity_ids(
+                    client, base, "correspondents", [payload["correspondent"]], create_missing
                 )
                 if corr_ids:
                     patch["correspondent"] = corr_ids[0]
 
-            # Document type — name string → ID
+            # Document type
             if payload.get("document_type"):
-                dt_ids = await self._resolve_entity_ids(
-                    client, base, "document_types", [payload["document_type"]]
+                dt_ids = await self._resolve_or_create_entity_ids(
+                    client, base, "document_types", [payload["document_type"]], create_missing
                 )
                 if dt_ids:
                     patch["document_type"] = dt_ids[0]
 
-            # Storage path — string, pass directly
             if payload.get("storage_path"):
                 patch["storage_path"] = payload["storage_path"]
 
-            # Custom fields — pass as-is (Paperless NGX handles these by name)
             if payload.get("custom_fields"):
                 patch["custom_fields"] = payload["custom_fields"]
 
@@ -363,19 +372,30 @@ class ApprovalQueueService:
                 resp.raise_for_status()
                 logger.info("Patched Paperless NGX document %d.", document_id)
             except httpx.HTTPError as exc:
-                logger.error(
-                    "Failed to patch Paperless NGX document %d: %s", document_id, exc
-                )
+                logger.error("Failed to patch Paperless NGX document %d: %s", document_id, exc)
                 raise
 
-    async def _resolve_entity_ids(
+    async def _get_document_tag_ids(
+        self, client: httpx.AsyncClient, base_url: str, document_id: int
+    ) -> list[int]:
+        """Fetch the current tag IDs for a document from Paperless NGX."""
+        try:
+            resp = await client.get(f"{base_url}/api/documents/{document_id}/")
+            resp.raise_for_status()
+            return resp.json().get("tags", [])
+        except Exception:
+            logger.warning("Could not fetch existing tags for document %d", document_id)
+            return []
+
+    async def _resolve_or_create_entity_ids(
         self,
         client: httpx.AsyncClient,
         base_url: str,
         entity_type: str,
         names: list[str],
+        create_missing: bool = False,
     ) -> list[int]:
-        """Resolve entity names to Paperless NGX IDs by fetching the entity list."""
+        """Resolve entity names to IDs. Optionally create missing entities."""
         ids: list[int] = []
         url: str | None = f"{base_url}/api/{entity_type}/?page_size=100"
         name_to_id: dict[str, int] = {}
@@ -393,8 +413,18 @@ class ApprovalQueueService:
             eid = name_to_id.get(name.lower())
             if eid is not None:
                 ids.append(eid)
+            elif create_missing:
+                try:
+                    resp = await client.post(
+                        f"{base_url}/api/{entity_type}/", json={"name": name}
+                    )
+                    resp.raise_for_status()
+                    new_id = resp.json().get("id")
+                    if new_id:
+                        ids.append(new_id)
+                        logger.info("Created %s %r with ID %d", entity_type, name, new_id)
+                except Exception:
+                    logger.warning("Failed to create %s %r", entity_type, name, exc_info=True)
             else:
-                logger.warning(
-                    "Could not resolve %s name %r to an ID; skipping.", entity_type, name
-                )
+                logger.warning("Could not resolve %s name %r to an ID; skipping.", entity_type, name)
         return ids

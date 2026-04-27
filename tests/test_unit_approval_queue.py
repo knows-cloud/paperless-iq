@@ -168,7 +168,7 @@ async def test_approve_with_edits_writes_edited_values(session: AsyncSession) ->
 
     captured: dict[str, Any] = {}
 
-    async def _capture(document_id: int, payload: dict[str, Any]) -> None:
+    async def _capture(document_id: int, payload: dict[str, Any], **kwargs: Any) -> None:
         captured.update(payload)
 
     with patch.object(svc, "_patch_paperless", side_effect=_capture):
@@ -259,7 +259,7 @@ async def test_approve_without_edits_writes_original_values(session: AsyncSessio
 
     captured: dict[str, Any] = {}
 
-    async def _capture(document_id: int, payload: dict[str, Any]) -> None:
+    async def _capture(document_id: int, payload: dict[str, Any], **kwargs: Any) -> None:
         captured.update(payload)
 
     with patch.object(svc, "_patch_paperless", side_effect=_capture):
