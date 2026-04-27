@@ -27,6 +27,7 @@ export default function SettingsPage() {
   const [perFieldPrompts, setPerFieldPrompts] = useState<Record<string, string>>({});
   const [perDoctypePrompts, setPerDoctypePrompts] = useState<Record<string, string>>({});
   const [showAdvancedTemplates, setShowAdvancedTemplates] = useState(false);
+  const [selectedProvider, setSelectedProvider] = useState("");
   const tagDropdownRef = useRef<HTMLDivElement>(null);
 
   const s = data as Record<string, unknown> | undefined;
@@ -42,6 +43,7 @@ export default function SettingsPage() {
       setSelectedCustomFields(cfIds);
       // Initialize inbox tag ID from settings
       setInboxTagId(s.inbox_tag_id ? String(s.inbox_tag_id) : "");
+      setSelectedProvider(String(s.llm_provider ?? "ollama"));
       // Initialize per-field and per-doctype prompt templates
       setPerFieldPrompts((s.per_field_prompt_templates as Record<string, string>) ?? {});
       setPerDoctypePrompts(
@@ -99,6 +101,12 @@ export default function SettingsPage() {
     }
     if (!values.llm_credentials || values.llm_credentials === "__REDACTED__") {
       delete values.llm_credentials;
+    }
+    // Normalize ollama_url: keep it only when provider is ollama, default if empty
+    if (values.llm_provider !== "ollama") {
+      delete values.ollama_url;
+    } else if (!values.ollama_url || String(values.ollama_url).trim() === "") {
+      values.ollama_url = "http://localhost:11434";
     }
 
     // Collect field descriptions (remove form keys, set as structured object)
@@ -158,7 +166,8 @@ export default function SettingsPage() {
           <h3>LLM Provider</h3>
           <div className="form-group">
             <label htmlFor="llm_provider">Provider</label>
-            <select id="llm_provider" name="llm_provider" defaultValue={String(s.llm_provider)}>
+            <select id="llm_provider" name="llm_provider" defaultValue={String(s.llm_provider)}
+              onChange={e => setSelectedProvider(e.target.value)}>
               <option value="bedrock">Amazon Bedrock</option>
               <option value="anthropic">Anthropic</option>
               <option value="ollama">Ollama</option>
@@ -167,13 +176,23 @@ export default function SettingsPage() {
           </div>
           <div className="form-group">
             <label htmlFor="llm_model">Model</label>
-            <input id="llm_model" name="llm_model" defaultValue={String(s.llm_model)} placeholder="e.g. llama3, claude-3-haiku, gpt-4o-mini" />
+            <input id="llm_model" name="llm_model" defaultValue={String(s.llm_model)}
+              placeholder={selectedProvider === "ollama" ? "e.g. llama3, mistral, gemma2" : "e.g. claude-3-haiku, gpt-4o-mini"} />
           </div>
-          <div className="form-group">
-            <label htmlFor="llm_credentials">API Key / Credentials</label>
-            <input id="llm_credentials" name="llm_credentials" type="password" defaultValue="" placeholder="Leave blank to keep current" />
-            <small>Encrypted at rest. Leave empty to keep existing credentials.</small>
-          </div>
+          {selectedProvider === "ollama" ? (
+            <div className="form-group">
+              <label htmlFor="ollama_url">Ollama Server URL</label>
+              <input id="ollama_url" name="ollama_url" defaultValue={String(s.ollama_url ?? "http://localhost:11434")}
+                placeholder="http://localhost:11434" />
+              <small>The URL of your Ollama instance. No API key needed.</small>
+            </div>
+          ) : (
+            <div className="form-group">
+              <label htmlFor="llm_credentials">API Key / Credentials</label>
+              <input id="llm_credentials" name="llm_credentials" type="password" defaultValue="" placeholder="Leave blank to keep current" />
+              <small>Encrypted at rest. Leave empty to keep existing credentials.</small>
+            </div>
+          )}
         </div>
 
         {/* ── System Prompt ── */}
