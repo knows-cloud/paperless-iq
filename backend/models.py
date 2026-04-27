@@ -75,6 +75,7 @@ class PaperlessIQConfig(BaseModel):
     llm_provider: Literal["bedrock", "anthropic", "ollama", "openai"]
     llm_model: str
     llm_credentials: EncryptedBlob = b""  # never returned to UI
+    ollama_url: str = "http://localhost:11434"  # Ollama server URL (only used when provider is ollama)
 
     # Vector store
     vector_store_backend: Literal["local", "bedrock_kb"] = "local"

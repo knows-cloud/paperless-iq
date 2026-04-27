@@ -30,7 +30,7 @@ def build_providers(
     raw_creds = config.llm_credentials
 
     if provider_name == "ollama":
-        base_url = os.environ.get("OLLAMA_URL", "http://localhost:11434")
+        base_url = config.ollama_url or os.environ.get("OLLAMA_URL", "http://localhost:11434")
         provider = OllamaProvider(base_url=base_url, model=model)
 
     elif provider_name in ("anthropic", "openai"):
