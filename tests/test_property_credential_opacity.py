@@ -12,7 +12,7 @@ from __future__ import annotations
 
 import json
 
-from hypothesis import given, settings, HealthCheck
+from hypothesis import given, settings, HealthCheck, assume
 from hypothesis import strategies as st
 
 from backend.providers.encryption import encrypt_credential
@@ -123,6 +123,14 @@ def test_property_7_credential_opacity(
     """
     response = build_settings_response(plaintext_credential, secret_key)
     body_text = response_body_as_text(response)
+
+    # Build the response text WITHOUT the credential placeholder to check for
+    # false positives: if the credential string happens to be a substring of a
+    # field name (e.g. "correspo" ⊂ "correspondent_creation_policy"), skip it.
+    non_cred_response = {k: v for k, v in response.items()
+                         if not k.startswith("_") and k != "llm_credentials"}
+    non_cred_text = json.dumps(non_cred_response)
+    assume(plaintext_credential not in non_cred_text)
 
     # The plaintext credential must NOT appear in the response body
     assert plaintext_credential not in body_text, (
