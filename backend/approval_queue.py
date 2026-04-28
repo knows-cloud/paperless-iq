@@ -365,7 +365,7 @@ class ApprovalQueueService:
 
             if payload.get("custom_fields"):
                 cf_list = await self._resolve_custom_fields(
-                    client, base, payload["custom_fields"]
+                    client, base, payload["custom_fields"], create_missing
                 )
                 if cf_list:
                     patch["custom_fields"] = cf_list
@@ -442,9 +442,13 @@ class ApprovalQueueService:
         client: httpx.AsyncClient,
         base_url: str,
         custom_fields: dict[str, Any],
+        create_missing: bool = False,
     ) -> list[dict[str, Any]]:
-        """Convert a {name: value} dict to Paperless NGX [{field: id, value: val}] format."""
-        # Fetch custom field definitions to map names → IDs
+        """Convert a {name: value} dict to Paperless NGX [{field: id, value: val}] format.
+
+        When create_missing is True, creates custom field definitions that don't exist yet.
+        New fields are created as 'string' type by default.
+        """
         url: str | None = f"{base_url}/api/custom_fields/?page_size=100"
         name_to_id: dict[str, int] = {}
         while url:
@@ -461,6 +465,19 @@ class ApprovalQueueService:
             cf_id = name_to_id.get(name.lower())
             if cf_id is not None:
                 result.append({"field": cf_id, "value": value})
+            elif create_missing:
+                try:
+                    resp = await client.post(
+                        f"{base_url}/api/custom_fields/",
+                        json={"name": name, "data_type": "string"},
+                    )
+                    resp.raise_for_status()
+                    new_id = resp.json().get("id")
+                    if new_id:
+                        result.append({"field": new_id, "value": value})
+                        logger.info("Created custom field %r with ID %d", name, new_id)
+                except Exception:
+                    logger.warning("Failed to create custom field %r", name, exc_info=True)
             else:
                 logger.warning("Could not resolve custom field %r to an ID; skipping.", name)
         return result
