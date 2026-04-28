@@ -236,8 +236,20 @@ export default function SettingsPage() {
             and sends only their tags/correspondents/types to the LLM — plus a frequency-based fallback set.
             This dramatically reduces prompt size and improves suggestion accuracy.
           </p>
+          <p style={{ fontSize: "0.85rem", color: "#555", marginBottom: "1rem", background: "#f0f4ff", padding: "0.75rem", borderRadius: "4px", border: "1px solid #d0d8f0" }}>
+            Embeddings are generated using the Ollama server configured above. Make sure the embedding model
+            is pulled on your Ollama instance (<code>ollama pull nomic-embed-text</code>). This is independent
+            of the LLM used for analysis — embedding models are small and fast.
+          </p>
           <div className="form-group">
             <label><input type="checkbox" name="smart_entity_selection" defaultChecked={Boolean(s.smart_entity_selection ?? true)} /> Enable smart entity selection</label>
+          </div>
+          <div className="form-group">
+            <label htmlFor="embedding_model">Embedding model (Ollama)</label>
+            <input id="embedding_model" name="embedding_model"
+              defaultValue={String(s.embedding_model ?? "nomic-embed-text")}
+              placeholder="nomic-embed-text" />
+            <small>Ollama model used for document embeddings. Must support the embed API. Runs on the same Ollama server as your LLM.</small>
           </div>
           <div className="form-group">
             <label htmlFor="similar_docs_count">Similar documents to consider</label>
@@ -250,13 +262,6 @@ export default function SettingsPage() {
             <input id="frequency_fallback_count" name="frequency_fallback_count" type="number" min="0" max="100"
               defaultValue={String(s.frequency_fallback_count ?? 20)} />
             <small>Top-N most common entities added as fallback (handles cold start and rare categories).</small>
-          </div>
-          <div className="form-group">
-            <label htmlFor="embedding_model">Embedding model</label>
-            <input id="embedding_model" name="embedding_model"
-              defaultValue={String(s.embedding_model ?? "nomic-embed-text")}
-              placeholder="nomic-embed-text" />
-            <small>Ollama model used for document embeddings. Must support the embed API.</small>
           </div>
         </div>
 
