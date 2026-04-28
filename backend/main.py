@@ -553,19 +553,109 @@ async def query_audit_log(
 
 @app.get("/api/search", tags=["search"])
 async def semantic_search(
+    request: Request,
     q: str = Query(..., min_length=1, description="Natural language query"),
     top_n: int = Query(default=5, ge=1, le=50),
 ) -> dict:
-    """Search the document archive using semantic similarity.
+    """Search the document archive using semantic similarity."""
+    vs = getattr(request.app.state, "vector_store", None)
+    if vs is None:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="Vector store not configured. Enable smart entity selection in settings.",
+        )
+    try:
+        results = await vs.query(q, top_n)
+        return {
+            "results": [r.model_dump(mode="json") for r in results],
+            "query": q,
+            "top_n": top_n,
+        }
+    except Exception as exc:
+        logger.exception("Semantic search failed")
+        raise HTTPException(status_code=500, detail=f"Search failed: {exc}")
 
-    Requires a vector store to be configured. Returns an error if not available.
+
+class DiscoverBody(BaseModel):
+    question: str
+    top_n: int = 5
+
+
+@app.post("/api/discover", tags=["search"])
+async def discover(body: DiscoverBody, request: Request) -> dict:
+    """RAG-powered document discovery: find relevant docs and answer the question.
+
+    1. Embeds the question and finds similar documents via vector store
+    2. Builds a context from the top-N document passages
+    3. Sends the question + context to the LLM for a grounded answer with quotes
     """
-    # TODO: inject vector store from app state once configured
+    vs = getattr(request.app.state, "vector_store", None)
+    if vs is None:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="Vector store not available.",
+        )
+    providers = getattr(request.app.state, "providers", None)
+    if not providers:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="LLM provider not configured.",
+        )
+
+    config = _settings_svc.config
+    provider = providers.get(config.llm_provider)
+    if provider is None:
+        raise HTTPException(status_code=503, detail="LLM provider not available.")
+
+    try:
+        results = await vs.query(body.question, body.top_n)
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=f"Vector search failed: {exc}")
+
+    if not results:
+        return {
+            "answer": "No relevant documents found for your question.",
+            "sources": [],
+            "question": body.question,
+        }
+
+    # Build context from retrieved passages
+    context_parts: list[str] = []
+    sources: list[dict] = []
+    for i, r in enumerate(results):
+        snippet = r.passage[:2000] if r.passage else ""
+        context_parts.append(
+            f"[Document {i+1}: \"{r.document_title}\" (ID {r.document_id})]\n{snippet}"
+        )
+        sources.append({
+            "document_id": r.document_id,
+            "title": r.document_title,
+            "score": round(r.score, 3),
+            "deeplink_url": r.deeplink_url,
+            "snippet": snippet[:500],
+        })
+
+    context = "\n\n".join(context_parts)
+    prompt = (
+        "You are a helpful document assistant. Answer the user's question based ONLY on the "
+        "provided document excerpts. Include direct quotes from the documents to support your answer. "
+        "Cite documents by their title. If the documents don't contain enough information to answer, "
+        "say so clearly.\n\n"
+        f"Documents:\n{context}\n\n"
+        f"Question: {body.question}\n\n"
+        "Answer (include quotes from the documents):"
+    )
+
+    try:
+        answer = await provider.complete(prompt, 2048)
+    except Exception as exc:
+        logger.exception("Discovery LLM call failed")
+        raise HTTPException(status_code=500, detail=f"LLM call failed: {exc}")
+
     return {
-        "detail": "Vector store not configured. Configure a vector store backend in settings.",
-        "results": [],
-        "query": q,
-        "top_n": top_n,
+        "answer": answer,
+        "sources": sources,
+        "question": body.question,
     }
 
 
