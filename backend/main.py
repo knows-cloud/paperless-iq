@@ -72,7 +72,12 @@ async def _inbox_polling_loop(
 
                 async def submit_for_analysis(doc_id: int) -> Any:
                     try:
-                        await manual_svc.analyze(doc_id)
+                        suggestion = await manual_svc.analyze(doc_id)
+                        # Enqueue the suggestion into the approval queue
+                        from backend.approval_queue import ApprovalQueueService
+                        queue_svc = ApprovalQueueService(session)
+                        await queue_svc.enqueue(suggestion)
+                        logger.info("Enqueued suggestion for document %d.", doc_id)
                     except Exception:
                         logger.exception("Inbox analysis failed for doc %d", doc_id)
 
@@ -124,7 +129,11 @@ async def _scheduler_loop(
 
                 async def submit_for_analysis(doc_id: int) -> Any:
                     try:
-                        await manual_svc.analyze(doc_id)
+                        suggestion = await manual_svc.analyze(doc_id)
+                        from backend.approval_queue import ApprovalQueueService
+                        queue_svc = ApprovalQueueService(session)
+                        await queue_svc.enqueue(suggestion)
+                        logger.info("Scheduler enqueued suggestion for document %d.", doc_id)
                     except Exception:
                         logger.exception("Scheduler analysis failed for doc %d", doc_id)
 
@@ -205,7 +214,7 @@ async def _background_index(
                         "document_type": dt_id_to_name.get(doc.get("document_type") or 0, ""),
                     }
                     try:
-                        await vector_store.upsert(doc_id, content[:8000], meta)
+                        await vector_store.upsert(doc_id, content, meta)
                         indexed += 1
                     except Exception:
                         logger.debug("Failed to index document %d", doc_id, exc_info=True)
@@ -469,7 +478,7 @@ async def approve_suggestion(
                     "correspondent": result.correspondent or "",
                     "document_type": result.document_type or "",
                 }
-                await vs.upsert(result.document_id, content[:8000], meta)
+                await vs.upsert(result.document_id, content, meta)
         except Exception:
             logger.debug("Post-approve indexing failed for doc %d", result.document_id, exc_info=True)
 
@@ -608,6 +617,9 @@ async def discover(body: DiscoverBody, request: Request) -> dict:
         raise HTTPException(status_code=503, detail="LLM provider not available.")
 
     try:
+        # Get raw chunks for richer context (multiple chunks per document possible)
+        chunks = await vs.query_chunks(body.question, body.top_n * 3)
+        # Also get grouped results for the source list
         results = await vs.query(body.question, body.top_n)
     except Exception as exc:
         raise HTTPException(status_code=500, detail=f"Vector search failed: {exc}")
@@ -619,20 +631,24 @@ async def discover(body: DiscoverBody, request: Request) -> dict:
             "question": body.question,
         }
 
-    # Build context from retrieved passages
+    # Build context from the best chunks (may include multiple from same doc)
     context_parts: list[str] = []
+    for i, chunk in enumerate(chunks[:body.top_n * 2]):
+        passage = chunk["passage"] or ""
+        if passage:
+            context_parts.append(
+                f"[Document: \"{chunk['title']}\" (ID {chunk['document_id']})]\n{passage}"
+            )
+
+    # Build source list (grouped by document)
     sources: list[dict] = []
-    for i, r in enumerate(results):
-        snippet = r.passage[:2000] if r.passage else ""
-        context_parts.append(
-            f"[Document {i+1}: \"{r.document_title}\" (ID {r.document_id})]\n{snippet}"
-        )
+    for r in results:
         sources.append({
             "document_id": r.document_id,
             "title": r.document_title,
             "score": round(r.score, 3),
             "deeplink_url": r.deeplink_url,
-            "snippet": snippet[:500],
+            "snippet": (r.passage or "")[:500],
         })
 
     context = "\n\n".join(context_parts)

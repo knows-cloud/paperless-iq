@@ -18,7 +18,7 @@ from hypothesis import HealthCheck, given, settings
 from hypothesis import strategies as st
 
 from backend.models import SearchResult
-from backend.vector_store import ChromaVectorStore
+from backend.vector_store import ChromaVectorStore, DEFAULT_CHUNK_SIZE, DEFAULT_CHUNK_OVERLAP
 
 # ---------------------------------------------------------------------------
 # Deterministic mock LLM provider
@@ -69,6 +69,8 @@ def _make_store() -> ChromaVectorStore:
     provider = _MockLLMProvider()
     store = ChromaVectorStore.__new__(ChromaVectorStore)
     store._llm = provider
+    store._chunk_size = DEFAULT_CHUNK_SIZE
+    store._chunk_overlap = DEFAULT_CHUNK_OVERLAP
     store._client = chromadb.EphemeralClient()
     store._collection = store._client.get_or_create_collection(
         name="test",
