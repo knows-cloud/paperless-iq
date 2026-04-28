@@ -63,7 +63,12 @@ export const api = {
   },
 
   search: (q: string, topN = 5) =>
-    request<{ results: unknown[] }>(`/search?q=${encodeURIComponent(q)}&top_n=${topN}`),
+    request<{ results: unknown[]; query: string }>(`/search?q=${encodeURIComponent(q)}&top_n=${topN}`),
+
+  discover: (question: string, topN = 5) =>
+    request<{ answer: string; sources: Array<{ document_id: number; title: string; score: number; deeplink_url: string; snippet: string }>; question: string }>(
+      "/discover", { method: "POST", body: JSON.stringify({ question, top_n: topN }) }
+    ),
 
   analyze: (documentId: number, overrides?: Record<string, unknown>) =>
     request<MetadataSuggestionResponse>("/analyze", { method: "POST", body: JSON.stringify({ document_id: documentId, ...overrides }) }),
