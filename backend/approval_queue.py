@@ -357,10 +357,18 @@ class ApprovalQueueService:
                     patch["document_type"] = dt_ids[0]
 
             if payload.get("storage_path"):
-                patch["storage_path"] = payload["storage_path"]
+                sp_ids = await self._resolve_or_create_entity_ids(
+                    client, base, "storage_paths", [payload["storage_path"]], create_missing
+                )
+                if sp_ids:
+                    patch["storage_path"] = sp_ids[0]
 
             if payload.get("custom_fields"):
-                patch["custom_fields"] = payload["custom_fields"]
+                cf_list = await self._resolve_custom_fields(
+                    client, base, payload["custom_fields"]
+                )
+                if cf_list:
+                    patch["custom_fields"] = cf_list
 
             if not patch:
                 logger.info("No fields to patch for document %d.", document_id)
@@ -428,3 +436,31 @@ class ApprovalQueueService:
             else:
                 logger.warning("Could not resolve %s name %r to an ID; skipping.", entity_type, name)
         return ids
+
+    async def _resolve_custom_fields(
+        self,
+        client: httpx.AsyncClient,
+        base_url: str,
+        custom_fields: dict[str, Any],
+    ) -> list[dict[str, Any]]:
+        """Convert a {name: value} dict to Paperless NGX [{field: id, value: val}] format."""
+        # Fetch custom field definitions to map names → IDs
+        url: str | None = f"{base_url}/api/custom_fields/?page_size=100"
+        name_to_id: dict[str, int] = {}
+        while url:
+            resp = await client.get(url)
+            if resp.status_code != 200:
+                break
+            data = resp.json()
+            for item in data.get("results", []):
+                name_to_id[item.get("name", "").lower()] = item["id"]
+            url = data.get("next")
+
+        result: list[dict[str, Any]] = []
+        for name, value in custom_fields.items():
+            cf_id = name_to_id.get(name.lower())
+            if cf_id is not None:
+                result.append({"field": cf_id, "value": value})
+            else:
+                logger.warning("Could not resolve custom field %r to an ID; skipping.", name)
+        return result
