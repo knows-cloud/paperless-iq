@@ -342,6 +342,7 @@ class DocumentAnalyzer:
         provider_name: str,
         context_window_chars: int = DEFAULT_CONTEXT_WINDOW_CHARS,
         max_tokens: int = 1024,
+        vector_store: Any | None = None,
     ) -> None:
         self._provider = provider
         self._paperless = paperless_client
@@ -350,35 +351,77 @@ class DocumentAnalyzer:
         self._context_window_chars = context_window_chars
         self._max_tokens = max_tokens
         self._custom_field_defs: list[dict[str, Any]] = []
+        self._vector_store = vector_store
 
-    async def _fetch_entity_context(self) -> str:
+    async def _fetch_entity_context(self, document_content: str = "") -> str:
         """
-        Fetch entity lists from Paperless NGX and build a context block for the LLM prompt.
+        Fetch entity lists for the LLM prompt.
 
-        Fetches tags, correspondents, document types, and custom field definitions.
-        Stores custom field definitions on ``self._custom_field_defs`` for later use
-        (e.g., resolving ``cf:<id>`` keys in field descriptions).
+        When smart_entity_selection is enabled and a vector store is available,
+        queries similar documents to build a focused entity set (hybrid approach:
+        entities from similar docs + top-N most frequent as fallback).
 
-        On any failure, logs a warning and returns an empty string so analysis
-        can proceed without entity context (Req 12.6).
+        Otherwise falls back to sending all entities.
 
-        Validates: Requirements 12.1, 12.2, 12.3, 12.4, 12.5, 12.6
+        On any failure, logs a warning and returns an empty string.
         """
         try:
-            tags = await self._paperless.list_entities("tags")
-            correspondents = await self._paperless.list_entities("correspondents")
-            document_types = await self._paperless.list_entities("document_types")
             custom_field_defs = await self._paperless.list_custom_field_definitions()
+            self._custom_field_defs = custom_field_defs
+        except Exception:
+            logger.warning("Failed to fetch custom field definitions.", exc_info=True)
+            self._custom_field_defs = []
+            custom_field_defs = []
+
+        try:
+            all_tags = await self._paperless.list_entities("tags")
+            all_correspondents = await self._paperless.list_entities("correspondents")
+            all_document_types = await self._paperless.list_entities("document_types")
         except Exception:
             logger.warning(
                 "Failed to fetch entity lists from Paperless NGX; "
                 "proceeding without entity context.",
                 exc_info=True,
             )
-            self._custom_field_defs: list[dict[str, Any]] = []
             return ""
 
-        self._custom_field_defs = custom_field_defs
+        # Smart entity selection: use vector similarity + frequency fallback
+        if (
+            self._config.smart_entity_selection
+            and self._vector_store is not None
+            and document_content
+            and hasattr(self._vector_store, "query_similar_metadata")
+            and hasattr(self._vector_store, "count")
+            and self._vector_store.count() > 0
+        ):
+            try:
+                similar_meta = await self._vector_store.query_similar_metadata(
+                    document_content,
+                    self._config.similar_docs_count,
+                    exclude_tag_id=self._config.inbox_tag_id,
+                )
+                # Hybrid: entities from similar docs + top-N frequent as fallback
+                fallback_n = self._config.frequency_fallback_count
+                tags = sorted(similar_meta["tags"]) + [
+                    t for t in all_tags[:fallback_n] if t not in similar_meta["tags"]
+                ]
+                correspondents = sorted(similar_meta["correspondents"]) + [
+                    c for c in all_correspondents[:fallback_n] if c not in similar_meta["correspondents"]
+                ]
+                document_types = sorted(similar_meta["document_types"]) + [
+                    d for d in all_document_types[:fallback_n] if d not in similar_meta["document_types"]
+                ]
+                logger.info(
+                    "Smart entity selection: %d tags, %d correspondents, %d doc types "
+                    "(from %d similar docs + frequency fallback)",
+                    len(tags), len(correspondents), len(document_types),
+                    self._config.similar_docs_count,
+                )
+            except Exception:
+                logger.warning("Smart entity selection failed; falling back to full lists.", exc_info=True)
+                tags, correspondents, document_types = all_tags, all_correspondents, all_document_types
+        else:
+            tags, correspondents, document_types = all_tags, all_correspondents, all_document_types
 
         sections: list[str] = []
         if tags:
@@ -388,9 +431,7 @@ class DocumentAnalyzer:
         if document_types:
             sections.append(f"Available document types: {', '.join(document_types)}")
         if custom_field_defs:
-            cf_parts = [
-                f"{cf['name']} ({cf['data_type']})" for cf in custom_field_defs
-            ]
+            cf_parts = [f"{cf['name']} ({cf['data_type']})" for cf in custom_field_defs]
             sections.append(f"Available custom fields: {', '.join(cf_parts)}")
 
         return "\n".join(sections)
@@ -469,7 +510,7 @@ class DocumentAnalyzer:
             content = await self._paperless.get_document_ocr_text(document_id)
 
         # 3. Fetch entity lists for prompt context (Req 12.1–12.6)
-        entity_context = await self._fetch_entity_context()
+        entity_context = await self._fetch_entity_context(document_content=content)
 
         # 4. Build per-field instructions from config (Req 9.1–9.4, 5.5)
         field_instructions = self._build_field_instructions()

@@ -91,11 +91,14 @@ export default function SettingsPage() {
     if (values.poll_interval_seconds) values.poll_interval_seconds = Number(values.poll_interval_seconds);
     if (values.batch_size) values.batch_size = Number(values.batch_size);
     if (values.context_window_chars) values.context_window_chars = Number(values.context_window_chars);
+    if (values.similar_docs_count) values.similar_docs_count = Number(values.similar_docs_count);
+    if (values.frequency_fallback_count !== undefined) values.frequency_fallback_count = Number(values.frequency_fallback_count);
     if (values.inbox_tag_id) values.inbox_tag_id = values.inbox_tag_id ? Number(values.inbox_tag_id) : null;
     else values.inbox_tag_id = null;
 
     values.auto_apply = fd.get("auto_apply") === "on";
     values.automation_enabled = fd.get("automation_enabled") === "on";
+    values.smart_entity_selection = fd.get("smart_entity_selection") === "on";
 
     for (const key of ["schedule_cron", "bedrock_kb_id", "target_language"]) {
       if (values[key] === "") values[key] = null;
@@ -222,6 +225,38 @@ export default function SettingsPage() {
             <input id="context_window_chars" name="context_window_chars" type="number" min="1000"
               defaultValue={String(s.context_window_chars ?? 128000)} />
             <small>Maximum characters of document content sent to the LLM. Increase for models with large context windows. Default: 128,000.</small>
+          </div>
+        </div>
+
+        {/* ── Smart Entity Selection ── */}
+        <div className="card">
+          <h3>Smart Entity Selection</h3>
+          <p style={{ fontSize: "0.85rem", color: "#666", marginBottom: "1rem" }}>
+            When enabled, uses vector similarity to find processed documents similar to the one being analyzed,
+            and sends only their tags/correspondents/types to the LLM — plus a frequency-based fallback set.
+            This dramatically reduces prompt size and improves suggestion accuracy.
+          </p>
+          <div className="form-group">
+            <label><input type="checkbox" name="smart_entity_selection" defaultChecked={Boolean(s.smart_entity_selection ?? true)} /> Enable smart entity selection</label>
+          </div>
+          <div className="form-group">
+            <label htmlFor="similar_docs_count">Similar documents to consider</label>
+            <input id="similar_docs_count" name="similar_docs_count" type="number" min="1" max="50"
+              defaultValue={String(s.similar_docs_count ?? 10)} />
+            <small>How many similar processed documents to use for entity suggestions.</small>
+          </div>
+          <div className="form-group">
+            <label htmlFor="frequency_fallback_count">Frequency fallback count</label>
+            <input id="frequency_fallback_count" name="frequency_fallback_count" type="number" min="0" max="100"
+              defaultValue={String(s.frequency_fallback_count ?? 20)} />
+            <small>Top-N most common entities added as fallback (handles cold start and rare categories).</small>
+          </div>
+          <div className="form-group">
+            <label htmlFor="embedding_model">Embedding model</label>
+            <input id="embedding_model" name="embedding_model"
+              defaultValue={String(s.embedding_model ?? "nomic-embed-text")}
+              placeholder="nomic-embed-text" />
+            <small>Ollama model used for document embeddings. Must support the embed API.</small>
           </div>
         </div>
 

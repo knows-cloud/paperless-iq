@@ -86,6 +86,12 @@ class PaperlessIQConfig(BaseModel):
     context_window_chars: int = 128_000  # max chars sent to LLM (truncates if exceeded)
     per_doctype_analysis_mode: dict[int, Literal["ocr", "full_document"]] = {}
 
+    # Smart entity selection (hybrid: vector similarity + frequency fallback)
+    smart_entity_selection: bool = True
+    similar_docs_count: int = 10  # how many similar docs to use for entity suggestions
+    frequency_fallback_count: int = 20  # top-N most frequent entities as fallback
+    embedding_model: str = "nomic-embed-text"  # model used for embeddings
+
     # Prompt templates
     global_prompt_template: str = (
         "You are a document metadata classifier for a Paperless NGX document management system.\n"
