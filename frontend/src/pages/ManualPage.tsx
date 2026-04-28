@@ -18,6 +18,7 @@ export default function ManualPage() {
   const [approvedDocs, setApprovedDocs] = useState<Set<number>>(new Set());
   const [selectedDocs, setSelectedDocs] = useState<Set<number>>(new Set());
   const [batchRunning, setBatchRunning] = useState(false);
+  const [hideAnalyzed, setHideAnalyzed] = useState(false);
   // Per-document options
   const [mergeTagsMap, setMergeTagsMap] = useState<Record<number, boolean>>({});
   const [createMissingMap, setCreateMissingMap] = useState<Record<number, boolean>>({});
@@ -31,6 +32,7 @@ export default function ManualPage() {
   const tagNames = useMemo(() => new Set((tags.data ?? []).map((t: PaperlessEntity) => t.name.toLowerCase())), [tags.data]);
   const corrNames = useMemo(() => new Set((correspondents.data ?? []).map((c: PaperlessEntity) => c.name.toLowerCase())), [correspondents.data]);
   const dtNames = useMemo(() => new Set((docTypes.data ?? []).map((d: PaperlessEntity) => d.name.toLowerCase())), [docTypes.data]);
+  const cfNames = useMemo(() => new Set((customFields.data ?? []).map((c: PaperlessCustomField) => c.name.toLowerCase())), [customFields.data]);
 
   const buildParams = () => {
     const p: Record<string, string> = { page: String(page), page_size: "20" };
@@ -130,7 +132,7 @@ export default function ManualPage() {
     const isNewTag = (t: string) => !tagNames.has(t.toLowerCase());
     const isNewCorr = suggestion.correspondent ? !corrNames.has(suggestion.correspondent.toLowerCase()) : false;
     const isNewDt = suggestion.document_type ? !dtNames.has(suggestion.document_type.toLowerCase()) : false;
-    const hasAnyNew = suggestion.tags.some(isNewTag) || isNewCorr || isNewDt;
+    const hasAnyNew = suggestion.tags.some(isNewTag) || isNewCorr || isNewDt || customFieldEntries.some(([k]) => !cfNames.has(k.toLowerCase()));
 
     return (
       <div style={{ marginTop: "0.5rem", padding: "0.75rem", background: "#f8f9fa", borderRadius: "6px", border: "1px solid #e0e0e0" }}>
@@ -184,13 +186,21 @@ export default function ManualPage() {
             <input value={suggestion.storage_path ?? ""} style={{ fontSize: "0.85rem" }}
               onChange={e => updateSuggestionField(docId, "storage_path", e.target.value || null)} />
           </div>
-          {customFieldEntries.map(([key, val]) => (
-            <div className="form-group" style={{ marginBottom: "0.4rem" }} key={key}>
-              <label style={{ fontWeight: 600, color: "#555", fontSize: "0.85rem" }}>{key}</label>
-              <input value={String(val ?? "")} style={{ fontSize: "0.85rem" }}
-                onChange={e => updateSuggestionField(docId, "custom_fields", { ...suggestion.custom_fields, [key]: e.target.value || null })} />
-            </div>
-          ))}
+          {customFieldEntries.length > 0 && <label style={{ fontWeight: 600, color: "#555", fontSize: "0.85rem", display: "block", marginTop: "0.25rem" }}>Custom Fields</label>}
+          {customFieldEntries.map(([key, val]) => {
+            const isNewCf = !cfNames.has(key.toLowerCase());
+            return (
+              <div key={key} style={{ display: "flex", gap: "0.5rem", alignItems: "center", marginBottom: "0.25rem" }}>
+                <span style={isNewCf ? { fontWeight: 700, color: "#c62828", minWidth: "120px", fontSize: "0.85rem" } : { minWidth: "120px", color: "#555", fontSize: "0.85rem" }}>
+                  {key}{isNewCf && " (new)"}:
+                </span>
+                <input value={String(val ?? "")} style={{ fontSize: "0.85rem", flex: 1 }}
+                  onChange={e => updateSuggestionField(docId, "custom_fields", { ...suggestion.custom_fields, [key]: e.target.value || null })} />
+                <button type="button" onClick={() => { const cf = { ...suggestion.custom_fields }; delete cf[key]; updateSuggestionField(docId, "custom_fields", cf); }}
+                  style={{ background: "none", border: "none", cursor: "pointer", color: "#888", fontSize: "1rem" }}>×</button>
+              </div>
+            );
+          })}
         </div>
         {isApproved ? (
           <p className="success" style={{ marginTop: "0.5rem" }}>Approved and applied.</p>
@@ -294,7 +304,11 @@ export default function ManualPage() {
           <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", margin: "0.75rem 0 0.5rem" }}>
             <p style={{ margin: 0 }}>{docs.data.total} document{docs.data.total !== 1 ? "s" : ""} found</p>
             {docs.data.items.length > 0 && (
-              <div style={{ display: "flex", gap: "0.5rem", alignItems: "center" }}>
+              <div style={{ display: "flex", gap: "0.75rem", alignItems: "center" }}>
+                <label style={{ fontSize: "0.85rem", cursor: "pointer", display: "flex", alignItems: "center", gap: "0.25rem" }}>
+                  <input type="checkbox" checked={hideAnalyzed} onChange={e => setHideAnalyzed(e.target.checked)} />
+                  Hide analyzed
+                </label>
                 <label style={{ fontSize: "0.85rem", cursor: "pointer", display: "flex", alignItems: "center", gap: "0.25rem" }}>
                   <input type="checkbox" checked={docs.data.items.length > 0 && docs.data.items.every((d: DocumentItem) => selectedDocs.has(d.id))} onChange={toggleSelectAll} />
                   Select all
@@ -311,6 +325,8 @@ export default function ManualPage() {
             const error = analysisErrors[doc.id];
             const isDismissed = dismissed.has(doc.id);
             const isSelected = selectedDocs.has(doc.id);
+            const wasAnalyzed = !!result || approvedDocs.has(doc.id) || isDismissed;
+            if (hideAnalyzed && wasAnalyzed) return null;
             return (
               <div key={doc.id} className="card" style={{ marginBottom: "0.5rem" }}>
                 <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start" }}>
