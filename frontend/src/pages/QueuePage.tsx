@@ -114,13 +114,13 @@ export default function QueuePage() {
               </div>
               <div className="form-group" style={{ marginBottom: "0.4rem" }}>
                 <label style={{ fontWeight: 600, color: "#555", fontSize: "0.85rem" }}>Correspondent</label>
-                <input value={item.correspondent ?? ""} style={isNewCorr ? { fontSize: "0.85rem", ...newInputStyle } : { fontSize: "0.85rem" }}
+                <input value={item.correspondent ?? ""} style={isNewCorr ? newInputStyle : { fontSize: "0.85rem" }}
                   onChange={e => updateField(id, raw, "correspondent", e.target.value || null)} />
                 {isNewCorr && <small style={{ color: "#c62828" }}>New — will be created if "Create missing" is checked</small>}
               </div>
               <div className="form-group" style={{ marginBottom: "0.4rem" }}>
                 <label style={{ fontWeight: 600, color: "#555", fontSize: "0.85rem" }}>Document Type</label>
-                <input value={item.document_type ?? ""} style={isNewDt ? { fontSize: "0.85rem", ...newInputStyle } : { fontSize: "0.85rem" }}
+                <input value={item.document_type ?? ""} style={isNewDt ? newInputStyle : { fontSize: "0.85rem" }}
                   onChange={e => updateField(id, raw, "document_type", e.target.value || null)} />
                 {isNewDt && <small style={{ color: "#c62828" }}>New — will be created if "Create missing" is checked</small>}
               </div>
