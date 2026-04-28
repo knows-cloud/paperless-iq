@@ -29,6 +29,7 @@ from backend.models import MetadataSuggestion
 from backend.provider_registry import build_providers
 from backend.rate_limiter import RateLimiter
 from backend.settings_service import SettingsService
+from backend.vector_store import ChromaVectorStore
 
 logger = logging.getLogger(__name__)
 
@@ -142,6 +143,81 @@ async def _scheduler_loop(
         await asyncio.sleep(poll_interval)
 
 
+async def _background_index(
+    paperless_client: PaperlessNGXClient,
+    vector_store: ChromaVectorStore,
+    config: Any,
+) -> None:
+    """Index processed documents into the vector store in the background.
+
+    Fetches all documents from Paperless NGX (excluding the inbox tag),
+    and upserts those not already in the store.
+    """
+    import httpx
+
+    try:
+        existing_count = vector_store.count()
+        logger.info("Vector store has %d documents. Starting background index...", existing_count)
+
+        base = paperless_client._base_url
+        headers = paperless_client._headers
+        inbox_tag_id = config.inbox_tag_id
+        indexed = 0
+
+        # Fetch entity name lookups for metadata enrichment
+        tag_id_to_name: dict[int, str] = {}
+        corr_id_to_name: dict[int, str] = {}
+        dt_id_to_name: dict[int, str] = {}
+
+        async with httpx.AsyncClient(headers=headers, timeout=30) as lookup_client:
+            for entity, lookup in [("tags", tag_id_to_name), ("correspondents", corr_id_to_name), ("document_types", dt_id_to_name)]:
+                eurl: str | None = f"{base}/api/{entity}/?page_size=100"
+                while eurl:
+                    r = await lookup_client.get(eurl)
+                    if r.status_code != 200:
+                        break
+                    d = r.json()
+                    for item in d.get("results", []):
+                        lookup[item["id"]] = item.get("name", "")
+                    eurl = d.get("next")
+
+        url: str | None = f"{base}/api/documents/?page_size=50&ordering=-added"
+        async with httpx.AsyncClient(headers=headers, timeout=60) as client:
+            while url:
+                resp = await client.get(url)
+                if resp.status_code != 200:
+                    break
+                data = resp.json()
+                for doc in data.get("results", []):
+                    doc_id = doc["id"]
+                    doc_tags = doc.get("tags", [])
+                    # Skip docs with the inbox tag (unprocessed)
+                    if inbox_tag_id and inbox_tag_id in doc_tags:
+                        continue
+                    content = doc.get("content", "")
+                    if not content:
+                        continue
+                    # Resolve tag/correspondent/doctype names for metadata
+                    meta = {
+                        "title": doc.get("title", ""),
+                        "tags": [tag_id_to_name.get(tid, "") for tid in doc_tags if tag_id_to_name.get(tid)],
+                        "correspondent": corr_id_to_name.get(doc.get("correspondent") or 0, ""),
+                        "document_type": dt_id_to_name.get(doc.get("document_type") or 0, ""),
+                    }
+                    try:
+                        await vector_store.upsert(doc_id, content[:8000], meta)
+                        indexed += 1
+                    except Exception:
+                        logger.debug("Failed to index document %d", doc_id, exc_info=True)
+                url = data.get("next")
+                # Yield to event loop periodically
+                await asyncio.sleep(0.1)
+
+        logger.info("Background indexing complete: %d documents indexed.", indexed)
+    except Exception:
+        logger.warning("Background indexing failed.", exc_info=True)
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     """Application lifespan: startup and shutdown hooks."""
@@ -164,6 +240,7 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     app.state.rate_limiter = RateLimiter()
     app.state.inbox_task = None
     app.state.scheduler_task = None
+    app.state.vector_store = None
 
     config = _settings_svc.config
     secret_key = os.environ.get("SECRET_KEY", "")
@@ -195,13 +272,33 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
 
     # Create ManualAnalysisService if both providers and client are available
     if providers and paperless_client:
+        # Initialize vector store for smart entity selection
+        try:
+            from backend.providers.ollama_provider import OllamaProvider as _OllamaEmbed
+            embed_model = config.embedding_model or "nomic-embed-text"
+            ollama_url = config.ollama_url or os.environ.get("OLLAMA_URL", "http://localhost:11434")
+            embed_provider = _OllamaEmbed(base_url=ollama_url, model=embed_model)
+            vector_store = ChromaVectorStore(
+                llm_provider=embed_provider,
+                persist_directory="/data/chroma",
+            )
+            app.state.vector_store = vector_store
+            logger.info("Vector store initialized (ChromaDB, embedding model: %s).", embed_model)
+        except Exception:
+            logger.warning("Could not initialize vector store — smart entity selection disabled.", exc_info=True)
+            vector_store = None
+
         try:
             app.state.manual_analysis_svc = ManualAnalysisService(
-                config, providers, paperless_client
+                config, providers, paperless_client, vector_store=vector_store
             )
             logger.info("ManualAnalysisService initialized.")
         except Exception:
             logger.warning("Could not create ManualAnalysisService.", exc_info=True)
+
+        # Start background indexing of existing processed documents
+        if vector_store and paperless_client:
+            asyncio.create_task(_background_index(paperless_client, vector_store, config))
 
     # Start automation tasks if enabled
     if config.automation_enabled:
@@ -344,12 +441,13 @@ async def list_queue(
 @app.post("/api/queue/{suggestion_id}/approve", tags=["queue"], response_model=MetadataSuggestion)
 async def approve_suggestion(
     suggestion_id: UUID,
+    request: Request,
     svc: Annotated[ApprovalQueueService, Depends(_queue_service)],
     body: ApproveBody = Body(default_factory=ApproveBody),
 ) -> MetadataSuggestion:
     """Approve a suggestion, optionally with field edits."""
     try:
-        return await svc.approve(
+        result = await svc.approve(
             suggestion_id,
             edits=body.edits,
             merge_tags=body.merge_tags,
@@ -357,6 +455,25 @@ async def approve_suggestion(
         )
     except ValueError as exc:
         raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(exc))
+
+    # Index the approved document into the vector store for future similarity queries
+    vs = getattr(request.app.state, "vector_store", None)
+    pc = getattr(request.app.state, "paperless_client", None)
+    if vs and pc:
+        try:
+            content = await pc.get_document_ocr_text(result.document_id)
+            if content:
+                meta = {
+                    "title": result.title or "",
+                    "tags": result.tags,
+                    "correspondent": result.correspondent or "",
+                    "document_type": result.document_type or "",
+                }
+                await vs.upsert(result.document_id, content[:8000], meta)
+        except Exception:
+            logger.debug("Post-approve indexing failed for doc %d", result.document_id, exc_info=True)
+
+    return result
 
 
 @app.post("/api/queue/{suggestion_id}/reject", tags=["queue"], response_model=MetadataSuggestion)
@@ -693,8 +810,9 @@ async def update_settings(request: Request, body: dict[str, Any] = Body(...)) ->
             request.app.state, "paperless_client", None
         )
         if paperless_client is not None:
+            vs = getattr(request.app.state, "vector_store", None)
             request.app.state.manual_analysis_svc = ManualAnalysisService(
-                new_config, providers, paperless_client
+                new_config, providers, paperless_client, vector_store=vs
             )
             logger.info("ManualAnalysisService re-created after settings update.")
     except Exception:

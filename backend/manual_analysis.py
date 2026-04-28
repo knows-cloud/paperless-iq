@@ -31,10 +31,12 @@ class ManualAnalysisService:
         config: PaperlessIQConfig,
         providers: dict[str, LLMProvider],
         paperless_client: PaperlessNGXClient,
+        vector_store: Any | None = None,
     ) -> None:
         self._config = config
         self._providers = providers
         self._paperless = paperless_client
+        self._vector_store = vector_store
 
     async def analyze(
         self,
@@ -72,6 +74,7 @@ class ManualAnalysisService:
             config=run_config,
             provider_name=provider_name,
             context_window_chars=run_config.context_window_chars,
+            vector_store=self._vector_store,
         )
 
         suggestion = await analyzer.analyze(document_id)

@@ -9,6 +9,7 @@ Validates: Requirements 4.1, 4.2, 4.3, 4.6, 4.7, 4.8
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
 import os
 from typing import Any
@@ -52,14 +53,17 @@ class ChromaVectorStore:
         )
 
     async def upsert(self, doc_id: int, text: str, metadata: dict) -> None:
-        """Insert or update a document embedding."""
+        """Insert or update a document embedding with rich metadata."""
         embedding = await self._llm.embed(text)
         doc_id_str = str(doc_id)
-        stored_meta = {
+        # Store entity metadata for smart entity selection
+        stored_meta: dict[str, Any] = {
             "document_id": doc_id,
             "title": metadata.get("title", ""),
+            "tags_json": json.dumps(metadata.get("tags", [])),
+            "correspondent": metadata.get("correspondent") or "",
+            "document_type": metadata.get("document_type") or "",
         }
-        # ChromaDB is synchronous — run in executor
         loop = asyncio.get_event_loop()
         await loop.run_in_executor(
             None,
@@ -71,6 +75,63 @@ class ChromaVectorStore:
             ),
         )
         logger.info("Upserted embedding for document %d.", doc_id)
+
+    async def query_similar_metadata(
+        self,
+        text: str,
+        top_n: int,
+        exclude_tag_id: int | None = None,
+    ) -> dict[str, set[str]]:
+        """Query similar documents and return their metadata entities.
+
+        Returns a dict with keys 'tags', 'correspondents', 'document_types',
+        each containing a set of entity names from the top-N similar docs.
+        """
+        embedding = await self._llm.embed(text)
+        loop = asyncio.get_event_loop()
+        count = self._collection.count()
+        if count == 0:
+            return {"tags": set(), "correspondents": set(), "document_types": set()}
+
+        results = await loop.run_in_executor(
+            None,
+            lambda: self._collection.query(
+                query_embeddings=[embedding],
+                n_results=min(top_n * 2, count),  # fetch extra to allow filtering
+                include=["metadatas"],
+            ),
+        )
+
+        all_tags: set[str] = set()
+        all_correspondents: set[str] = set()
+        all_document_types: set[str] = set()
+
+        if results["metadatas"] and results["metadatas"][0]:
+            for meta in results["metadatas"][0][:top_n]:
+                tags_json = meta.get("tags_json", "[]")
+                try:
+                    tag_list = json.loads(tags_json) if isinstance(tags_json, str) else tags_json
+                except (json.JSONDecodeError, TypeError):
+                    tag_list = []
+                for t in tag_list:
+                    if t:
+                        all_tags.add(t)
+                corr = meta.get("correspondent", "")
+                if corr:
+                    all_correspondents.add(corr)
+                dt = meta.get("document_type", "")
+                if dt:
+                    all_document_types.add(dt)
+
+        return {
+            "tags": all_tags,
+            "correspondents": all_correspondents,
+            "document_types": all_document_types,
+        }
+
+    def count(self) -> int:
+        """Return the number of documents in the store."""
+        return self._collection.count()
 
     async def delete(self, doc_id: int) -> None:
         """Remove a document embedding by document ID."""
