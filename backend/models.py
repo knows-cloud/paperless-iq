@@ -135,6 +135,20 @@ class PaperlessIQConfig(BaseModel):
     # Localization
     target_language: str | None = None
 
+    # Theme
+    theme_primary_color: str = "#1a7288"
+    theme_sidebar_from: str = "#0a3344"
+    theme_sidebar_to: str = "#0e4458"
+    theme_font: str = "Roboto"
+    theme_logo: str = "iq_1.png"
+    theme_nav_icons: dict[str, str] = {
+        "manual": "🔍",
+        "queue": "📋",
+        "discovery": "💬",
+        "audit": "📜",
+        "settings": "⚙️",
+    }
+
     @field_validator("audit_retention_days")
     @classmethod
     def validate_retention(cls, v: int) -> int:

@@ -33,6 +33,9 @@ COPY backend/alembic/ ./backend/alembic/
 # Copy built frontend
 COPY --from=frontend-build /app/frontend/dist ./frontend/dist
 
+# Copy logos
+COPY logo/ ./logo/
+
 # Create data directory
 RUN mkdir -p /data
 

@@ -1040,6 +1040,33 @@ async def import_config(body: dict[str, Any] = Body(...)) -> dict:
 # ---------------------------------------------------------------------------
 
 _FRONTEND_DIR = Path(__file__).resolve().parent.parent / "frontend" / "dist"
+_LOGO_DIR = Path(__file__).resolve().parent.parent / "logo"
+
+
+@app.get("/api/logos", tags=["theme"])
+async def list_logos() -> list[str]:
+    """List available logo filenames."""
+    if not _LOGO_DIR.is_dir():
+        return []
+    return sorted(f.name for f in _LOGO_DIR.iterdir() if f.suffix.lower() in (".png", ".jpeg", ".jpg", ".svg"))
+
+
+@app.get("/api/theme", tags=["theme"])
+async def get_theme() -> dict:
+    """Return current theme settings."""
+    config = _settings_svc.config
+    return {
+        "primary_color": config.theme_primary_color,
+        "sidebar_from": config.theme_sidebar_from,
+        "sidebar_to": config.theme_sidebar_to,
+        "font": config.theme_font,
+        "logo": config.theme_logo,
+        "nav_icons": config.theme_nav_icons,
+    }
+
+
+if _LOGO_DIR.is_dir():
+    app.mount("/logos", StaticFiles(directory=_LOGO_DIR), name="logos")
 
 if _FRONTEND_DIR.is_dir():
     app.mount("/assets", StaticFiles(directory=_FRONTEND_DIR / "assets"), name="static")
