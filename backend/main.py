@@ -1066,7 +1066,8 @@ async def get_theme() -> dict:
         "text_color": config.theme_text_color,
         "bg_color": config.theme_bg_color,
         "card_color": config.theme_card_color,
-        "card_alt_color": config.theme_card_alt_color,
+        "card_alt_hex": config.theme_card_alt_hex,
+        "card_alt_opacity": config.theme_card_alt_opacity,
         "logo": config.theme_logo,
         "nav_icons": config.theme_nav_icons,
     }

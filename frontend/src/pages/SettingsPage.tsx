@@ -36,7 +36,8 @@ export default function SettingsPage() {
   const [themeTextColor, setThemeTextColor] = useState("#2d3239");
   const [themeBgColor, setThemeBgColor] = useState("#f8f9fb");
   const [themeCardColor, setThemeCardColor] = useState("#ffffff");
-  const [themeCardAltColor, setThemeCardAltColor] = useState("rgba(26, 114, 136, 0.12)");
+  const [themeCardAltHex, setThemeCardAltHex] = useState("#1a7288");
+  const [themeCardAltOpacity, setThemeCardAltOpacity] = useState(12);
   const [themeLogo, setThemeLogo] = useState("iq_1.png");
   const [themeNavIcons, setThemeNavIcons] = useState<Record<string, string>>({});
   const tagDropdownRef = useRef<HTMLDivElement>(null);
@@ -72,7 +73,8 @@ export default function SettingsPage() {
       setThemeTextColor(String(s.theme_text_color ?? "#2d3239"));
       setThemeBgColor(String(s.theme_bg_color ?? "#f8f9fb"));
       setThemeCardColor(String(s.theme_card_color ?? "#ffffff"));
-      setThemeCardAltColor(String(s.theme_card_alt_color ?? "rgba(26, 114, 136, 0.12)"));
+      setThemeCardAltHex(String(s.theme_card_alt_hex ?? "#1a7288"));
+      setThemeCardAltOpacity(Number(s.theme_card_alt_opacity ?? 12));
       setThemeLogo(String(s.theme_logo ?? "iq_1.png"));
       setThemeNavIcons((s.theme_nav_icons as Record<string, string>) ?? {});
     }
@@ -175,7 +177,8 @@ export default function SettingsPage() {
     values.theme_text_color = themeTextColor;
     values.theme_bg_color = themeBgColor;
     values.theme_card_color = themeCardColor;
-    values.theme_card_alt_color = themeCardAltColor;
+    values.theme_card_alt_hex = themeCardAltHex;
+    values.theme_card_alt_opacity = themeCardAltOpacity;
     values.theme_logo = themeLogo;
     values.theme_nav_icons = themeNavIcons;
 
@@ -653,10 +656,18 @@ export default function SettingsPage() {
             </div>
             <div className="form-group" style={{ flex: 1, minWidth: "200px" }}>
               <label>Alternating Card</label>
-              <input value={themeCardAltColor} onChange={e => setThemeCardAltColor(e.target.value)}
-                style={{ fontSize: "0.85rem", fontFamily: "'Roboto Mono', monospace" }}
-                placeholder="rgba(26, 114, 136, 0.12)" />
-              <small>Supports rgba() for transparency.</small>
+              <div style={{ display: "flex", gap: "0.5rem", alignItems: "center" }}>
+                <input type="color" value={themeCardAltHex} onChange={e => setThemeCardAltHex(e.target.value)}
+                  style={{ width: "40px", height: "34px", padding: "2px", cursor: "pointer" }} />
+                <input value={themeCardAltHex} onChange={e => setThemeCardAltHex(e.target.value)}
+                  style={{ fontSize: "0.85rem", fontFamily: "'Roboto Mono', monospace", flex: 1 }} />
+              </div>
+              <div style={{ display: "flex", gap: "0.5rem", alignItems: "center", marginTop: "0.35rem" }}>
+                <label style={{ fontSize: "0.8rem", color: "var(--gray-500)", margin: 0, minWidth: "65px" }}>Opacity {themeCardAltOpacity}%</label>
+                <input type="range" min="0" max="100" value={themeCardAltOpacity}
+                  onChange={e => setThemeCardAltOpacity(Number(e.target.value))}
+                  style={{ flex: 1 }} />
+              </div>
             </div>
           </div>
 
