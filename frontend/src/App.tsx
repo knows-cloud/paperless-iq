@@ -7,17 +7,19 @@ import QueuePage from "./pages/QueuePage";
 import ManualPage from "./pages/ManualPage";
 import AuditPage from "./pages/AuditPage";
 import DiscoveryPage from "./pages/DiscoveryPage";
+import ProcessingPage from "./pages/ProcessingPage";
 
-type Page = "manual" | "queue" | "discovery" | "audit" | "settings";
+type Page = "manual" | "queue" | "discovery" | "processing" | "audit" | "settings";
 
-const VALID_PAGES: Set<string> = new Set(["manual", "queue", "discovery", "audit", "settings"]);
+const VALID_PAGES: Set<string> = new Set(["manual", "queue", "discovery", "processing", "audit", "settings"]);
 
 const NAV_ITEMS: Array<{ id: Page; labelKey: string; defaultIcon: string }> = [
-  { id: "manual",    labelKey: "nav.analysis",       defaultIcon: "🔍" },
-  { id: "queue",     labelKey: "nav.queue",           defaultIcon: "📋" },
-  { id: "discovery", labelKey: "nav.discovery",       defaultIcon: "💬" },
-  { id: "audit",     labelKey: "nav.audit",           defaultIcon: "📜" },
-  { id: "settings",  labelKey: "nav.settings",        defaultIcon: "⚙️" },
+  { id: "manual",     labelKey: "nav.analysis",       defaultIcon: "🔍" },
+  { id: "queue",      labelKey: "nav.queue",           defaultIcon: "📋" },
+  { id: "discovery",  labelKey: "nav.discovery",       defaultIcon: "💬" },
+  { id: "processing", labelKey: "nav.processing",      defaultIcon: "⚡" },
+  { id: "audit",      labelKey: "nav.audit",           defaultIcon: "📜" },
+  { id: "settings",   labelKey: "nav.settings",        defaultIcon: "⚙️" },
 ];
 
 function getPageFromHash(): Page {
@@ -67,6 +69,7 @@ export default function App() {
         {page === "manual" && <ManualPage />}
         {page === "queue" && <QueuePage />}
         {page === "discovery" && <DiscoveryPage />}
+        {page === "processing" && <ProcessingPage />}
         {page === "audit" && <AuditPage />}
         {page === "settings" && <SettingsPage />}
       </main>

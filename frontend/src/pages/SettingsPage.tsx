@@ -1,6 +1,7 @@
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { useState, useEffect, useRef } from "react";
 import { api, type PaperlessEntity, type PaperlessCustomField, type ConnectionTestResult } from "../api";
+import { t } from "../i18n";
 
 const METADATA_FIELDS = [
   { key: "title", label: "Title", description: "How should the LLM generate the document title?" },
@@ -43,6 +44,7 @@ export default function SettingsPage() {
   const [themeNavIcons, setThemeNavIcons] = useState<Record<string, string>>({});
   const [translateLang, setTranslateLang] = useState("de");
   const [translating, setTranslating] = useState(false);
+  const [settingsTab, setSettingsTab] = useState("llm");
   const tagDropdownRef = useRef<HTMLDivElement>(null);
   const logos = useQuery({ queryKey: ["logos"], queryFn: api.getLogos, retry: false });
 
@@ -204,12 +206,47 @@ export default function SettingsPage() {
   const tagList = (tags.data ?? []) as PaperlessEntity[];
   const docTypeList = (docTypes.data ?? []) as PaperlessEntity[];
 
+  type SettingsTab = "llm" | "prompts" | "smartSelection" | "fields" | "policies" | "automation" | "localization" | "theme";
+  const SETTINGS_TABS: Array<{ id: SettingsTab; label: string }> = [
+    { id: "llm", label: "LLM Provider" },
+    { id: "prompts", label: "Prompts" },
+    { id: "smartSelection", label: "Smart Selection" },
+    { id: "fields", label: "Field Instructions" },
+    { id: "policies", label: "Creation Policies" },
+    { id: "automation", label: "Automation" },
+    { id: "localization", label: "Language & Audit" },
+    { id: "theme", label: "Theme" },
+  ];
+
   return (
     <div>
-      <h2>Settings</h2>
-      <form onSubmit={handleSubmit}>
+      <h2>{t("nav.settings")}</h2>
+      <form onSubmit={handleSubmit} style={{ display: "flex", gap: "1.5rem" }}>
+        <div style={{ minWidth: "160px", flexShrink: 0 }}>
+          {SETTINGS_TABS.map(tab => (
+            <button key={tab.id} type="button"
+              onClick={() => setSettingsTab(tab.id)}
+              style={{
+                display: "block", width: "100%", textAlign: "left",
+                padding: "0.5rem 0.75rem", marginBottom: "2px",
+                background: settingsTab === tab.id ? "var(--petrol-50)" : "transparent",
+                border: "none", borderLeft: settingsTab === tab.id ? "3px solid var(--petrol-600)" : "3px solid transparent",
+                color: settingsTab === tab.id ? "var(--petrol-800)" : "var(--gray-600)",
+                fontWeight: settingsTab === tab.id ? 600 : 400,
+                fontSize: "0.85rem", cursor: "pointer", borderRadius: "0 var(--radius-sm) var(--radius-sm) 0",
+              }}>
+              {tab.label}
+            </button>
+          ))}
+          <div style={{ marginTop: "1rem" }}>
+            <button type="submit" className="btn btn-primary" style={{ width: "100%" }}>{t("settings.save")}</button>
+            {msg && <p className={mutation.isError ? "error" : "success"} style={{ marginTop: "0.5rem", fontSize: "0.8rem" }}>{msg}</p>}
+          </div>
+        </div>
+        <div style={{ flex: 1, minWidth: 0 }}>
 
         {/* ── LLM Provider ── */}
+        {settingsTab === "llm" && (
         <div className="card">
           <h3>LLM Provider</h3>
           <div className="form-group">
@@ -242,8 +279,10 @@ export default function SettingsPage() {
             </div>
           )}
         </div>
+        )}
 
         {/* ── System Prompt ── */}
+        {settingsTab === "prompts" && (<>
         <div className="card">
           <h3>System Prompt</h3>
           <div className="form-group">
@@ -292,8 +331,10 @@ export default function SettingsPage() {
             <small>Maximum characters of document content sent to the LLM. Increase for models with large context windows. Default: 128,000.</small>
           </div>
         </div>
+        </>)}
 
         {/* ── Smart Entity Selection ── */}
+        {settingsTab === "smartSelection" && (
         <div className="card">
           <h3>Smart Entity Selection</h3>
           <p style={{ fontSize: "0.85rem", color: "#666", marginBottom: "1rem" }}>
@@ -329,8 +370,10 @@ export default function SettingsPage() {
             <small>Top-N most common entities added as fallback (handles cold start and rare categories).</small>
           </div>
         </div>
+        )}
 
         {/* ── Per-Field Descriptions ── */}
+        {settingsTab === "fields" && (<>
         <div className="card">
           <h3>Field Instructions</h3>
           <p style={{ fontSize: "0.85rem", color: "#666", marginBottom: "1rem" }}>
@@ -423,8 +466,10 @@ export default function SettingsPage() {
             </div>
           )}
         </div>
+        </>)}
 
         {/* ── Creation Policies ── */}
+        {settingsTab === "policies" && (
         <div className="card">
           <h3>Creation Policies</h3>
           <p style={{ fontSize: "0.85rem", color: "var(--gray-500)", marginBottom: "1rem" }}>
@@ -459,8 +504,10 @@ export default function SettingsPage() {
             </select>
           </div>
         </div>
+        )}
 
         {/* ── Automation ── */}
+        {settingsTab === "automation" && (
         <div className="card">
           <h3>Automation</h3>
           <div style={{ marginBottom: "1rem" }}>
@@ -573,8 +620,10 @@ export default function SettingsPage() {
             <input id="bedrock_kb_id" name="bedrock_kb_id" defaultValue={String(s.bedrock_kb_id ?? "")} placeholder="Only needed for Bedrock KB backend" />
           </div>
         </div>
+        )}
 
         {/* ── Localization & Audit ── */}
+        {settingsTab === "localization" && (
         <div className="card">
           <h3>Localization &amp; Audit</h3>
           <div className="form-group">
@@ -598,8 +647,10 @@ export default function SettingsPage() {
             <input id="audit_retention_days" name="audit_retention_days" type="number" min="90" defaultValue={String(s.audit_retention_days)} />
           </div>
         </div>
+        )}
 
         {/* ── Theme ── */}
+        {settingsTab === "theme" && (
         <div className="card">
           <h3>Theme</h3>
           <div style={{ display: "flex", gap: "1rem", flexWrap: "wrap" }}>
@@ -745,9 +796,9 @@ export default function SettingsPage() {
             </div>
           </div>
         </div>
+        )}
 
-        <button type="submit" className="btn btn-primary" style={{ marginTop: "1rem" }}>Save Settings</button>
-        {msg && <p className={mutation.isError ? "error" : "success"} style={{ marginTop: "0.5rem" }}>{msg}</p>}
+        </div>
       </form>
     </div>
   );
