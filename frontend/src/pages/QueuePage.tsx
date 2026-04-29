@@ -157,10 +157,10 @@ export default function QueuePage() {
               </div>
               <div style={{ display: "flex", gap: "0.5rem" }}>
                 <button className="btn btn-primary" onClick={() => approve.mutate({ id, item })}
-                  disabled={approve.isPending}>
+                  disabled={approve.isPending && approve.variables?.id === id}>
                   {approve.isPending && approve.variables?.id === id ? "Approving…" : "Approve"}
                 </button>
-                <button className="btn" onClick={() => reject.mutate(id)} disabled={reject.isPending}>Reject</button>
+                <button className="btn" onClick={() => reject.mutate(id)} disabled={reject.isPending && reject.variables === id}>Reject</button>
               </div>
               {approve.isError && approve.variables?.id === id && (
                 <p className="error" style={{ marginTop: "0.5rem" }}>Approval failed: {(approve.error as Error).message}</p>
