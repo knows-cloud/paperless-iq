@@ -237,51 +237,30 @@ async def _apply_creation_policy(
 
     For each entity type:
     - "existing_only": filter suggested values to those already present in Paperless NGX.
-    - "allow_new": keep all suggested values; create any that don't yet exist in Paperless NGX.
+    - "allow_new": keep all suggested values as-is (creation happens at approval time).
 
     Returns a new MetadataSuggestion with the policy applied.
-
-    Validates: Requirements 2.5, 2.6, 2.7, 2.8
     """
-    # Fetch existing entities once per type (only if needed)
-    existing_tags: list[str] | None = None
-    existing_correspondents: list[str] | None = None
-    existing_doctypes: list[str] | None = None
-
     # --- Tags ---
-    if suggestion.tags:
+    if suggestion.tags and config.tag_creation_policy == "existing_only":
         existing_tags = await paperless_client.list_entities("tags")
         existing_set = {t.lower() for t in existing_tags}
-        if config.tag_creation_policy == "existing_only":
-            filtered = [t for t in suggestion.tags if t.lower() in existing_set]
-            suggestion = suggestion.model_copy(update={"tags": filtered})
-        else:  # allow_new
-            for tag in suggestion.tags:
-                if tag.lower() not in existing_set:
-                    await paperless_client.create_entity("tags", tag)
-                    existing_set.add(tag.lower())
+        filtered = [t for t in suggestion.tags if t.lower() in existing_set]
+        suggestion = suggestion.model_copy(update={"tags": filtered})
 
     # --- Correspondent ---
-    if suggestion.correspondent:
+    if suggestion.correspondent and config.correspondent_creation_policy == "existing_only":
         existing_correspondents = await paperless_client.list_entities("correspondents")
         existing_set = {c.lower() for c in existing_correspondents}
-        if config.correspondent_creation_policy == "existing_only":
-            if suggestion.correspondent.lower() not in existing_set:
-                suggestion = suggestion.model_copy(update={"correspondent": None})
-        else:  # allow_new
-            if suggestion.correspondent.lower() not in existing_set:
-                await paperless_client.create_entity("correspondents", suggestion.correspondent)
+        if suggestion.correspondent.lower() not in existing_set:
+            suggestion = suggestion.model_copy(update={"correspondent": None})
 
     # --- Document type ---
-    if suggestion.document_type:
+    if suggestion.document_type and config.doctype_creation_policy == "existing_only":
         existing_doctypes = await paperless_client.list_entities("document_types")
         existing_set = {d.lower() for d in existing_doctypes}
-        if config.doctype_creation_policy == "existing_only":
-            if suggestion.document_type.lower() not in existing_set:
-                suggestion = suggestion.model_copy(update={"document_type": None})
-        else:  # allow_new
-            if suggestion.document_type.lower() not in existing_set:
-                await paperless_client.create_entity("document_types", suggestion.document_type)
+        if suggestion.document_type.lower() not in existing_set:
+            suggestion = suggestion.model_copy(update={"document_type": None})
 
     return suggestion
 
