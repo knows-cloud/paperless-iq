@@ -1,5 +1,6 @@
 import { useQuery, useMutation } from "@tanstack/react-query";
 import { api } from "./api";
+import { t } from "./i18n";
 
 export default function StatusPanel() {
   const { data, isError } = useQuery({
@@ -70,7 +71,7 @@ export default function StatusPanel() {
           cursor: reindex.isPending ? "wait" : "pointer",
           marginTop: "0.1rem",
         }}>
-        {reindex.isPending ? "Indexing…" : reindex.isSuccess ? "✓ Started" : "↻ Reindex"}
+        {reindex.isPending ? t("status.indexing") : reindex.isSuccess ? t("status.started") : `↻ ${t("status.reindex")}`}
       </button>
     </div>
   );

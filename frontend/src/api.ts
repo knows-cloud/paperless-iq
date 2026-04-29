@@ -84,6 +84,8 @@ export const api = {
   exportConfig: () => request<Record<string, unknown>>("/config/export"),
   importConfig: (data: Record<string, unknown>) =>
     request<{ applied: string[]; skipped: unknown[] }>("/config/import", { method: "POST", body: JSON.stringify(data) }),
+  translatePrompt: (text: string, targetLanguage: string) =>
+    request<{ translated: string }>("/translate-prompt", { method: "POST", body: JSON.stringify({ text, target_language: targetLanguage }) }),
 
   testPaperlessConnection: () => request<ConnectionTestResult>("/paperless/test"),
   enqueueSuggestion: (suggestion: MetadataSuggestionResponse) =>

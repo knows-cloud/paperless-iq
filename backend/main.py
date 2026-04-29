@@ -1189,6 +1189,41 @@ async def import_config(body: dict[str, Any] = Body(...)) -> dict:
     return summary
 
 
+class TranslatePromptBody(BaseModel):
+    text: str
+    target_language: str
+
+
+@app.post("/api/translate-prompt", tags=["config"])
+async def translate_prompt(body: TranslatePromptBody, request: Request) -> dict:
+    """Translate a prompt template to the target language using the configured LLM."""
+    providers = getattr(request.app.state, "providers", None)
+    if not providers:
+        raise HTTPException(status_code=503, detail="LLM provider not configured.")
+    config = _settings_svc.config
+    provider = providers.get(config.llm_provider)
+    if not provider:
+        raise HTTPException(status_code=503, detail="LLM provider not available.")
+
+    prompt = (
+        f"Translate the following prompt template to {body.target_language}. "
+        f"Preserve any {{placeholders}} exactly as they are (e.g. {{{{content}}}}). "
+        f"Preserve all JSON structure and key names in English. "
+        f"Only translate the natural language instructions and descriptions. "
+        f"Return ONLY the translated text, nothing else.\n\n"
+        f"Text to translate:\n{body.text}"
+    )
+    try:
+        queue: OllamaQueue | None = getattr(request.app.state, "ollama_queue", None)
+        if queue:
+            translated = await queue.submit(Priority.ANALYSIS, lambda: provider.complete(prompt, 4096))
+        else:
+            translated = await provider.complete(prompt, 4096)
+        return {"translated": translated.strip()}
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=f"Translation failed: {exc}")
+
+
 # ---------------------------------------------------------------------------
 # Status & Reindex endpoints
 # ---------------------------------------------------------------------------

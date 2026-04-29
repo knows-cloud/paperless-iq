@@ -28,6 +28,7 @@ export default function SettingsPage() {
   const [perDoctypePrompts, setPerDoctypePrompts] = useState<Record<string, string>>({});
   const [showAdvancedTemplates, setShowAdvancedTemplates] = useState(false);
   const [selectedProvider, setSelectedProvider] = useState("");
+  const [promptText, setPromptText] = useState("");
   const [themePrimary, setThemePrimary] = useState("#1a7288");
   const [themeSidebarFrom, setThemeSidebarFrom] = useState("#0a3344");
   const [themeSidebarTo, setThemeSidebarTo] = useState("#0e4458");
@@ -40,6 +41,8 @@ export default function SettingsPage() {
   const [themeCardAltOpacity, setThemeCardAltOpacity] = useState(12);
   const [themeLogo, setThemeLogo] = useState("iq_1.png");
   const [themeNavIcons, setThemeNavIcons] = useState<Record<string, string>>({});
+  const [translateLang, setTranslateLang] = useState("de");
+  const [translating, setTranslating] = useState(false);
   const tagDropdownRef = useRef<HTMLDivElement>(null);
   const logos = useQuery({ queryKey: ["logos"], queryFn: api.getLogos, retry: false });
 
@@ -57,6 +60,7 @@ export default function SettingsPage() {
       // Initialize inbox tag ID from settings
       setInboxTagId(s.inbox_tag_id ? String(s.inbox_tag_id) : "");
       setSelectedProvider(String(s.llm_provider ?? "ollama"));
+      setPromptText(String(s.global_prompt_template ?? ""));
       // Initialize per-field and per-doctype prompt templates
       setPerFieldPrompts((s.per_field_prompt_templates as Record<string, string>) ?? {});
       setPerDoctypePrompts(
@@ -245,13 +249,34 @@ export default function SettingsPage() {
           <div className="form-group">
             <label htmlFor="global_prompt_template">Global prompt (system instruction for the LLM)</label>
             <textarea id="global_prompt_template" name="global_prompt_template" rows={10}
-              defaultValue={String(s.global_prompt_template ?? "")}
+              value={promptText}
+              onChange={e => setPromptText(e.target.value)}
               style={{ fontFamily: "monospace", fontSize: "0.85rem" }} />
-            <small>
-              This acts as the system prompt. It describes what information the LLM receives
-              (document content, existing tags/correspondents/types/custom fields) and what it must return.
-              Use {"{{content}}"} as placeholder for document text.
-            </small>
+            <div style={{ display: "flex", gap: "0.5rem", alignItems: "center", marginTop: "0.35rem" }}>
+              <small style={{ flex: 1 }}>
+                Use {"{{content}}"} as placeholder for document text.
+              </small>
+              <select value={translateLang} onChange={e => setTranslateLang(e.target.value)}
+                style={{ fontSize: "0.8rem", padding: "0.2rem 0.4rem", width: "auto" }}>
+                <option value="de">Deutsch</option>
+                <option value="fr">Français</option>
+                <option value="es">Español</option>
+                <option value="it">Italiano</option>
+                <option value="en">English</option>
+              </select>
+              <button type="button" className="btn" style={{ fontSize: "0.78rem", padding: "0.25rem 0.6rem" }}
+                disabled={translating || !promptText.trim()}
+                onClick={async () => {
+                  setTranslating(true);
+                  try {
+                    const r = await api.translatePrompt(promptText, translateLang);
+                    setPromptText(r.translated);
+                  } catch (e) { alert((e as Error).message); }
+                  setTranslating(false);
+                }}>
+                {translating ? "Translating…" : "Translate"}
+              </button>
+            </div>
           </div>
           <div className="form-group">
             <label htmlFor="default_analysis_mode">Default Analysis Mode</label>
