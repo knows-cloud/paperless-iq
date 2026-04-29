@@ -836,6 +836,29 @@ async def list_custom_fields() -> list[dict]:
     return items
 
 
+@app.get("/api/paperless/storage_paths", tags=["paperless"])
+async def list_storage_paths() -> list[dict]:
+    """List all storage paths from Paperless NGX."""
+    import os
+    import httpx
+    paperless_url = os.getenv("PAPERLESS_URL", "")
+    paperless_token = os.getenv("PAPERLESS_TOKEN", "")
+    if not paperless_url or not paperless_token:
+        raise HTTPException(status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail="Paperless NGX not configured.")
+    items: list[dict] = []
+    url: str | None = f"{paperless_url.rstrip('/')}/api/storage_paths/?page_size=100"
+    async with httpx.AsyncClient(headers={"Authorization": f"Token {paperless_token}"}, timeout=30) as client:
+        while url:
+            resp = await client.get(url)
+            if resp.status_code != 200:
+                raise HTTPException(status_code=resp.status_code, detail="Paperless NGX storage_paths request failed")
+            data = resp.json()
+            for item in data.get("results", []):
+                items.append({"id": item["id"], "name": item.get("name", "")})
+            url = data.get("next")
+    return items
+
+
 @app.get("/api/paperless/test", tags=["paperless"])
 async def test_paperless_connection() -> JSONResponse:
     """Test connectivity to the configured Paperless NGX instance."""

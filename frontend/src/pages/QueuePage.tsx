@@ -2,6 +2,7 @@ import { useState, useMemo } from "react";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { api, type PaperlessEntity, type PaperlessCustomField } from "../api";
 import TagInput from "../TagInput";
+import AutocompleteInput from "../AutocompleteInput";
 
 interface QueueItem {
   id: string;
@@ -21,6 +22,7 @@ export default function QueuePage() {
   const corrsQ = useQuery({ queryKey: ["correspondents"], queryFn: api.getCorrespondents, retry: false });
   const dtQ = useQuery({ queryKey: ["docTypes"], queryFn: api.getDocumentTypes, retry: false });
   const cfQ = useQuery({ queryKey: ["customFields"], queryFn: api.getCustomFields, retry: false });
+  const spQ = useQuery({ queryKey: ["storagePaths"], queryFn: api.getStoragePaths, retry: false });
 
   const tagNames = useMemo(() => new Set((tagsQ.data ?? []).map((t: PaperlessEntity) => t.name.toLowerCase())), [tagsQ.data]);
   const corrNames = useMemo(() => new Set((corrsQ.data ?? []).map((c: PaperlessEntity) => c.name.toLowerCase())), [corrsQ.data]);
@@ -118,20 +120,31 @@ export default function QueuePage() {
               </div>
               <div className="form-group" style={{ marginBottom: "0.4rem" }}>
                 <label style={{ fontWeight: 600, color: "#555", fontSize: "0.85rem" }}>Correspondent</label>
-                <input value={item.correspondent ?? ""} style={isNewCorr ? newInputStyle : { fontSize: "0.85rem" }}
-                  onChange={e => updateField(id, raw, "correspondent", e.target.value || null)} />
+                <AutocompleteInput
+                  value={item.correspondent ?? ""}
+                  suggestions={(corrsQ.data ?? []).map((c: PaperlessEntity) => c.name)}
+                  onChange={v => updateField(id, raw, "correspondent", v || null)}
+                  style={isNewCorr ? newInputStyle : undefined}
+                />
                 {isNewCorr && <small style={{ color: "#c62828" }}>New — will be created if "Create missing" is checked</small>}
               </div>
               <div className="form-group" style={{ marginBottom: "0.4rem" }}>
                 <label style={{ fontWeight: 600, color: "#555", fontSize: "0.85rem" }}>Document Type</label>
-                <input value={item.document_type ?? ""} style={isNewDt ? newInputStyle : { fontSize: "0.85rem" }}
-                  onChange={e => updateField(id, raw, "document_type", e.target.value || null)} />
+                <AutocompleteInput
+                  value={item.document_type ?? ""}
+                  suggestions={(dtQ.data ?? []).map((d: PaperlessEntity) => d.name)}
+                  onChange={v => updateField(id, raw, "document_type", v || null)}
+                  style={isNewDt ? newInputStyle : undefined}
+                />
                 {isNewDt && <small style={{ color: "#c62828" }}>New — will be created if "Create missing" is checked</small>}
               </div>
               <div className="form-group" style={{ marginBottom: "0.4rem" }}>
                 <label style={{ fontWeight: 600, color: "#555", fontSize: "0.85rem" }}>Storage Path</label>
-                <input value={item.storage_path ?? ""} style={{ fontSize: "0.85rem" }}
-                  onChange={e => updateField(id, raw, "storage_path", e.target.value || null)} />
+                <AutocompleteInput
+                  value={item.storage_path ?? ""}
+                  suggestions={(spQ.data ?? []).map((s: PaperlessEntity) => s.name)}
+                  onChange={v => updateField(id, raw, "storage_path", v || null)}
+                />
               </div>
               {cfEntries.length > 0 && <label style={{ fontWeight: 600, color: "#555", fontSize: "0.85rem", display: "block", marginTop: "0.25rem" }}>Custom Fields</label>}
               {cfEntries.map(([key, val]) => (
