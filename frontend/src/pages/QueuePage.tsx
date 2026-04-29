@@ -3,6 +3,7 @@ import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { api, type PaperlessEntity, type PaperlessCustomField } from "../api";
 import TagInput from "../TagInput";
 import AutocompleteInput from "../AutocompleteInput";
+import CfNameEditor from "../CfNameEditor";
 
 interface QueueItem {
   id: string;
@@ -148,15 +149,21 @@ export default function QueuePage() {
               </div>
               {cfEntries.length > 0 && <label style={{ fontWeight: 600, color: "#555", fontSize: "0.85rem", display: "block", marginTop: "0.25rem" }}>Custom Fields</label>}
               {cfEntries.map(([key, val]) => (
-                <div key={key} style={{ display: "flex", gap: "0.5rem", alignItems: "center", marginBottom: "0.25rem" }}>
-                  <span style={isNewCf(key) ? { fontWeight: 700, color: "#c62828", minWidth: "120px", fontSize: "0.85rem" } : { minWidth: "120px", color: "#555", fontSize: "0.85rem" }}>
-                    {key}{isNewCf(key) && " (new)"}:
-                  </span>
-                  <input value={String(val ?? "")} style={{ fontSize: "0.85rem", flex: 1 }}
-                    onChange={e => updateField(id, raw, "custom_fields", { ...item.custom_fields, [key]: e.target.value || null })} />
-                  <button type="button" onClick={() => { const cf = { ...item.custom_fields }; delete cf[key]; updateField(id, raw, "custom_fields", cf); }}
-                    style={{ background: "none", border: "none", cursor: "pointer", color: "#888", fontSize: "1rem" }}>×</button>
-                </div>
+                <CfNameEditor
+                  key={key}
+                  name={key}
+                  value={val}
+                  isNew={isNewCf(key)}
+                  suggestions={(cfQ.data ?? []).map((c: PaperlessCustomField) => c.name)}
+                  onRename={(newName) => {
+                    if (!newName || newName === key) return;
+                    const cf = { ...item.custom_fields };
+                    const v = cf[key]; delete cf[key]; cf[newName] = v;
+                    updateField(id, raw, "custom_fields", cf);
+                  }}
+                  onChangeValue={(v) => updateField(id, raw, "custom_fields", { ...item.custom_fields, [key]: v || null })}
+                  onRemove={() => { const cf = { ...item.custom_fields }; delete cf[key]; updateField(id, raw, "custom_fields", cf); }}
+                />
               ))}
             </div>
             <div style={{ marginTop: "0.5rem" }}>

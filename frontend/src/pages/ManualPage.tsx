@@ -3,6 +3,7 @@ import { useQuery, useMutation } from "@tanstack/react-query";
 import { api, type PaperlessEntity, type PaperlessCustomField, type DocumentItem, type MetadataSuggestionResponse } from "../api";
 import TagInput from "../TagInput";
 import AutocompleteInput from "../AutocompleteInput";
+import CfNameEditor from "../CfNameEditor";
 
 export default function ManualPage() {
   const [titleQuery, setTitleQuery] = useState("");
@@ -198,15 +199,21 @@ export default function ManualPage() {
           {customFieldEntries.map(([key, val]) => {
             const isNewCf = !cfNames.has(key.toLowerCase());
             return (
-              <div key={key} style={{ display: "flex", gap: "0.5rem", alignItems: "center", marginBottom: "0.25rem" }}>
-                <span style={isNewCf ? { fontWeight: 700, color: "#c62828", minWidth: "120px", fontSize: "0.85rem" } : { minWidth: "120px", color: "#555", fontSize: "0.85rem" }}>
-                  {key}{isNewCf && " (new)"}:
-                </span>
-                <input value={String(val ?? "")} style={{ fontSize: "0.85rem", flex: 1 }}
-                  onChange={e => updateSuggestionField(docId, "custom_fields", { ...suggestion.custom_fields, [key]: e.target.value || null })} />
-                <button type="button" onClick={() => { const cf = { ...suggestion.custom_fields }; delete cf[key]; updateSuggestionField(docId, "custom_fields", cf); }}
-                  style={{ background: "none", border: "none", cursor: "pointer", color: "#888", fontSize: "1rem" }}>×</button>
-              </div>
+              <CfNameEditor
+                key={key}
+                name={key}
+                value={val}
+                isNew={isNewCf}
+                suggestions={(customFields.data ?? []).map((c: PaperlessCustomField) => c.name)}
+                onRename={(newName) => {
+                  if (!newName || newName === key) return;
+                  const cf = { ...suggestion.custom_fields };
+                  const v = cf[key]; delete cf[key]; cf[newName] = v;
+                  updateSuggestionField(docId, "custom_fields", cf);
+                }}
+                onChangeValue={(v) => updateSuggestionField(docId, "custom_fields", { ...suggestion.custom_fields, [key]: v || null })}
+                onRemove={() => { const cf = { ...suggestion.custom_fields }; delete cf[key]; updateSuggestionField(docId, "custom_fields", cf); }}
+              />
             );
           })}
         </div>
