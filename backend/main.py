@@ -574,7 +574,7 @@ async def reanalyze_queue_item(
     request: Request,
     svc: Annotated[ApprovalQueueService, Depends(_queue_service)],
 ) -> dict:
-    """Re-analyze a queued document: reject the old suggestion, analyze fresh, enqueue new."""
+    """Re-analyze a queued document: analyze fresh first, then reject old and enqueue new."""
     manual_svc: ManualAnalysisService | None = request.app.state.manual_analysis_svc
     if manual_svc is None:
         raise HTTPException(status_code=503, detail="Analysis service not configured.")
@@ -586,19 +586,20 @@ async def reanalyze_queue_item(
         raise HTTPException(status_code=404, detail="Suggestion not found.")
     doc_id = row.document_id
 
-    # Reject the old one
+    # Analyze fresh FIRST — if this fails, the old suggestion stays
+    try:
+        suggestion = await manual_svc.analyze(doc_id)
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=f"Re-analysis failed (original kept): {exc}")
+
+    # Only reject the old one after successful analysis
     try:
         await svc.reject(body.suggestion_id)
     except ValueError:
         pass
 
-    # Analyze fresh
-    try:
-        suggestion = await manual_svc.analyze(doc_id)
-        enqueued = await svc.enqueue(suggestion)
-        return enqueued.model_dump(mode="json")
-    except Exception as exc:
-        raise HTTPException(status_code=500, detail=f"Re-analysis failed: {exc}")
+    enqueued = await svc.enqueue(suggestion)
+    return enqueued.model_dump(mode="json")
 
 
 @app.post("/api/queue/reanalyze-all", tags=["queue"])
@@ -606,37 +607,38 @@ async def reanalyze_all_queue(
     request: Request,
     svc: Annotated[ApprovalQueueService, Depends(_queue_service)],
 ) -> dict:
-    """Re-analyze all pending queue items in the background."""
+    """Re-analyze all pending queue items in the background.
+
+    Each item is re-analyzed individually: the old suggestion is only
+    rejected after the new analysis succeeds.
+    """
     manual_svc: ManualAnalysisService | None = request.app.state.manual_analysis_svc
     if manual_svc is None:
         raise HTTPException(status_code=503, detail="Analysis service not configured.")
 
     pending, _ = await svc.list(status="pending", page=1, page_size=10000)
-    doc_ids = [s.document_id for s in pending]
-    suggestion_ids = [s.id for s in pending]
+    items = [(s.id, s.document_id) for s in pending]
 
-    # Reject all old ones
-    for sid in suggestion_ids:
-        try:
-            await svc.reject(sid)
-        except ValueError:
-            pass
-
-    # Re-analyze in background
     async def _reanalyze_bg() -> None:
         from backend.database import AsyncSessionLocal
         from backend.approval_queue import ApprovalQueueService as QSvc
-        for doc_id in doc_ids:
+        for old_id, doc_id in items:
             try:
                 suggestion = await manual_svc.analyze(doc_id)
                 async with AsyncSessionLocal() as session:
                     q = QSvc(session)
+                    # Reject old only after successful analysis
+                    try:
+                        await q.reject(old_id)
+                    except ValueError:
+                        pass
                     await q.enqueue(suggestion)
+                    logger.info("Re-analyzed doc %d successfully.", doc_id)
             except Exception:
-                logger.exception("Re-analysis failed for doc %d", doc_id)
+                logger.exception("Re-analysis failed for doc %d (original kept)", doc_id)
 
     asyncio.create_task(_reanalyze_bg())
-    return {"detail": f"Re-analyzing {len(doc_ids)} documents in background."}
+    return {"detail": f"Re-analyzing {len(items)} documents in background."}
 
 
 @app.get("/api/documents/{document_id}/tags", tags=["documents"])
