@@ -923,16 +923,17 @@ async def test_property_6_doctype_creation_policy(
     new_tags=st.lists(_entity_name_strategy, min_size=1, max_size=5),
 )
 @pytest.mark.asyncio
-async def test_property_6_allow_new_creates_missing_entities(
+async def test_property_6_allow_new_keeps_all_suggested_entities(
     document_id: int,
     existing_tags: list[str],
     new_tags: list[str],
 ) -> None:
     """
-    # Feature: paperless-iq, Property 6: Creation policy enforcement (create_entity called)
+    # Feature: paperless-iq, Property 6: Creation policy enforcement (allow_new)
 
-    With "allow_new" policy, create_entity must be called for each tag that does
-    not already exist in Paperless NGX.
+    With "allow_new" policy, all suggested tags are kept in the result
+    regardless of whether they exist in Paperless NGX. Entity creation
+    is deferred to approval time.
 
     Validates: Requirements 2.7
     """
@@ -961,16 +962,8 @@ async def test_property_6_allow_new_creates_missing_entities(
 
     result = await _apply_creation_policy(suggestion, config, paperless)
 
-    # All suggested tags must be in the result
+    # All suggested tags must be kept in the result (no filtering)
     assert set(result.tags) == set(all_suggested)
 
-    # create_entity must have been called exactly once per truly new tag
-    created_names = {
-        call.args[1]
-        for call in paperless.create_entity.call_args_list
-        if call.args[0] == "tags"
-    }
-    assert created_names == set(truly_new), (
-        f"Expected create_entity called for new tags {truly_new!r}, "
-        f"but got calls for {created_names!r}"
-    )
+    # create_entity must NOT be called — creation is deferred to approval
+    paperless.create_entity.assert_not_called()
