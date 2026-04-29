@@ -89,6 +89,8 @@ export const api = {
   getStoragePaths: () => request<PaperlessEntity[]>("/paperless/storage_paths"),
   getLogos: () => request<string[]>("/logos"),
   getTheme: () => request<{ primary_color: string; sidebar_from: string; sidebar_to: string; font: string; font_size: string; text_color: string; bg_color: string; card_color: string; card_alt_hex: string; card_alt_opacity: number; logo: string; nav_icons: Record<string, string> }>("/theme"),
+  getStatus: () => request<{ llm_online: boolean; embed_online: boolean; queue_pending: number; queue_processing: number; embedded_chunks: number; total_documents: number }>("/status"),
+  triggerReindex: () => request<{ detail: string }>("/reindex", { method: "POST" }),
   getDocuments: (params?: Record<string, string>) => {
     const qs = params ? "?" + new URLSearchParams(params).toString() : "";
     return request<PagedResult<DocumentItem>>(`/documents${qs}`);
