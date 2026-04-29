@@ -1239,7 +1239,8 @@ async def get_status(request: Request) -> dict:
     llm_online = False
     embed_online = False
 
-    if queue and (queue.is_busy or queue.health_cache_age < 30.0):
+    if queue and queue.is_busy and queue.health_cache_age < 30.0:
+        # Queue is busy AND we have a recent cache — use cached values
         llm_online = queue.cached_health.get("llm", False)
         embed_online = queue.cached_health.get("embed", False)
     else:
@@ -1282,10 +1283,10 @@ async def get_status(request: Request) -> dict:
     # 5. Embedding progress
     embedded_count = 0
     total_eligible = 0
-    if vs:
+    vs_store = getattr(request.app.state, "vector_store", None)
+    if vs_store:
         try:
-            # Count unique document IDs in the vector store
-            embedded_count = vs.count()  # chunk count, not doc count — approximate
+            embedded_count = vs_store.count()
         except Exception:
             pass
     # Count total documents in Paperless NGX (excluding inbox tag)
