@@ -38,6 +38,33 @@ logger = logging.getLogger(__name__)
 _settings_svc = SettingsService()
 
 
+async def _fetch_all_inbox_doc_ids(
+    paperless_client: Any,
+    inbox_tag_id: int | None,
+) -> list[int]:
+    """Fetch ALL document IDs with the inbox tag, following pagination."""
+    import httpx
+    all_ids: list[int] = []
+    base_url = f"{paperless_client._base_url}/api/documents/"
+    params: dict[str, Any] = {"page_size": 100}
+    if inbox_tag_id is not None:
+        params["tags__id__in"] = inbox_tag_id
+    async with httpx.AsyncClient(headers=paperless_client._headers, timeout=30) as client:
+        first = True
+        url: str | None = base_url
+        while url:
+            if first:
+                resp = await client.get(url, params=params)
+                first = False
+            else:
+                resp = await client.get(url)
+            resp.raise_for_status()
+            data = resp.json()
+            all_ids.extend(d["id"] for d in data.get("results", []))
+            url = data.get("next")
+    return all_ids
+
+
 async def _inbox_polling_loop(
     app: FastAPI,
     poll_interval: int,
@@ -58,18 +85,7 @@ async def _inbox_polling_loop(
                 inbox_tag_id = config.inbox_tag_id
 
                 async def fetch_inbox_docs() -> list[int]:
-                    import httpx
-                    url = f"{paperless_client._base_url}/api/documents/"
-                    params: dict[str, Any] = {"page_size": 100}
-                    if inbox_tag_id is not None:
-                        params["tags__id__in"] = inbox_tag_id
-                    async with httpx.AsyncClient(
-                        headers=paperless_client._headers, timeout=30
-                    ) as client:
-                        resp = await client.get(url, params=params)
-                        resp.raise_for_status()
-                        data = resp.json()
-                    return [d["id"] for d in data.get("results", [])]
+                    return await _fetch_all_inbox_doc_ids(paperless_client, inbox_tag_id)
 
                 async def submit_for_analysis(doc_id: int) -> Any:
                     try:
@@ -127,18 +143,7 @@ async def _scheduler_loop(
                 inbox_tag_id = config.inbox_tag_id
 
                 async def fetch_inbox_docs() -> list[int]:
-                    import httpx
-                    url = f"{paperless_client._base_url}/api/documents/"
-                    params: dict[str, Any] = {"page_size": 100}
-                    if inbox_tag_id is not None:
-                        params["tags__id__in"] = inbox_tag_id
-                    async with httpx.AsyncClient(
-                        headers=paperless_client._headers, timeout=30
-                    ) as client:
-                        resp = await client.get(url, params=params)
-                        resp.raise_for_status()
-                        data = resp.json()
-                    return [d["id"] for d in data.get("results", [])]
+                    return await _fetch_all_inbox_doc_ids(paperless_client, inbox_tag_id)
 
                 async def submit_for_analysis(doc_id: int) -> Any:
                     try:
