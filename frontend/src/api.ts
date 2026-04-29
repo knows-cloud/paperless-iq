@@ -56,6 +56,14 @@ export const api = {
     request(`/queue/${id}/approve`, { method: "POST", body: JSON.stringify(opts ?? {}) }),
   rejectItem: (id: string) =>
     request(`/queue/${id}/reject`, { method: "POST" }),
+  emptyQueue: () =>
+    request<{ rejected_count: number }>("/queue/empty", { method: "POST" }),
+  reanalyzeItem: (suggestionId: string) =>
+    request("/queue/reanalyze", { method: "POST", body: JSON.stringify({ suggestion_id: suggestionId }) }),
+  reanalyzeAll: () =>
+    request<{ detail: string }>("/queue/reanalyze-all", { method: "POST" }),
+  getDocumentTags: (documentId: number) =>
+    request<string[]>(`/documents/${documentId}/tags`),
 
   getAuditLog: (params?: Record<string, string>) => {
     const qs = params ? "?" + new URLSearchParams(params).toString() : "";
