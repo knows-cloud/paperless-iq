@@ -2,7 +2,7 @@ import { useQuery, useMutation } from "@tanstack/react-query";
 import { api } from "./api";
 
 export default function StatusPanel() {
-  const { data } = useQuery({
+  const { data, isError } = useQuery({
     queryKey: ["status"],
     queryFn: api.getStatus,
     refetchInterval: 15000,
@@ -13,15 +13,24 @@ export default function StatusPanel() {
     mutationFn: api.triggerReindex,
   });
 
-  if (!data) return null;
+  if (!data && !isError) return null;
 
+  // Colorblind-friendly: blue = online, red = offline
   const dot = (online: boolean) => (
     <span style={{
       display: "inline-block", width: "8px", height: "8px", borderRadius: "50%",
-      background: online ? "#22c55e" : "#ef4444",
-      boxShadow: online ? "0 0 4px #22c55e" : "0 0 4px #ef4444",
+      background: online ? "#3b82f6" : "#ef4444",
+      boxShadow: online ? "0 0 4px rgba(59,130,246,0.6)" : "0 0 4px rgba(239,68,68,0.6)",
     }} />
   );
+
+  const statusLabel = (online: boolean) => (
+    <span style={{ color: online ? "rgba(255,255,255,0.8)" : "rgba(239,68,68,0.9)", fontSize: "0.72rem" }}>
+      {online ? "online" : "offline"}
+    </span>
+  );
+
+  const d = data ?? { llm_online: false, embed_online: false, queue_pending: 0, embedded_chunks: 0, total_documents: 0 };
 
   return (
     <div style={{
@@ -32,23 +41,25 @@ export default function StatusPanel() {
       color: "rgba(255,255,255,0.6)",
       display: "flex",
       flexDirection: "column",
-      gap: "0.35rem",
+      gap: "0.3rem",
     }}>
       <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
-        <span>{dot(data.llm_online)} LLM</span>
-        <span>{dot(data.embed_online)} Embed</span>
-      </div>
-      <div style={{ display: "flex", justifyContent: "space-between" }}>
-        <span title="Documents waiting for approval">📋 {data.queue_pending} pending</span>
+        <span style={{ display: "flex", alignItems: "center", gap: "4px" }}>{dot(d.llm_online)} LLM {statusLabel(d.llm_online)}</span>
       </div>
       <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+        <span style={{ display: "flex", alignItems: "center", gap: "4px" }}>{dot(d.embed_online)} Embed {statusLabel(d.embed_online)}</span>
+      </div>
+      <div style={{ display: "flex", justifyContent: "space-between", marginTop: "0.15rem" }}>
+        <span title="Documents waiting for approval">📋 {d.queue_pending} pending</span>
+      </div>
+      <div style={{ display: "flex", justifyContent: "space-between" }}>
         <span title="Chunks indexed / total documents">
-          📊 {data.embedded_chunks} chunks / {data.total_documents} docs
+          📊 {d.embedded_chunks} / {d.total_documents}
         </span>
       </div>
       <button
         onClick={() => reindex.mutate()}
-        disabled={reindex.isPending || !data.embed_online}
+        disabled={reindex.isPending || !d.embed_online}
         style={{
           background: "rgba(255,255,255,0.1)",
           border: "1px solid rgba(255,255,255,0.15)",

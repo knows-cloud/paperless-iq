@@ -1166,23 +1166,23 @@ async def get_status(request: Request) -> dict:
     """Return system status indicators for the sidebar dashboard."""
     config = _settings_svc.config
 
-    # 1. LLM online for metadata
+    # 1. LLM online for metadata (3s timeout to avoid blocking)
     llm_online = False
     providers = getattr(request.app.state, "providers", None)
     if providers:
         provider = providers.get(config.llm_provider)
         if provider:
             try:
-                llm_online = await provider.health_check()
+                llm_online = await asyncio.wait_for(provider.health_check(), timeout=3.0)
             except Exception:
                 pass
 
-    # 2. Embedding LLM online
+    # 2. Embedding LLM online (3s timeout)
     embed_online = False
     vs = getattr(request.app.state, "vector_store", None)
     if vs and hasattr(vs, "_llm"):
         try:
-            embed_online = await vs._llm.health_check()
+            embed_online = await asyncio.wait_for(vs._llm.health_check(), timeout=3.0)
         except Exception:
             pass
 
