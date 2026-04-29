@@ -507,7 +507,7 @@ export default function SettingsPage() {
         )}
 
         {/* ── Automation ── */}
-        {settingsTab === "automation" && (
+        {settingsTab === "automation" && (<>
         <div className="card">
           <h3>Automation</h3>
           <div style={{ marginBottom: "1rem" }}>
@@ -620,7 +620,7 @@ export default function SettingsPage() {
             <input id="bedrock_kb_id" name="bedrock_kb_id" defaultValue={String(s.bedrock_kb_id ?? "")} placeholder="Only needed for Bedrock KB backend" />
           </div>
         </div>
-        )}
+        </>)}
 
         {/* ── Localization & Audit ── */}
         {settingsTab === "localization" && (

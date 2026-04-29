@@ -1,7 +1,6 @@
 import { useState } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { api } from "../api";
-import { t } from "../i18n";
 
 export default function ProcessingPage() {
   const [expanded, setExpanded] = useState(true);
