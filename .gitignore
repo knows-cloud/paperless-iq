@@ -7,4 +7,4 @@ __pycache__
 frontend/node_modules
 frontend/dist
 data/
-*.db
+*.db.DS_Store
