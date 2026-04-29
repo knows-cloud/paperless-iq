@@ -1,17 +1,17 @@
 /* ── Paperless IQ — Petrol Design System ── */
 
 :root {
-  /* Petrol palette */
-  --petrol-900: #0a3d3d;
-  --petrol-800: #0e4f4f;
-  --petrol-700: #136666;
-  --petrol-600: #1a7f7f;
-  --petrol-500: #219999;
-  --petrol-400: #3db3b3;
-  --petrol-300: #6dcece;
-  --petrol-200: #a3e0e0;
-  --petrol-100: #d4f0f0;
-  --petrol-50:  #edf8f8;
+  /* Petrol palette — blue-leaning teal */
+  --petrol-900: #0a3344;
+  --petrol-800: #0e4458;
+  --petrol-700: #135a6e;
+  --petrol-600: #1a7288;
+  --petrol-500: #218a9f;
+  --petrol-400: #3da4b8;
+  --petrol-300: #6dc0d0;
+  --petrol-200: #a3dae5;
+  --petrol-100: #d4eef4;
+  --petrol-50:  #edf7fa;
 
   /* Neutrals */
   --gray-900: #1a1d21;
@@ -178,6 +178,10 @@ h4 {
 
 .card:hover {
   box-shadow: var(--shadow-md);
+}
+
+.card-alt {
+  background: rgba(26, 114, 136, 0.06);
 }
 
 /* ── Forms ── */

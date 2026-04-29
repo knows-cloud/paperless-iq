@@ -1,6 +1,7 @@
 import { useState, useMemo } from "react";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { api, type PaperlessEntity, type PaperlessCustomField } from "../api";
+import TagInput from "../TagInput";
 
 interface QueueItem {
   id: string;
@@ -77,7 +78,7 @@ export default function QueuePage() {
     <div>
       <h2>Approval Queue</h2>
       {items.length === 0 && <p>No pending suggestions.</p>}
-      {items.map((raw) => {
+      {items.map((raw, idx) => {
         const item = getItem(raw);
         const id = item.id;
         const isNewTag = (t: string) => !tagNames.has(t.toLowerCase());
@@ -90,7 +91,7 @@ export default function QueuePage() {
         const createMissing = createMissingMap[id] ?? false;
 
         return (
-          <div key={id} className="card" style={{ marginBottom: "0.5rem" }}>
+          <div key={id} className={`card${idx % 2 === 1 ? " card-alt" : ""}`} style={{ marginBottom: "0.5rem" }}>
             <p style={{ margin: "0 0 0.5rem", fontWeight: 600 }}>Document {item.document_id}</p>
             <div style={{ fontSize: "0.85rem" }}>
               <div className="form-group" style={{ marginBottom: "0.4rem" }}>
@@ -109,8 +110,11 @@ export default function QueuePage() {
                     </span>
                   ))}
                 </div>
-                <input placeholder="Add tag and press Enter" style={{ fontSize: "0.85rem" }}
-                  onKeyDown={e => { if (e.key === "Enter") { e.preventDefault(); const v = (e.target as HTMLInputElement).value.trim(); if (v && !item.tags.includes(v)) { updateField(id, raw, "tags", [...item.tags, v]); (e.target as HTMLInputElement).value = ""; } } }} />
+                <TagInput
+                  allTags={(tagsQ.data ?? []).map((t: PaperlessEntity) => t.name)}
+                  placeholder="Add tag…"
+                  onAdd={tag => { if (!item.tags.includes(tag)) updateField(id, raw, "tags", [...item.tags, tag]); }}
+                />
               </div>
               <div className="form-group" style={{ marginBottom: "0.4rem" }}>
                 <label style={{ fontWeight: 600, color: "#555", fontSize: "0.85rem" }}>Correspondent</label>

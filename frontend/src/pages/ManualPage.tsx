@@ -1,6 +1,7 @@
 import { useState, useCallback, useMemo } from "react";
 import { useQuery, useMutation } from "@tanstack/react-query";
 import { api, type PaperlessEntity, type PaperlessCustomField, type DocumentItem, type MetadataSuggestionResponse } from "../api";
+import TagInput from "../TagInput";
 
 export default function ManualPage() {
   const [titleQuery, setTitleQuery] = useState("");
@@ -157,17 +158,11 @@ export default function ManualPage() {
                 </span>
               ))}
             </div>
-            <input placeholder="Add tag and press Enter" style={{ fontSize: "0.85rem" }}
-              onKeyDown={e => {
-                if (e.key === "Enter") {
-                  e.preventDefault();
-                  const val = (e.target as HTMLInputElement).value.trim();
-                  if (val && !suggestion.tags.includes(val)) {
-                    updateSuggestionField(docId, "tags", [...suggestion.tags, val]);
-                    (e.target as HTMLInputElement).value = "";
-                  }
-                }
-              }} />
+            <TagInput
+              allTags={(tags.data ?? []).map((t: PaperlessEntity) => t.name)}
+              placeholder="Add tag…"
+              onAdd={tag => { if (!suggestion.tags.includes(tag)) updateSuggestionField(docId, "tags", [...suggestion.tags, tag]); }}
+            />
           </div>
           <div className="form-group" style={{ marginBottom: "0.4rem" }}>
             <label style={{ fontWeight: 600, color: "#555", fontSize: "0.85rem" }}>Correspondent</label>
@@ -319,7 +314,7 @@ export default function ManualPage() {
               </div>
             )}
           </div>
-          {docs.data.items.map((doc: DocumentItem) => {
+          {(() => { let visibleIdx = 0; return docs.data.items.map((doc: DocumentItem) => {
             const isAnalyzing = analyzingDocs.has(doc.id);
             const result = analysisResults[doc.id];
             const error = analysisErrors[doc.id];
@@ -327,8 +322,9 @@ export default function ManualPage() {
             const isSelected = selectedDocs.has(doc.id);
             const wasAnalyzed = !!result || approvedDocs.has(doc.id) || isDismissed;
             if (hideAnalyzed && wasAnalyzed) return null;
+            const cardIdx = visibleIdx++;
             return (
-              <div key={doc.id} className="card" style={{ marginBottom: "0.5rem" }}>
+              <div key={doc.id} className={`card${cardIdx % 2 === 1 ? " card-alt" : ""}`} style={{ marginBottom: "0.5rem" }}>
                 <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start" }}>
                   <div style={{ display: "flex", gap: "0.5rem", alignItems: "flex-start" }}>
                     <input type="checkbox" checked={isSelected} onChange={() => toggleDocSelection(doc.id)} style={{ marginTop: "0.3rem" }} />
@@ -351,7 +347,7 @@ export default function ManualPage() {
                 {result && !isDismissed && renderSuggestion(result, doc.id)}
               </div>
             );
-          })}
+          }); })()}
           {docs.data.total > 20 && (
             <div style={{ display: "flex", gap: "0.5rem", marginTop: "0.5rem" }}>
               <button className="btn" disabled={page <= 1} onClick={() => setPage(p => p - 1)}>Previous</button>
