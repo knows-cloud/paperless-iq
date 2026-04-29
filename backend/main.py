@@ -26,6 +26,7 @@ from backend.database import AsyncSessionLocal, get_session
 from backend.inbox_monitor import InboxMonitor, Scheduler
 from backend.manual_analysis import ManualAnalysisService
 from backend.models import MetadataSuggestion
+from backend.ollama_queue import OllamaQueue, Priority
 from backend.provider_registry import build_providers
 from backend.rate_limiter import RateLimiter
 from backend.settings_service import SettingsService
@@ -179,6 +180,7 @@ async def _background_index(
     paperless_client: PaperlessNGXClient,
     vector_store: ChromaVectorStore,
     config: Any,
+    queue: OllamaQueue | None = None,
 ) -> None:
     """Index processed documents into the vector store in the background.
 
@@ -237,10 +239,13 @@ async def _background_index(
                         "document_type": dt_id_to_name.get(doc.get("document_type") or 0, ""),
                     }
                     try:
-                        await vector_store.upsert(doc_id, content, meta)
+                        if queue:
+                            await queue.submit_background(
+                                lambda did=doc_id, c=content, m=meta: vector_store.upsert(did, c, m)
+                            )
+                        else:
+                            await vector_store.upsert(doc_id, content, meta)
                         indexed += 1
-                        # Throttle: wait between documents to avoid overwhelming Ollama
-                        await asyncio.sleep(1.0)
                     except Exception:
                         logger.debug("Failed to index document %d", doc_id, exc_info=True)
                         await asyncio.sleep(2.0)  # back off on failure
@@ -276,6 +281,7 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     app.state.inbox_task = None
     app.state.scheduler_task = None
     app.state.vector_store = None
+    app.state.ollama_queue = None
 
     config = _settings_svc.config
     secret_key = os.environ.get("SECRET_KEY", "")
@@ -323,6 +329,11 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
             logger.warning("Could not initialize vector store — smart entity selection disabled.", exc_info=True)
             vector_store = None
 
+        # Initialize the Ollama request queue
+        ollama_queue = OllamaQueue(max_concurrency=1)
+        ollama_queue.start()
+        app.state.ollama_queue = ollama_queue
+
         try:
             app.state.manual_analysis_svc = ManualAnalysisService(
                 config, providers, paperless_client, vector_store=vector_store
@@ -333,7 +344,7 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
 
         # Start background indexing of existing processed documents
         if vector_store and paperless_client:
-            asyncio.create_task(_background_index(paperless_client, vector_store, config))
+            asyncio.create_task(_background_index(paperless_client, vector_store, config, ollama_queue))
 
     # Start automation tasks if enabled
     if config.automation_enabled:
@@ -358,6 +369,11 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
             except asyncio.CancelledError:
                 pass
             logger.info("Cancelled %s.", task_name)
+
+    # Stop the Ollama queue
+    oq = getattr(app.state, "ollama_queue", None)
+    if oq:
+        oq.stop()
 
     logger.info("Paperless IQ shutting down")
 
@@ -849,12 +865,24 @@ async def manual_analyze(body: AnalyzeBody, request: Request) -> dict:
             detail="Analysis service not configured. Configure an LLM provider in settings.",
         )
     try:
-        suggestion = await svc.analyze(
-            document_id=body.document_id,
-            provider_override=body.provider,
-            model_override=body.model,
-            mode_override=body.mode,
-        )
+        queue: OllamaQueue | None = getattr(request.app.state, "ollama_queue", None)
+        if queue:
+            suggestion = await queue.submit(
+                Priority.ANALYSIS,
+                lambda: svc.analyze(
+                    document_id=body.document_id,
+                    provider_override=body.provider,
+                    model_override=body.model,
+                    mode_override=body.mode,
+                ),
+            )
+        else:
+            suggestion = await svc.analyze(
+                document_id=body.document_id,
+                provider_override=body.provider,
+                model_override=body.model,
+                mode_override=body.mode,
+            )
     except ConnectionError as exc:
         raise HTTPException(
             status_code=status.HTTP_502_BAD_GATEWAY,
@@ -1170,26 +1198,36 @@ async def import_config(body: dict[str, Any] = Body(...)) -> dict:
 async def get_status(request: Request) -> dict:
     """Return system status indicators for the sidebar dashboard."""
     config = _settings_svc.config
+    queue: OllamaQueue | None = getattr(request.app.state, "ollama_queue", None)
 
-    # 1. LLM online for metadata (3s timeout to avoid blocking)
+    # Use cached health if queue is busy or cache is fresh (< 30s)
     llm_online = False
-    providers = getattr(request.app.state, "providers", None)
-    if providers:
-        provider = providers.get(config.llm_provider)
-        if provider:
+    embed_online = False
+
+    if queue and (queue.is_busy or queue.health_cache_age < 30.0):
+        llm_online = queue.cached_health.get("llm", False)
+        embed_online = queue.cached_health.get("embed", False)
+    else:
+        # Queue is idle — do a real health check
+        providers = getattr(request.app.state, "providers", None)
+        if providers:
+            provider = providers.get(config.llm_provider)
+            if provider:
+                try:
+                    llm_online = await asyncio.wait_for(provider.health_check(), timeout=3.0)
+                except Exception:
+                    pass
+        if queue:
+            queue.update_health_cache("llm", llm_online)
+
+        vs = getattr(request.app.state, "vector_store", None)
+        if vs and hasattr(vs, "_llm"):
             try:
-                llm_online = await asyncio.wait_for(provider.health_check(), timeout=3.0)
+                embed_online = await asyncio.wait_for(vs._llm.health_check(), timeout=3.0)
             except Exception:
                 pass
-
-    # 2. Embedding LLM online (3s timeout)
-    embed_online = False
-    vs = getattr(request.app.state, "vector_store", None)
-    if vs and hasattr(vs, "_llm"):
-        try:
-            embed_online = await asyncio.wait_for(vs._llm.health_check(), timeout=3.0)
-        except Exception:
-            pass
+        if queue:
+            queue.update_health_cache("embed", embed_online)
 
     # 3 & 4. Queue counts
     from backend.database import AsyncSessionLocal
