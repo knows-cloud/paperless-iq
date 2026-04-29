@@ -181,7 +181,7 @@ h4 {
 }
 
 .card-alt {
-  background: rgba(26, 114, 136, 0.12);
+  background: var(--card-alt-bg, rgba(26, 114, 136, 0.12));
 }
 
 /* ── Forms ── */

@@ -32,6 +32,11 @@ export default function SettingsPage() {
   const [themeSidebarFrom, setThemeSidebarFrom] = useState("#0a3344");
   const [themeSidebarTo, setThemeSidebarTo] = useState("#0e4458");
   const [themeFont, setThemeFont] = useState("Roboto");
+  const [themeFontSize, setThemeFontSize] = useState("14px");
+  const [themeTextColor, setThemeTextColor] = useState("#2d3239");
+  const [themeBgColor, setThemeBgColor] = useState("#f8f9fb");
+  const [themeCardColor, setThemeCardColor] = useState("#ffffff");
+  const [themeCardAltColor, setThemeCardAltColor] = useState("rgba(26, 114, 136, 0.12)");
   const [themeLogo, setThemeLogo] = useState("iq_1.png");
   const [themeNavIcons, setThemeNavIcons] = useState<Record<string, string>>({});
   const tagDropdownRef = useRef<HTMLDivElement>(null);
@@ -63,6 +68,11 @@ export default function SettingsPage() {
       setThemeSidebarFrom(String(s.theme_sidebar_from ?? "#0a3344"));
       setThemeSidebarTo(String(s.theme_sidebar_to ?? "#0e4458"));
       setThemeFont(String(s.theme_font ?? "Roboto"));
+      setThemeFontSize(String(s.theme_font_size ?? "14px"));
+      setThemeTextColor(String(s.theme_text_color ?? "#2d3239"));
+      setThemeBgColor(String(s.theme_bg_color ?? "#f8f9fb"));
+      setThemeCardColor(String(s.theme_card_color ?? "#ffffff"));
+      setThemeCardAltColor(String(s.theme_card_alt_color ?? "rgba(26, 114, 136, 0.12)"));
       setThemeLogo(String(s.theme_logo ?? "iq_1.png"));
       setThemeNavIcons((s.theme_nav_icons as Record<string, string>) ?? {});
     }
@@ -161,6 +171,11 @@ export default function SettingsPage() {
     values.theme_sidebar_from = themeSidebarFrom;
     values.theme_sidebar_to = themeSidebarTo;
     values.theme_font = themeFont;
+    values.theme_font_size = themeFontSize;
+    values.theme_text_color = themeTextColor;
+    values.theme_bg_color = themeBgColor;
+    values.theme_card_color = themeCardColor;
+    values.theme_card_alt_color = themeCardAltColor;
     values.theme_logo = themeLogo;
     values.theme_nav_icons = themeNavIcons;
 
@@ -590,8 +605,59 @@ export default function SettingsPage() {
               <option value="Fira Code">Fira Code (Nerd Font)</option>
               <option value="Ubuntu">Ubuntu</option>
               <option value="Noto Sans">Noto Sans (full Unicode)</option>
+              <option value="Open Sans">Open Sans</option>
             </select>
             <small>Font is loaded from Google Fonts. Nerd Font options have extended symbol support.</small>
+          </div>
+
+          <div style={{ display: "flex", gap: "1rem", flexWrap: "wrap" }}>
+            <div className="form-group" style={{ flex: 1, minWidth: "140px" }}>
+              <label>Font Size</label>
+              <select value={themeFontSize} onChange={e => setThemeFontSize(e.target.value)} style={{ fontSize: "0.85rem" }}>
+                <option value="12px">12px</option>
+                <option value="13px">13px</option>
+                <option value="14px">14px</option>
+                <option value="15px">15px</option>
+                <option value="16px">16px</option>
+              </select>
+            </div>
+            <div className="form-group" style={{ flex: 1, minWidth: "200px" }}>
+              <label>Text Color</label>
+              <div style={{ display: "flex", gap: "0.5rem", alignItems: "center" }}>
+                <input type="color" value={themeTextColor} onChange={e => setThemeTextColor(e.target.value)}
+                  style={{ width: "40px", height: "34px", padding: "2px", cursor: "pointer" }} />
+                <input value={themeTextColor} onChange={e => setThemeTextColor(e.target.value)}
+                  style={{ fontSize: "0.85rem", fontFamily: "'Roboto Mono', monospace", flex: 1 }} />
+              </div>
+            </div>
+          </div>
+
+          <div style={{ display: "flex", gap: "1rem", flexWrap: "wrap" }}>
+            <div className="form-group" style={{ flex: 1, minWidth: "200px" }}>
+              <label>Page Background</label>
+              <div style={{ display: "flex", gap: "0.5rem", alignItems: "center" }}>
+                <input type="color" value={themeBgColor} onChange={e => setThemeBgColor(e.target.value)}
+                  style={{ width: "40px", height: "34px", padding: "2px", cursor: "pointer" }} />
+                <input value={themeBgColor} onChange={e => setThemeBgColor(e.target.value)}
+                  style={{ fontSize: "0.85rem", fontFamily: "'Roboto Mono', monospace", flex: 1 }} />
+              </div>
+            </div>
+            <div className="form-group" style={{ flex: 1, minWidth: "200px" }}>
+              <label>Card Background</label>
+              <div style={{ display: "flex", gap: "0.5rem", alignItems: "center" }}>
+                <input type="color" value={themeCardColor} onChange={e => setThemeCardColor(e.target.value)}
+                  style={{ width: "40px", height: "34px", padding: "2px", cursor: "pointer" }} />
+                <input value={themeCardColor} onChange={e => setThemeCardColor(e.target.value)}
+                  style={{ fontSize: "0.85rem", fontFamily: "'Roboto Mono', monospace", flex: 1 }} />
+              </div>
+            </div>
+            <div className="form-group" style={{ flex: 1, minWidth: "200px" }}>
+              <label>Alternating Card</label>
+              <input value={themeCardAltColor} onChange={e => setThemeCardAltColor(e.target.value)}
+                style={{ fontSize: "0.85rem", fontFamily: "'Roboto Mono', monospace" }}
+                placeholder="rgba(26, 114, 136, 0.12)" />
+              <small>Supports rgba() for transparency.</small>
+            </div>
           </div>
 
           <div className="form-group">
