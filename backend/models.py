@@ -134,6 +134,7 @@ class PaperlessIQConfig(BaseModel):
 
     # Localization
     target_language: str | None = None
+    ui_language: str = "en"
 
     # Theme
     theme_primary_color: str = "#1a7288"

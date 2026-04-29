@@ -553,8 +553,20 @@ export default function SettingsPage() {
         <div className="card">
           <h3>Localization &amp; Audit</h3>
           <div className="form-group">
-            <label htmlFor="target_language">Target Language</label>
+            <label htmlFor="ui_language">Interface Language</label>
+            <select id="ui_language" name="ui_language" defaultValue={String(s.ui_language ?? "en")}>
+              <option value="en">English</option>
+              <option value="de">Deutsch</option>
+              <option value="fr">Français</option>
+              <option value="es">Español</option>
+              <option value="it">Italiano</option>
+            </select>
+            <small>Language for the Paperless IQ user interface. Refresh after saving.</small>
+          </div>
+          <div className="form-group">
+            <label htmlFor="target_language">LLM Output Language</label>
             <input id="target_language" name="target_language" defaultValue={String(s.target_language ?? "")} placeholder="e.g. de, fr, es (leave empty for English)" />
+            <small>Language the LLM should use for metadata values (title, tags, etc.). Leave empty for English.</small>
           </div>
           <div className="form-group">
             <label htmlFor="audit_retention_days">Audit Retention (days, min 90)</label>
