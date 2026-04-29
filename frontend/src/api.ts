@@ -87,6 +87,8 @@ export const api = {
   getDocumentTypes: () => request<PaperlessEntity[]>("/paperless/document_types"),
   getCustomFields: () => request<PaperlessCustomField[]>("/paperless/custom_fields"),
   getStoragePaths: () => request<PaperlessEntity[]>("/paperless/storage_paths"),
+  getLogos: () => request<string[]>("/logos"),
+  getTheme: () => request<{ primary_color: string; sidebar_from: string; sidebar_to: string; font: string; logo: string; nav_icons: Record<string, string> }>("/theme"),
   getDocuments: (params?: Record<string, string>) => {
     const qs = params ? "?" + new URLSearchParams(params).toString() : "";
     return request<PagedResult<DocumentItem>>(`/documents${qs}`);

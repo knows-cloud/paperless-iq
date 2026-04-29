@@ -28,7 +28,14 @@ export default function SettingsPage() {
   const [perDoctypePrompts, setPerDoctypePrompts] = useState<Record<string, string>>({});
   const [showAdvancedTemplates, setShowAdvancedTemplates] = useState(false);
   const [selectedProvider, setSelectedProvider] = useState("");
+  const [themePrimary, setThemePrimary] = useState("#1a7288");
+  const [themeSidebarFrom, setThemeSidebarFrom] = useState("#0a3344");
+  const [themeSidebarTo, setThemeSidebarTo] = useState("#0e4458");
+  const [themeFont, setThemeFont] = useState("Roboto");
+  const [themeLogo, setThemeLogo] = useState("iq_1.png");
+  const [themeNavIcons, setThemeNavIcons] = useState<Record<string, string>>({});
   const tagDropdownRef = useRef<HTMLDivElement>(null);
+  const logos = useQuery({ queryKey: ["logos"], queryFn: api.getLogos, retry: false });
 
   const s = data as Record<string, unknown> | undefined;
 
@@ -51,6 +58,13 @@ export default function SettingsPage() {
           Object.entries((s.per_doctype_prompt_templates as Record<string, string>) ?? {}).map(([k, v]) => [String(k), v])
         )
       );
+      // Initialize theme
+      setThemePrimary(String(s.theme_primary_color ?? "#1a7288"));
+      setThemeSidebarFrom(String(s.theme_sidebar_from ?? "#0a3344"));
+      setThemeSidebarTo(String(s.theme_sidebar_to ?? "#0e4458"));
+      setThemeFont(String(s.theme_font ?? "Roboto"));
+      setThemeLogo(String(s.theme_logo ?? "iq_1.png"));
+      setThemeNavIcons((s.theme_nav_icons as Record<string, string>) ?? {});
     }
   }, [s]);
 
@@ -67,7 +81,7 @@ export default function SettingsPage() {
 
   const mutation = useMutation({
     mutationFn: api.updateSettings,
-    onSuccess: () => { qc.invalidateQueries({ queryKey: ["settings"] }); setMsg("Saved."); },
+    onSuccess: () => { qc.invalidateQueries({ queryKey: ["settings"] }); qc.invalidateQueries({ queryKey: ["theme"] }); setMsg("Saved. Refresh to see theme changes."); },
     onError: (e: Error) => setMsg(e.message),
   });
 
@@ -141,6 +155,14 @@ export default function SettingsPage() {
       if (v.trim()) pdtTemplates[k] = v.trim();
     }
     values.per_doctype_prompt_templates = pdtTemplates;
+
+    // Theme values
+    values.theme_primary_color = themePrimary;
+    values.theme_sidebar_from = themeSidebarFrom;
+    values.theme_sidebar_to = themeSidebarTo;
+    values.theme_font = themeFont;
+    values.theme_logo = themeLogo;
+    values.theme_nav_icons = themeNavIcons;
 
     setMsg("");
     mutation.mutate(values);
@@ -519,6 +541,94 @@ export default function SettingsPage() {
           <div className="form-group">
             <label htmlFor="audit_retention_days">Audit Retention (days, min 90)</label>
             <input id="audit_retention_days" name="audit_retention_days" type="number" min="90" defaultValue={String(s.audit_retention_days)} />
+          </div>
+        </div>
+
+        {/* ── Theme ── */}
+        <div className="card">
+          <h3>Theme</h3>
+          <div style={{ display: "flex", gap: "1rem", flexWrap: "wrap" }}>
+            <div className="form-group" style={{ flex: 1, minWidth: "200px" }}>
+              <label>Primary Color</label>
+              <div style={{ display: "flex", gap: "0.5rem", alignItems: "center" }}>
+                <input type="color" value={themePrimary} onChange={e => setThemePrimary(e.target.value)}
+                  style={{ width: "40px", height: "34px", padding: "2px", cursor: "pointer" }} />
+                <input value={themePrimary} onChange={e => setThemePrimary(e.target.value)}
+                  style={{ fontSize: "0.85rem", fontFamily: "'Roboto Mono', monospace", flex: 1 }}
+                  placeholder="#1a7288" />
+              </div>
+            </div>
+            <div className="form-group" style={{ flex: 1, minWidth: "200px" }}>
+              <label>Sidebar Top</label>
+              <div style={{ display: "flex", gap: "0.5rem", alignItems: "center" }}>
+                <input type="color" value={themeSidebarFrom} onChange={e => setThemeSidebarFrom(e.target.value)}
+                  style={{ width: "40px", height: "34px", padding: "2px", cursor: "pointer" }} />
+                <input value={themeSidebarFrom} onChange={e => setThemeSidebarFrom(e.target.value)}
+                  style={{ fontSize: "0.85rem", fontFamily: "'Roboto Mono', monospace", flex: 1 }} />
+              </div>
+            </div>
+            <div className="form-group" style={{ flex: 1, minWidth: "200px" }}>
+              <label>Sidebar Bottom</label>
+              <div style={{ display: "flex", gap: "0.5rem", alignItems: "center" }}>
+                <input type="color" value={themeSidebarTo} onChange={e => setThemeSidebarTo(e.target.value)}
+                  style={{ width: "40px", height: "34px", padding: "2px", cursor: "pointer" }} />
+                <input value={themeSidebarTo} onChange={e => setThemeSidebarTo(e.target.value)}
+                  style={{ fontSize: "0.85rem", fontFamily: "'Roboto Mono', monospace", flex: 1 }} />
+              </div>
+            </div>
+          </div>
+
+          <div className="form-group">
+            <label>Font</label>
+            <select value={themeFont} onChange={e => setThemeFont(e.target.value)} style={{ fontSize: "0.85rem" }}>
+              <option value="Roboto">Roboto</option>
+              <option value="Inter">Inter</option>
+              <option value="Fira Sans">Fira Sans</option>
+              <option value="Source Sans 3">Source Sans 3</option>
+              <option value="Nunito">Nunito</option>
+              <option value="JetBrains Mono">JetBrains Mono (Nerd Font)</option>
+              <option value="Fira Code">Fira Code (Nerd Font)</option>
+              <option value="Ubuntu">Ubuntu</option>
+              <option value="Noto Sans">Noto Sans (full Unicode)</option>
+            </select>
+            <small>Font is loaded from Google Fonts. Nerd Font options have extended symbol support.</small>
+          </div>
+
+          <div className="form-group">
+            <label>Logo</label>
+            <div style={{ display: "flex", gap: "0.75rem", flexWrap: "wrap" }}>
+              {(logos.data ?? []).map(name => (
+                <div key={name} onClick={() => setThemeLogo(name)}
+                  style={{
+                    cursor: "pointer", padding: "0.35rem", borderRadius: "var(--radius-sm)",
+                    border: themeLogo === name ? "2px solid var(--petrol-600)" : "2px solid var(--gray-200)",
+                    background: themeLogo === name ? "var(--petrol-50)" : "white",
+                  }}>
+                  <img src={`/logos/${name}`} alt={name}
+                    style={{ width: "48px", height: "48px", objectFit: "contain", display: "block" }} />
+                </div>
+              ))}
+            </div>
+          </div>
+
+          <div className="form-group">
+            <label>Navigation Icons</label>
+            <small style={{ display: "block", marginBottom: "0.5rem" }}>Emoji or Unicode symbols for each section.</small>
+            <div style={{ display: "flex", gap: "0.5rem", flexWrap: "wrap" }}>
+              {[
+                { id: "manual", label: "Analysis" },
+                { id: "queue", label: "Queue" },
+                { id: "discovery", label: "Discovery" },
+                { id: "audit", label: "Audit" },
+                { id: "settings", label: "Settings" },
+              ].map(item => (
+                <div key={item.id} style={{ display: "flex", flexDirection: "column", alignItems: "center", gap: "0.2rem" }}>
+                  <input value={themeNavIcons[item.id] ?? ""} onChange={e => setThemeNavIcons(prev => ({ ...prev, [item.id]: e.target.value }))}
+                    style={{ width: "3rem", textAlign: "center", fontSize: "1.1rem", padding: "0.3rem" }} />
+                  <span style={{ fontSize: "0.7rem", color: "var(--gray-500)" }}>{item.label}</span>
+                </div>
+              ))}
+            </div>
           </div>
         </div>
 
