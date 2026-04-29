@@ -548,6 +548,125 @@ async def bulk_reject(
         raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(exc))
 
 
+@app.post("/api/queue/empty", tags=["queue"])
+async def empty_queue(
+    svc: Annotated[ApprovalQueueService, Depends(_queue_service)],
+) -> dict:
+    """Reject all pending suggestions (empty the queue)."""
+    pending, total = await svc.list(status="pending", page=1, page_size=10000)
+    rejected = 0
+    for s in pending:
+        try:
+            await svc.reject(s.id)
+            rejected += 1
+        except ValueError:
+            pass
+    return {"rejected_count": rejected}
+
+
+class ReanalyzeBody(BaseModel):
+    suggestion_id: UUID
+
+
+@app.post("/api/queue/reanalyze", tags=["queue"])
+async def reanalyze_queue_item(
+    body: ReanalyzeBody,
+    request: Request,
+    svc: Annotated[ApprovalQueueService, Depends(_queue_service)],
+) -> dict:
+    """Re-analyze a queued document: reject the old suggestion, analyze fresh, enqueue new."""
+    manual_svc: ManualAnalysisService | None = request.app.state.manual_analysis_svc
+    if manual_svc is None:
+        raise HTTPException(status_code=503, detail="Analysis service not configured.")
+
+    # Get the old suggestion to find the document ID
+    from backend.orm_models import SuggestionORM
+    row = await svc._session.get(SuggestionORM, str(body.suggestion_id))
+    if row is None:
+        raise HTTPException(status_code=404, detail="Suggestion not found.")
+    doc_id = row.document_id
+
+    # Reject the old one
+    try:
+        await svc.reject(body.suggestion_id)
+    except ValueError:
+        pass
+
+    # Analyze fresh
+    try:
+        suggestion = await manual_svc.analyze(doc_id)
+        enqueued = await svc.enqueue(suggestion)
+        return enqueued.model_dump(mode="json")
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=f"Re-analysis failed: {exc}")
+
+
+@app.post("/api/queue/reanalyze-all", tags=["queue"])
+async def reanalyze_all_queue(
+    request: Request,
+    svc: Annotated[ApprovalQueueService, Depends(_queue_service)],
+) -> dict:
+    """Re-analyze all pending queue items in the background."""
+    manual_svc: ManualAnalysisService | None = request.app.state.manual_analysis_svc
+    if manual_svc is None:
+        raise HTTPException(status_code=503, detail="Analysis service not configured.")
+
+    pending, _ = await svc.list(status="pending", page=1, page_size=10000)
+    doc_ids = [s.document_id for s in pending]
+    suggestion_ids = [s.id for s in pending]
+
+    # Reject all old ones
+    for sid in suggestion_ids:
+        try:
+            await svc.reject(sid)
+        except ValueError:
+            pass
+
+    # Re-analyze in background
+    async def _reanalyze_bg() -> None:
+        from backend.database import AsyncSessionLocal
+        from backend.approval_queue import ApprovalQueueService as QSvc
+        for doc_id in doc_ids:
+            try:
+                suggestion = await manual_svc.analyze(doc_id)
+                async with AsyncSessionLocal() as session:
+                    q = QSvc(session)
+                    await q.enqueue(suggestion)
+            except Exception:
+                logger.exception("Re-analysis failed for doc %d", doc_id)
+
+    asyncio.create_task(_reanalyze_bg())
+    return {"detail": f"Re-analyzing {len(doc_ids)} documents in background."}
+
+
+@app.get("/api/documents/{document_id}/tags", tags=["documents"])
+async def get_document_existing_tags(document_id: int, request: Request) -> list[str]:
+    """Fetch the existing tag names for a document from Paperless NGX."""
+    pc = getattr(request.app.state, "paperless_client", None)
+    if not pc:
+        raise HTTPException(status_code=503, detail="Paperless NGX not configured.")
+    try:
+        import httpx
+        async with httpx.AsyncClient(headers=pc._headers, timeout=15) as client:
+            resp = await client.get(f"{pc._base_url}/api/documents/{document_id}/")
+            resp.raise_for_status()
+            doc = resp.json()
+            tag_ids = doc.get("tags", [])
+            if not tag_ids:
+                return []
+            # Resolve IDs to names
+            tag_names: list[str] = []
+            all_tags = (await client.get(f"{pc._base_url}/api/tags/?page_size=1000")).json().get("results", [])
+            id_to_name = {t["id"]: t["name"] for t in all_tags}
+            for tid in tag_ids:
+                name = id_to_name.get(tid)
+                if name:
+                    tag_names.append(name)
+            return tag_names
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=str(exc))
+
+
 # ---------------------------------------------------------------------------
 # Audit Log endpoints
 # ---------------------------------------------------------------------------
