@@ -4,6 +4,7 @@ import { api, type PaperlessEntity, type PaperlessCustomField } from "../api";
 import TagInput from "../TagInput";
 import AutocompleteInput from "../AutocompleteInput";
 import CfNameEditor from "../CfNameEditor";
+import { t } from "../i18n";
 
 interface QueueItem {
   id: string;
@@ -128,7 +129,7 @@ export default function QueuePage() {
   return (
     <div>
       <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: "1rem" }}>
-        <h2 style={{ margin: 0 }}>Approval Queue</h2>
+        <h2 style={{ margin: 0 }}>{t("queue.title")}</h2>
         {items.length > 0 && (
           <div style={{ display: "flex", gap: "0.5rem" }}>
             <button className="btn btn-primary" onClick={() => reanalyzeAll.mutate()}
@@ -157,7 +158,7 @@ export default function QueuePage() {
         </div>
       )}
 
-      {items.length === 0 && !showEmptyConfirm && <p>No pending suggestions.</p>}
+      {items.length === 0 && !showEmptyConfirm && <p>{t("queue.empty")}</p>}
       {items.map((raw, idx) => {
         const item = getItem(raw);
         const id = item.id;

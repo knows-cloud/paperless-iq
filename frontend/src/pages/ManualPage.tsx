@@ -4,6 +4,7 @@ import { api, type PaperlessEntity, type PaperlessCustomField, type DocumentItem
 import TagInput from "../TagInput";
 import AutocompleteInput from "../AutocompleteInput";
 import CfNameEditor from "../CfNameEditor";
+import { t } from "../i18n";
 
 export default function ManualPage() {
   const [titleQuery, setTitleQuery] = useState("");
@@ -253,9 +254,9 @@ export default function ManualPage() {
 
   return (
     <div>
-      <h2>Document Search &amp; Analysis</h2>
+      <h2>{t("analysis.title")}</h2>
       {paperlessUnavailable && (
-        <div className="card"><p className="error">Cannot connect to Paperless NGX. Make sure PAPERLESS_URL and PAPERLESS_TOKEN are configured.</p></div>
+        <div className="card"><p className="error">{t("analysis.paperlessUnavailable")}</p></div>
       )}
       <div className="card">
         <div className="form-group">

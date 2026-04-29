@@ -1,5 +1,6 @@
 import { useState, useRef, useEffect } from "react";
 import { api } from "../api";
+import { t } from "../i18n";
 
 interface Source {
   document_id: number;
@@ -56,9 +57,9 @@ export default function DiscoveryPage() {
 
   return (
     <div style={{ display: "flex", flexDirection: "column", height: "calc(100vh - 120px)" }}>
-      <h2>Discovery</h2>
+      <h2>{t("discovery.title")}</h2>
       <p style={{ fontSize: "0.85rem", color: "var(--gray-500)", margin: "0 0 0.75rem" }}>
-        Ask questions about your documents. Answers are grounded in your actual document content with citations.
+        {t("discovery.subtitle")}
       </p>
 
       <div style={{ flex: 1, overflowY: "auto", marginBottom: "0.75rem", padding: "0.5rem 0" }}>
