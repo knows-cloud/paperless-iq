@@ -36,6 +36,7 @@ export default function QueuePage() {
   const [existingTagsMap, setExistingTagsMap] = useState<Record<number, string[]>>({});
   const [showEmptyConfirm, setShowEmptyConfirm] = useState(false);
   const [reanalyzingIds, setReanalyzingIds] = useState<Set<string>>(new Set());
+  const [removedExistingTags, setRemovedExistingTags] = useState<Record<string, Set<string>>>({});
 
   const items = (data?.items ?? []) as Array<Record<string, unknown>>;
 
@@ -52,11 +53,23 @@ export default function QueuePage() {
   }, [items.length]);
 
   const approve = useMutation({
-    mutationFn: ({ id, item }: { id: string; item: QueueItem }) => {
-      const mergeTags = mergeTagsMap[id] ?? true;
+    mutationFn: ({ id, item, docId }: { id: string; item: QueueItem; docId: number }) => {
+      let mergeTags = mergeTagsMap[id] ?? true;
       const createMissing = createMissingMap[id] ?? false;
+      const removed = removedExistingTags[id];
+      let finalTags = item.tags;
+
+      if (removed && removed.size > 0) {
+        // Build explicit tag list: existing (minus removed) + suggested
+        const existing = existingTagsMap[docId] ?? [];
+        const kept = existing.filter(t => !removed.has(t));
+        const merged = [...new Set([...kept, ...item.tags])];
+        finalTags = merged;
+        mergeTags = false; // we're sending the complete list
+      }
+
       return api.approveItem(id, {
-        edits: { title: item.title, tags: item.tags, correspondent: item.correspondent, document_type: item.document_type, storage_path: item.storage_path, custom_fields: item.custom_fields },
+        edits: { title: item.title, tags: finalTags, correspondent: item.correspondent, document_type: item.document_type, storage_path: item.storage_path, custom_fields: item.custom_fields },
         merge_tags: mergeTags, create_missing: createMissing,
       });
     },
@@ -171,11 +184,34 @@ export default function QueuePage() {
 
             {docExistingTags.length > 0 && (
               <div style={{ marginBottom: "0.5rem" }}>
-                <label style={{ fontWeight: 500, color: "#555", fontSize: "0.8rem", display: "block", marginBottom: "0.2rem" }}>Current tags on document:</label>
+                <label style={{ fontWeight: 500, color: "#555", fontSize: "0.8rem", display: "block", marginBottom: "0.2rem" }}>
+                  Current tags on document <span style={{ color: "#999", fontWeight: 400 }}>(click to mark for removal)</span>:
+                </label>
                 <div style={{ display: "flex", flexWrap: "wrap", gap: "0.25rem" }}>
-                  {docExistingTags.map(tag => (
-                    <span key={tag} style={docTagChip}>{tag}</span>
-                  ))}
+                  {docExistingTags.map(tag => {
+                    const removed = removedExistingTags[id]?.has(tag) ?? false;
+                    return (
+                      <span key={tag}
+                        onClick={() => {
+                          setRemovedExistingTags(prev => {
+                            const current = new Set(prev[id] ?? []);
+                            if (current.has(tag)) current.delete(tag); else current.add(tag);
+                            return { ...prev, [id]: current };
+                          });
+                        }}
+                        style={{
+                          ...docTagChip,
+                          cursor: "pointer",
+                          textDecoration: removed ? "line-through" : "none",
+                          opacity: removed ? 0.5 : 1,
+                          background: removed ? "#ffcdd2" : "#e3f2fd",
+                          color: removed ? "#c62828" : "#1565c0",
+                          transition: "all 0.15s ease",
+                        }}>
+                        {tag}
+                      </span>
+                    );
+                  })}
                 </div>
               </div>
             )}
@@ -240,7 +276,7 @@ export default function QueuePage() {
                 )}
               </div>
               <div style={{ display: "flex", gap: "0.5rem" }}>
-                <button className="btn btn-primary" onClick={() => approve.mutate({ id, item })}
+                <button className="btn btn-primary" onClick={() => approve.mutate({ id, item, docId: item.document_id })}
                   disabled={approve.isPending && approve.variables?.id === id}>
                   {approve.isPending && approve.variables?.id === id ? "Approving…" : "Approve"}
                 </button>
