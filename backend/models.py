@@ -144,7 +144,8 @@ class PaperlessIQConfig(BaseModel):
     theme_text_color: str = "#2d3239"
     theme_bg_color: str = "#f8f9fb"
     theme_card_color: str = "#ffffff"
-    theme_card_alt_color: str = "rgba(26, 114, 136, 0.12)"
+    theme_card_alt_hex: str = "#1a7288"
+    theme_card_alt_opacity: int = 12
     theme_logo: str = "iq_1.png"
     theme_nav_icons: dict[str, str] = {
         "manual": "🔍",

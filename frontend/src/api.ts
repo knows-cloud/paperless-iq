@@ -88,7 +88,7 @@ export const api = {
   getCustomFields: () => request<PaperlessCustomField[]>("/paperless/custom_fields"),
   getStoragePaths: () => request<PaperlessEntity[]>("/paperless/storage_paths"),
   getLogos: () => request<string[]>("/logos"),
-  getTheme: () => request<{ primary_color: string; sidebar_from: string; sidebar_to: string; font: string; font_size: string; text_color: string; bg_color: string; card_color: string; card_alt_color: string; logo: string; nav_icons: Record<string, string> }>("/theme"),
+  getTheme: () => request<{ primary_color: string; sidebar_from: string; sidebar_to: string; font: string; font_size: string; text_color: string; bg_color: string; card_color: string; card_alt_hex: string; card_alt_opacity: number; logo: string; nav_icons: Record<string, string> }>("/theme"),
   getDocuments: (params?: Record<string, string>) => {
     const qs = params ? "?" + new URLSearchParams(params).toString() : "";
     return request<PagedResult<DocumentItem>>(`/documents${qs}`);

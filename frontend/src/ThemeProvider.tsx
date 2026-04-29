@@ -10,7 +10,8 @@ interface Theme {
   text_color: string;
   bg_color: string;
   card_color: string;
-  card_alt_color: string;
+  card_alt_hex: string;
+  card_alt_opacity: number;
   logo: string;
   nav_icons: Record<string, string>;
 }
@@ -24,7 +25,8 @@ const DEFAULT_THEME: Theme = {
   text_color: "#2d3239",
   bg_color: "#f8f9fb",
   card_color: "#ffffff",
-  card_alt_color: "rgba(26, 114, 136, 0.12)",
+  card_alt_hex: "#1a7288",
+  card_alt_opacity: 12,
   logo: "iq_1.png",
   nav_icons: { manual: "🔍", queue: "📋", discovery: "💬", audit: "📜", settings: "⚙️" },
 };
@@ -81,8 +83,13 @@ function applyTheme(theme: Theme) {
   root.style.setProperty("color", theme.text_color || "#2d3239");
   root.style.setProperty("--bg-body", theme.bg_color || "#f8f9fb");
   root.style.setProperty("--bg-card", theme.card_color || "#ffffff");
-  // Card alt uses a CSS class — set as a custom property
-  root.style.setProperty("--card-alt-bg", theme.card_alt_color || "rgba(26, 114, 136, 0.12)");
+  // Card alt: combine hex + opacity into rgba
+  const altHex = theme.card_alt_hex || "#1a7288";
+  const altR = parseInt(altHex.slice(1, 3), 16);
+  const altG = parseInt(altHex.slice(3, 5), 16);
+  const altB = parseInt(altHex.slice(5, 7), 16);
+  const altAlpha = (theme.card_alt_opacity ?? 12) / 100;
+  root.style.setProperty("--card-alt-bg", `rgba(${altR}, ${altG}, ${altB}, ${altAlpha})`);
 }
 
 export function ThemeProvider({ children }: { children: React.ReactNode }) {
