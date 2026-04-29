@@ -5,7 +5,7 @@ export default function StatusPanel() {
   const { data, isError } = useQuery({
     queryKey: ["status"],
     queryFn: api.getStatus,
-    refetchInterval: 15000,
+    refetchInterval: 30000,
     retry: false,
   });
 
