@@ -16,6 +16,7 @@ from __future__ import annotations
 import json
 import logging
 import os
+import time
 from datetime import datetime, timezone
 from typing import Any
 from uuid import UUID, uuid4
@@ -28,6 +29,10 @@ from backend.models import MetadataSuggestion
 from backend.orm_models import AuditLogORM, SuggestionORM
 
 logger = logging.getLogger(__name__)
+
+# Simple TTL cache for entity name→ID lookups (avoids re-fetching on every approve)
+_entity_cache: dict[str, tuple[float, dict[str, int]]] = {}
+_CACHE_TTL = 60.0  # seconds
 
 PAPERLESS_URL = os.getenv("PAPERLESS_URL", "http://localhost:8000")
 PAPERLESS_TOKEN = os.getenv("PAPERLESS_TOKEN", "")
@@ -379,6 +384,19 @@ class ApprovalQueueService:
                 resp = await client.patch(url, json=patch)
                 resp.raise_for_status()
                 logger.info("Patched Paperless NGX document %d.", document_id)
+            except httpx.HTTPStatusError as exc:
+                detail = ""
+                try:
+                    detail = exc.response.text
+                except Exception:
+                    pass
+                logger.error(
+                    "Failed to patch Paperless NGX document %d: %s\nPayload: %s\nResponse: %s",
+                    document_id, exc, json.dumps(patch, default=str), detail,
+                )
+                raise ValueError(
+                    f"Paperless NGX rejected the update for document {document_id}: {detail or exc}"
+                ) from exc
             except httpx.HTTPError as exc:
                 logger.error("Failed to patch Paperless NGX document %d: %s", document_id, exc)
                 raise
@@ -403,20 +421,28 @@ class ApprovalQueueService:
         names: list[str],
         create_missing: bool = False,
     ) -> list[int]:
-        """Resolve entity names to IDs. Optionally create missing entities."""
+        """Resolve entity names to IDs. Optionally create missing entities.
+        Uses a TTL cache to avoid re-fetching entity lists on every approval.
+        """
+        cache_key = f"{base_url}:{entity_type}"
+        now = time.monotonic()
+        cached = _entity_cache.get(cache_key)
+        if cached and (now - cached[0]) < _CACHE_TTL:
+            name_to_id = cached[1]
+        else:
+            name_to_id = {}
+            url: str | None = f"{base_url}/api/{entity_type}/?page_size=100"
+            while url:
+                resp = await client.get(url)
+                if resp.status_code != 200:
+                    break
+                data = resp.json()
+                for item in data.get("results", []):
+                    name_to_id[item.get("name", "").lower()] = item["id"]
+                url = data.get("next")
+            _entity_cache[cache_key] = (now, name_to_id)
+
         ids: list[int] = []
-        url: str | None = f"{base_url}/api/{entity_type}/?page_size=100"
-        name_to_id: dict[str, int] = {}
-
-        while url:
-            resp = await client.get(url)
-            if resp.status_code != 200:
-                break
-            data = resp.json()
-            for item in data.get("results", []):
-                name_to_id[item.get("name", "").lower()] = item["id"]
-            url = data.get("next")
-
         for name in names:
             eid = name_to_id.get(name.lower())
             if eid is not None:
@@ -431,6 +457,8 @@ class ApprovalQueueService:
                     if new_id:
                         ids.append(new_id)
                         logger.info("Created %s %r with ID %d", entity_type, name, new_id)
+                        # Invalidate cache so next resolve picks up the new entity
+                        _entity_cache.pop(f"{base_url}:{entity_type}", None)
                 except Exception:
                     logger.warning("Failed to create %s %r", entity_type, name, exc_info=True)
             else:
@@ -449,16 +477,23 @@ class ApprovalQueueService:
         When create_missing is True, creates custom field definitions that don't exist yet.
         New fields are created as 'string' type by default.
         """
-        url: str | None = f"{base_url}/api/custom_fields/?page_size=100"
-        name_to_id: dict[str, int] = {}
-        while url:
-            resp = await client.get(url)
-            if resp.status_code != 200:
-                break
-            data = resp.json()
-            for item in data.get("results", []):
-                name_to_id[item.get("name", "").lower()] = item["id"]
-            url = data.get("next")
+        cache_key = f"{base_url}:custom_fields_defs"
+        now = time.monotonic()
+        cached = _entity_cache.get(cache_key)
+        if cached and (now - cached[0]) < _CACHE_TTL:
+            name_to_id = cached[1]
+        else:
+            url: str | None = f"{base_url}/api/custom_fields/?page_size=100"
+            name_to_id: dict[str, int] = {}
+            while url:
+                resp = await client.get(url)
+                if resp.status_code != 200:
+                    break
+                data = resp.json()
+                for item in data.get("results", []):
+                    name_to_id[item.get("name", "").lower()] = item["id"]
+                url = data.get("next")
+            _entity_cache[cache_key] = (now, name_to_id)
 
         result: list[dict[str, Any]] = []
         for name, value in custom_fields.items():
