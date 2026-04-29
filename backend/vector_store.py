@@ -112,6 +112,9 @@ class ChromaVectorStore:
                     ids=[cid], embeddings=[emb], documents=[ch], metadatas=[cm],
                 ),
             )
+            # Small delay between chunks to avoid overwhelming the embedding server
+            if i < len(chunks) - 1:
+                await asyncio.sleep(0.2)
 
         logger.info("Upserted %d chunks for document %d.", len(chunks), doc_id)
 

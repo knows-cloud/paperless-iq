@@ -239,10 +239,13 @@ async def _background_index(
                     try:
                         await vector_store.upsert(doc_id, content, meta)
                         indexed += 1
+                        # Throttle: wait between documents to avoid overwhelming Ollama
+                        await asyncio.sleep(1.0)
                     except Exception:
                         logger.debug("Failed to index document %d", doc_id, exc_info=True)
+                        await asyncio.sleep(2.0)  # back off on failure
                 url = data.get("next")
-                # Yield to event loop periodically
+                # Yield to event loop between pages
                 await asyncio.sleep(0.1)
 
         logger.info("Background indexing complete: %d documents indexed.", indexed)
