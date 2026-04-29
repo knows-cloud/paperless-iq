@@ -1,5 +1,6 @@
 import { useState, useEffect } from "react";
 import { useTheme } from "./ThemeProvider";
+import StatusPanel from "./StatusPanel";
 import SettingsPage from "./pages/SettingsPage";
 import QueuePage from "./pages/QueuePage";
 import ManualPage from "./pages/ManualPage";
@@ -49,6 +50,7 @@ export default function App() {
           <h1>Paperless IQ</h1>
           <div className="subtitle">AI Document Intelligence</div>
         </div>
+        <StatusPanel />
         <nav className="sidebar-nav">
           {NAV_ITEMS.map(item => (
             <a key={item.id} href={`#${item.id}`}

@@ -1038,6 +1038,99 @@ async def import_config(body: dict[str, Any] = Body(...)) -> dict:
 
 
 # ---------------------------------------------------------------------------
+# Status & Reindex endpoints
+# ---------------------------------------------------------------------------
+
+
+@app.get("/api/status", tags=["system"])
+async def get_status(request: Request) -> dict:
+    """Return system status indicators for the sidebar dashboard."""
+    config = _settings_svc.config
+
+    # 1. LLM online for metadata
+    llm_online = False
+    providers = getattr(request.app.state, "providers", None)
+    if providers:
+        provider = providers.get(config.llm_provider)
+        if provider:
+            try:
+                llm_online = await provider.health_check()
+            except Exception:
+                pass
+
+    # 2. Embedding LLM online
+    embed_online = False
+    vs = getattr(request.app.state, "vector_store", None)
+    if vs and hasattr(vs, "_llm"):
+        try:
+            embed_online = await vs._llm.health_check()
+        except Exception:
+            pass
+
+    # 3 & 4. Queue counts
+    from backend.database import AsyncSessionLocal
+    from backend.orm_models import SuggestionORM
+    from sqlalchemy import func, select
+    pending_count = 0
+    processing_count = 0
+    try:
+        async with AsyncSessionLocal() as session:
+            r = await session.execute(
+                select(func.count()).select_from(SuggestionORM).where(SuggestionORM.status == "pending")
+            )
+            pending_count = r.scalar_one()
+    except Exception:
+        pass
+
+    # 5. Embedding progress
+    embedded_count = 0
+    total_eligible = 0
+    if vs:
+        try:
+            # Count unique document IDs in the vector store
+            embedded_count = vs.count()  # chunk count, not doc count — approximate
+        except Exception:
+            pass
+    # Count total documents in Paperless NGX (excluding inbox tag)
+    pc = getattr(request.app.state, "paperless_client", None)
+    if pc:
+        try:
+            import httpx
+            inbox_tag_id = config.inbox_tag_id
+            async with httpx.AsyncClient(headers=pc._headers, timeout=10) as client:
+                resp = await client.get(
+                    f"{pc._base_url}/api/documents/",
+                    params={"page_size": 1},
+                )
+                if resp.status_code == 200:
+                    total_eligible = resp.json().get("count", 0)
+        except Exception:
+            pass
+
+    return {
+        "llm_online": llm_online,
+        "embed_online": embed_online,
+        "queue_pending": pending_count,
+        "queue_processing": processing_count,
+        "embedded_chunks": embedded_count,
+        "total_documents": total_eligible,
+    }
+
+
+@app.post("/api/reindex", tags=["system"])
+async def trigger_reindex(request: Request) -> dict:
+    """Trigger a background reindex of all documents into the vector store."""
+    vs = getattr(request.app.state, "vector_store", None)
+    pc = getattr(request.app.state, "paperless_client", None)
+    if not vs or not pc:
+        raise HTTPException(status_code=503, detail="Vector store or Paperless client not available.")
+
+    config = _settings_svc.config
+    asyncio.create_task(_background_index(pc, vs, config))
+    return {"detail": "Reindex started in background."}
+
+
+# ---------------------------------------------------------------------------
 # Static frontend serving (single-container deployment)
 # ---------------------------------------------------------------------------
 
