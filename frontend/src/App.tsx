@@ -1,6 +1,7 @@
 import { useState, useEffect } from "react";
 import { useTheme } from "./ThemeProvider";
 import StatusPanel from "./StatusPanel";
+import { t } from "./i18n";
 import SettingsPage from "./pages/SettingsPage";
 import QueuePage from "./pages/QueuePage";
 import ManualPage from "./pages/ManualPage";
@@ -11,12 +12,12 @@ type Page = "manual" | "queue" | "discovery" | "audit" | "settings";
 
 const VALID_PAGES: Set<string> = new Set(["manual", "queue", "discovery", "audit", "settings"]);
 
-const NAV_ITEMS: Array<{ id: Page; label: string; defaultIcon: string }> = [
-  { id: "manual",    label: "Analysis",       defaultIcon: "🔍" },
-  { id: "queue",     label: "Approval Queue", defaultIcon: "📋" },
-  { id: "discovery", label: "Discovery",      defaultIcon: "💬" },
-  { id: "audit",     label: "Audit Log",      defaultIcon: "📜" },
-  { id: "settings",  label: "Settings",       defaultIcon: "⚙️" },
+const NAV_ITEMS: Array<{ id: Page; labelKey: string; defaultIcon: string }> = [
+  { id: "manual",    labelKey: "nav.analysis",       defaultIcon: "🔍" },
+  { id: "queue",     labelKey: "nav.queue",           defaultIcon: "📋" },
+  { id: "discovery", labelKey: "nav.discovery",       defaultIcon: "💬" },
+  { id: "audit",     labelKey: "nav.audit",           defaultIcon: "📜" },
+  { id: "settings",  labelKey: "nav.settings",        defaultIcon: "⚙️" },
 ];
 
 function getPageFromHash(): Page {
@@ -47,8 +48,8 @@ export default function App() {
             <img src={`/logos/${theme.logo}`} alt="Paperless IQ"
               style={{ width: "40px", height: "40px", borderRadius: "8px", marginBottom: "0.5rem", objectFit: "contain" }} />
           )}
-          <h1>Paperless IQ</h1>
-          <div className="subtitle">AI Document Intelligence</div>
+          <h1>{t("app.title")}</h1>
+          <div className="subtitle">{t("app.subtitle")}</div>
         </div>
         <StatusPanel />
         <nav className="sidebar-nav">
@@ -57,7 +58,7 @@ export default function App() {
               className={page === item.id ? "active" : ""}
               onClick={e => { e.preventDefault(); navigate(item.id); }}>
               <span className="nav-icon">{theme.nav_icons[item.id] ?? item.defaultIcon}</span>
-              {item.label}
+              {t(item.labelKey)}
             </a>
           ))}
         </nav>

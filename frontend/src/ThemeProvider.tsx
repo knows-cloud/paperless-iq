@@ -1,5 +1,6 @@
 import { createContext, useContext, useEffect, useState } from "react";
 import { api } from "./api";
+import { setLang, type Lang } from "./i18n";
 
 interface Theme {
   primary_color: string;
@@ -14,6 +15,7 @@ interface Theme {
   card_alt_opacity: number;
   logo: string;
   nav_icons: Record<string, string>;
+  ui_language: string;
 }
 
 const DEFAULT_THEME: Theme = {
@@ -29,6 +31,7 @@ const DEFAULT_THEME: Theme = {
   card_alt_opacity: 12,
   logo: "iq_1.png",
   nav_icons: { manual: "🔍", queue: "📋", discovery: "💬", audit: "📜", settings: "⚙️" },
+  ui_language: "en",
 };
 
 const ThemeContext = createContext<Theme>(DEFAULT_THEME);
@@ -99,6 +102,7 @@ export function ThemeProvider({ children }: { children: React.ReactNode }) {
     api.getTheme().then(t => {
       setTheme(t);
       applyTheme(t);
+      if (t.ui_language) setLang(t.ui_language as Lang);
     }).catch(() => {
       applyTheme(DEFAULT_THEME);
     });

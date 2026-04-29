@@ -60,6 +60,7 @@ _ENV_MAP: dict[str, tuple[str, type]] = {
     "automation_enabled":          ("PIQ_AUTOMATION_ENABLED", bool),
     "audit_retention_days":        ("PIQ_AUDIT_RETENTION_DAYS", int),
     "target_language":             ("PIQ_TARGET_LANGUAGE", str),
+    "ui_language":                 ("PIQ_UI_LANGUAGE", str),
 }
 
 

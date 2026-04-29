@@ -1163,6 +1163,7 @@ async def get_theme() -> dict:
         "card_alt_opacity": config.theme_card_alt_opacity,
         "logo": config.theme_logo,
         "nav_icons": config.theme_nav_icons,
+        "ui_language": config.ui_language,
     }
 
 

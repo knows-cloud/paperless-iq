@@ -508,17 +508,29 @@ class DocumentAnalyzer:
         context_parts = [p for p in (entity_context, field_instructions) if p]
         context_block = "\n\n".join(context_parts)
 
+        # Language instruction
+        lang = self._config.target_language
+        lang_instruction = ""
+        if lang:
+            lang_instruction = (
+                f"\nIMPORTANT: All output values (title, tags, correspondent, document_type, "
+                f"storage_path, custom field values) MUST be in {lang}. "
+                f"Use {lang} language for all metadata values. "
+                f"Do NOT use English unless the original value is a proper noun or brand name.\n"
+            )
+
         if "{content}" in template:
             combined_content = (
                 (context_block + "\n\n" + content) if context_block else content
             )
-            prompt = template.format(content=combined_content) + _SYSTEM_SUFFIX
+            prompt = template.format(content=combined_content) + lang_instruction + _SYSTEM_SUFFIX
         else:
             context_section = f"\n\n{context_block}" if context_block else ""
             prompt = (
                 template
                 + context_section
                 + f"\n\nDocument content:\n{content}\n"
+                + lang_instruction
                 + _SYSTEM_SUFFIX
             )
 
