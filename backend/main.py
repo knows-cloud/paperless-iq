@@ -488,22 +488,24 @@ async def approve_suggestion(
     except ValueError as exc:
         raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(exc))
 
-    # Index the approved document into the vector store for future similarity queries
+    # Index the approved document into the vector store in the background
     vs = getattr(request.app.state, "vector_store", None)
     pc = getattr(request.app.state, "paperless_client", None)
     if vs and pc:
-        try:
-            content = await pc.get_document_ocr_text(result.document_id)
-            if content:
-                meta = {
-                    "title": result.title or "",
-                    "tags": result.tags,
-                    "correspondent": result.correspondent or "",
-                    "document_type": result.document_type or "",
-                }
-                await vs.upsert(result.document_id, content, meta)
-        except Exception:
-            logger.debug("Post-approve indexing failed for doc %d", result.document_id, exc_info=True)
+        async def _index_bg() -> None:
+            try:
+                content = await pc.get_document_ocr_text(result.document_id)
+                if content:
+                    meta = {
+                        "title": result.title or "",
+                        "tags": result.tags,
+                        "correspondent": result.correspondent or "",
+                        "document_type": result.document_type or "",
+                    }
+                    await vs.upsert(result.document_id, content, meta)
+            except Exception:
+                logger.debug("Post-approve indexing failed for doc %d", result.document_id, exc_info=True)
+        asyncio.create_task(_index_bg())
 
     return result
 
@@ -1060,6 +1062,11 @@ async def get_theme() -> dict:
         "sidebar_from": config.theme_sidebar_from,
         "sidebar_to": config.theme_sidebar_to,
         "font": config.theme_font,
+        "font_size": config.theme_font_size,
+        "text_color": config.theme_text_color,
+        "bg_color": config.theme_bg_color,
+        "card_color": config.theme_card_color,
+        "card_alt_color": config.theme_card_alt_color,
         "logo": config.theme_logo,
         "nav_icons": config.theme_nav_icons,
     }

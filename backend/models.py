@@ -140,6 +140,11 @@ class PaperlessIQConfig(BaseModel):
     theme_sidebar_from: str = "#0a3344"
     theme_sidebar_to: str = "#0e4458"
     theme_font: str = "Roboto"
+    theme_font_size: str = "14px"
+    theme_text_color: str = "#2d3239"
+    theme_bg_color: str = "#f8f9fb"
+    theme_card_color: str = "#ffffff"
+    theme_card_alt_color: str = "rgba(26, 114, 136, 0.12)"
     theme_logo: str = "iq_1.png"
     theme_nav_icons: dict[str, str] = {
         "manual": "🔍",

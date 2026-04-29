@@ -6,6 +6,11 @@ interface Theme {
   sidebar_from: string;
   sidebar_to: string;
   font: string;
+  font_size: string;
+  text_color: string;
+  bg_color: string;
+  card_color: string;
+  card_alt_color: string;
   logo: string;
   nav_icons: Record<string, string>;
 }
@@ -15,6 +20,11 @@ const DEFAULT_THEME: Theme = {
   sidebar_from: "#0a3344",
   sidebar_to: "#0e4458",
   font: "Roboto",
+  font_size: "14px",
+  text_color: "#2d3239",
+  bg_color: "#f8f9fb",
+  card_color: "#ffffff",
+  card_alt_color: "rgba(26, 114, 136, 0.12)",
   logo: "iq_1.png",
   nav_icons: { manual: "🔍", queue: "📋", discovery: "💬", audit: "📜", settings: "⚙️" },
 };
@@ -66,6 +76,13 @@ function applyTheme(theme: Theme) {
   const fontParam = fontName.replace(/ /g, "+");
   link.href = `https://fonts.googleapis.com/css2?family=${fontParam}:wght@300;400;500;700&display=swap`;
   root.style.setProperty("font-family", `'${fontName}', system-ui, sans-serif`);
+  // Font size, text color, backgrounds
+  root.style.setProperty("font-size", theme.font_size || "14px");
+  root.style.setProperty("color", theme.text_color || "#2d3239");
+  root.style.setProperty("--bg-body", theme.bg_color || "#f8f9fb");
+  root.style.setProperty("--bg-card", theme.card_color || "#ffffff");
+  // Card alt uses a CSS class — set as a custom property
+  root.style.setProperty("--card-alt-bg", theme.card_alt_color || "rgba(26, 114, 136, 0.12)");
 }
 
 export function ThemeProvider({ children }: { children: React.ReactNode }) {
