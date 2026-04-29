@@ -38,6 +38,46 @@ PAPERLESS_URL = os.getenv("PAPERLESS_URL", "http://localhost:8000")
 PAPERLESS_TOKEN = os.getenv("PAPERLESS_TOKEN", "")
 
 
+def _format_custom_field_value(value: Any, data_type: str) -> Any:
+    """Format a custom field value to match Paperless NGX expectations.
+
+    - monetary: must be a string like "EUR123.45" or "123.45" (2 decimal places)
+    - integer: must be an int
+    - float: must be a float
+    - boolean: must be a bool
+    - date: must be a string in YYYY-MM-DD format
+    - string/url: passed as-is
+    """
+    if value is None:
+        return value
+
+    if data_type == "monetary":
+        try:
+            num = float(str(value).replace(",", ".").strip())
+            return f"{num:.2f}"
+        except (ValueError, TypeError):
+            return str(value)
+
+    if data_type == "integer":
+        try:
+            return int(float(str(value)))
+        except (ValueError, TypeError):
+            return value
+
+    if data_type == "float":
+        try:
+            return float(str(value))
+        except (ValueError, TypeError):
+            return value
+
+    if data_type == "boolean":
+        if isinstance(value, bool):
+            return value
+        return str(value).lower() in ("true", "1", "yes", "on")
+
+    return value
+
+
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
@@ -481,25 +521,29 @@ class ApprovalQueueService:
         now = time.monotonic()
         cached = _entity_cache.get(cache_key)
         if cached and (now - cached[0]) < _CACHE_TTL:
-            name_to_id = cached[1]
+            name_to_info = cached[1]
         else:
             url: str | None = f"{base_url}/api/custom_fields/?page_size=100"
-            name_to_id: dict[str, int] = {}
+            name_to_info: dict[str, dict[str, Any]] = {}
             while url:
                 resp = await client.get(url)
                 if resp.status_code != 200:
                     break
                 data = resp.json()
                 for item in data.get("results", []):
-                    name_to_id[item.get("name", "").lower()] = item["id"]
+                    name_to_info[item.get("name", "").lower()] = {
+                        "id": item["id"],
+                        "data_type": item.get("data_type", "string"),
+                    }
                 url = data.get("next")
-            _entity_cache[cache_key] = (now, name_to_id)
+            _entity_cache[cache_key] = (now, name_to_info)
 
         result: list[dict[str, Any]] = []
         for name, value in custom_fields.items():
-            cf_id = name_to_id.get(name.lower())
-            if cf_id is not None:
-                result.append({"field": cf_id, "value": value})
+            info = name_to_info.get(name.lower())
+            if info is not None:
+                value = _format_custom_field_value(value, info["data_type"])
+                result.append({"field": info["id"], "value": value})
             elif create_missing:
                 try:
                     resp = await client.post(
