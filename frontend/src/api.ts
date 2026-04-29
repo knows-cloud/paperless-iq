@@ -86,6 +86,7 @@ export const api = {
   getCorrespondents: () => request<PaperlessEntity[]>("/paperless/correspondents"),
   getDocumentTypes: () => request<PaperlessEntity[]>("/paperless/document_types"),
   getCustomFields: () => request<PaperlessCustomField[]>("/paperless/custom_fields"),
+  getStoragePaths: () => request<PaperlessEntity[]>("/paperless/storage_paths"),
   getDocuments: (params?: Record<string, string>) => {
     const qs = params ? "?" + new URLSearchParams(params).toString() : "";
     return request<PagedResult<DocumentItem>>(`/documents${qs}`);

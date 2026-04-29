@@ -2,6 +2,7 @@ import { useState, useCallback, useMemo } from "react";
 import { useQuery, useMutation } from "@tanstack/react-query";
 import { api, type PaperlessEntity, type PaperlessCustomField, type DocumentItem, type MetadataSuggestionResponse } from "../api";
 import TagInput from "../TagInput";
+import AutocompleteInput from "../AutocompleteInput";
 
 export default function ManualPage() {
   const [titleQuery, setTitleQuery] = useState("");
@@ -28,6 +29,7 @@ export default function ManualPage() {
   const correspondents = useQuery({ queryKey: ["correspondents"], queryFn: api.getCorrespondents, retry: false });
   const docTypes = useQuery({ queryKey: ["docTypes"], queryFn: api.getDocumentTypes, retry: false });
   const customFields = useQuery({ queryKey: ["customFields"], queryFn: api.getCustomFields, retry: false });
+  const storagePaths = useQuery({ queryKey: ["storagePaths"], queryFn: api.getStoragePaths, retry: false });
 
   // Build lookup sets for existence checking (lowercased for case-insensitive match)
   const tagNames = useMemo(() => new Set((tags.data ?? []).map((t: PaperlessEntity) => t.name.toLowerCase())), [tags.data]);
@@ -166,20 +168,31 @@ export default function ManualPage() {
           </div>
           <div className="form-group" style={{ marginBottom: "0.4rem" }}>
             <label style={{ fontWeight: 600, color: "#555", fontSize: "0.85rem" }}>Correspondent</label>
-            <input value={suggestion.correspondent ?? ""} style={isNewCorr ? { fontSize: "0.85rem", ...newValueStyle } : { fontSize: "0.85rem" }}
-              onChange={e => updateSuggestionField(docId, "correspondent", e.target.value || null)} />
+            <AutocompleteInput
+              value={suggestion.correspondent ?? ""}
+              suggestions={(correspondents.data ?? []).map((c: PaperlessEntity) => c.name)}
+              onChange={v => updateSuggestionField(docId, "correspondent", v || null)}
+              style={isNewCorr ? newValueStyle : undefined}
+            />
             {isNewCorr && <small style={{ color: "#c62828" }}>New — will be created if "Create missing values" is checked</small>}
           </div>
           <div className="form-group" style={{ marginBottom: "0.4rem" }}>
             <label style={{ fontWeight: 600, color: "#555", fontSize: "0.85rem" }}>Document Type</label>
-            <input value={suggestion.document_type ?? ""} style={isNewDt ? { fontSize: "0.85rem", ...newValueStyle } : { fontSize: "0.85rem" }}
-              onChange={e => updateSuggestionField(docId, "document_type", e.target.value || null)} />
+            <AutocompleteInput
+              value={suggestion.document_type ?? ""}
+              suggestions={(docTypes.data ?? []).map((d: PaperlessEntity) => d.name)}
+              onChange={v => updateSuggestionField(docId, "document_type", v || null)}
+              style={isNewDt ? newValueStyle : undefined}
+            />
             {isNewDt && <small style={{ color: "#c62828" }}>New — will be created if "Create missing values" is checked</small>}
           </div>
           <div className="form-group" style={{ marginBottom: "0.4rem" }}>
             <label style={{ fontWeight: 600, color: "#555", fontSize: "0.85rem" }}>Storage Path</label>
-            <input value={suggestion.storage_path ?? ""} style={{ fontSize: "0.85rem" }}
-              onChange={e => updateSuggestionField(docId, "storage_path", e.target.value || null)} />
+            <AutocompleteInput
+              value={suggestion.storage_path ?? ""}
+              suggestions={(storagePaths.data ?? []).map((s: PaperlessEntity) => s.name)}
+              onChange={v => updateSuggestionField(docId, "storage_path", v || null)}
+            />
           </div>
           {customFieldEntries.length > 0 && <label style={{ fontWeight: 600, color: "#555", fontSize: "0.85rem", display: "block", marginTop: "0.25rem" }}>Custom Fields</label>}
           {customFieldEntries.map(([key, val]) => {
