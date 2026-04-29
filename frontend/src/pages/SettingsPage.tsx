@@ -362,25 +362,35 @@ export default function SettingsPage() {
         {/* ── Creation Policies ── */}
         <div className="card">
           <h3>Creation Policies</h3>
+          <p style={{ fontSize: "0.85rem", color: "var(--gray-500)", marginBottom: "1rem" }}>
+            Controls whether the LLM can suggest values that don't exist yet in Paperless NGX.
+            With "Existing only", unknown values are removed from suggestions.
+            With "Allow new", unknown values are kept and highlighted — you decide at approval time whether to create them.
+          </p>
+          <p style={{ fontSize: "0.82rem", color: "var(--warning)", marginBottom: "1rem", background: "#fef9ee", padding: "0.65rem 0.75rem", borderRadius: "var(--radius-sm)", border: "1px solid #fde68a" }}>
+            ⚠️ With auto-apply enabled, "Allow new" will create new tags, correspondents, and document types
+            automatically without review. This can lead to clutter. Consider adding instructions in your
+            system prompt like: "Only use values from the provided lists. Do not invent new tags or correspondents."
+          </p>
           <div className="form-group">
             <label htmlFor="tag_creation_policy">Tag Creation Policy</label>
             <select id="tag_creation_policy" name="tag_creation_policy" defaultValue={String(s.tag_creation_policy)}>
-              <option value="existing_only">Existing Only</option>
-              <option value="allow_new">Allow New</option>
+              <option value="existing_only">Existing only — remove unknown tags from suggestions</option>
+              <option value="allow_new">Allow new — keep unknown tags, create on approval</option>
             </select>
           </div>
           <div className="form-group">
             <label htmlFor="correspondent_creation_policy">Correspondent Creation Policy</label>
             <select id="correspondent_creation_policy" name="correspondent_creation_policy" defaultValue={String(s.correspondent_creation_policy)}>
-              <option value="existing_only">Existing Only</option>
-              <option value="allow_new">Allow New</option>
+              <option value="existing_only">Existing only — remove unknown correspondents</option>
+              <option value="allow_new">Allow new — keep unknown correspondents, create on approval</option>
             </select>
           </div>
           <div className="form-group">
             <label htmlFor="doctype_creation_policy">Document Type Creation Policy</label>
             <select id="doctype_creation_policy" name="doctype_creation_policy" defaultValue={String(s.doctype_creation_policy)}>
-              <option value="existing_only">Existing Only</option>
-              <option value="allow_new">Allow New</option>
+              <option value="existing_only">Existing only — remove unknown document types</option>
+              <option value="allow_new">Allow new — keep unknown types, create on approval</option>
             </select>
           </div>
         </div>
@@ -410,9 +420,14 @@ export default function SettingsPage() {
           </div>
           <div className="form-group">
             <label><input type="checkbox" name="automation_enabled" defaultChecked={Boolean(s.automation_enabled)} /> Enable automation</label>
+            <small>Automatically polls for new documents with the inbox tag and analyzes them.</small>
           </div>
           <div className="form-group">
             <label><input type="checkbox" name="auto_apply" defaultChecked={Boolean(s.auto_apply)} /> Auto-apply suggestions (skip approval queue)</label>
+            <small style={{ color: "var(--warning)" }}>
+              ⚠️ When enabled, AI suggestions are applied to documents immediately without human review.
+              Combined with "Allow new" creation policies, this will create new tags/correspondents/types automatically.
+            </small>
           </div>
           <div className="form-group">
             <label htmlFor="inbox_tag_search">Inbox Tag (documents to process)</label>

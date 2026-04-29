@@ -73,11 +73,23 @@ async def _inbox_polling_loop(
                 async def submit_for_analysis(doc_id: int) -> Any:
                     try:
                         suggestion = await manual_svc.analyze(doc_id)
-                        # Enqueue the suggestion into the approval queue
                         from backend.approval_queue import ApprovalQueueService
                         queue_svc = ApprovalQueueService(session)
-                        await queue_svc.enqueue(suggestion)
-                        logger.info("Enqueued suggestion for document %d.", doc_id)
+                        enqueued = await queue_svc.enqueue(suggestion)
+                        if config.auto_apply:
+                            # Auto-approve: apply to Paperless NGX immediately
+                            # Use create_missing=True when creation policies allow new values
+                            create_missing = (
+                                config.tag_creation_policy == "allow_new"
+                                or config.correspondent_creation_policy == "allow_new"
+                                or config.doctype_creation_policy == "allow_new"
+                            )
+                            await queue_svc.approve(
+                                enqueued.id, merge_tags=True, create_missing=create_missing,
+                            )
+                            logger.info("Auto-approved suggestion for document %d.", doc_id)
+                        else:
+                            logger.info("Enqueued suggestion for document %d.", doc_id)
                     except Exception:
                         logger.exception("Inbox analysis failed for doc %d", doc_id)
 
@@ -132,8 +144,19 @@ async def _scheduler_loop(
                         suggestion = await manual_svc.analyze(doc_id)
                         from backend.approval_queue import ApprovalQueueService
                         queue_svc = ApprovalQueueService(session)
-                        await queue_svc.enqueue(suggestion)
-                        logger.info("Scheduler enqueued suggestion for document %d.", doc_id)
+                        enqueued = await queue_svc.enqueue(suggestion)
+                        if config.auto_apply:
+                            create_missing = (
+                                config.tag_creation_policy == "allow_new"
+                                or config.correspondent_creation_policy == "allow_new"
+                                or config.doctype_creation_policy == "allow_new"
+                            )
+                            await queue_svc.approve(
+                                enqueued.id, merge_tags=True, create_missing=create_missing,
+                            )
+                            logger.info("Scheduler auto-approved suggestion for document %d.", doc_id)
+                        else:
+                            logger.info("Scheduler enqueued suggestion for document %d.", doc_id)
                     except Exception:
                         logger.exception("Scheduler analysis failed for doc %d", doc_id)
 
