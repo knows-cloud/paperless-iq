@@ -1,88 +1,84 @@
-import { useState } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { api } from "../api";
 
 export default function ProcessingPage() {
-  const [expanded, setExpanded] = useState(true);
-  const status = useQuery({ queryKey: ["status"], queryFn: api.getStatus, refetchInterval: 5000, retry: false });
-  const queue = useQuery({ queryKey: ["queue-all"], queryFn: () => api.getQueue({ status: "pending" }), refetchInterval: 10000, retry: false });
-
+  const status = useQuery({ queryKey: ["status"], queryFn: api.getStatus, refetchInterval: 3000, retry: false });
   const d = status.data;
-  const items = (queue.data?.items ?? []) as Array<Record<string, unknown>>;
+  const proc = d?.processing as Record<string, unknown> | undefined;
 
   return (
     <div>
-      <h2>Processing</h2>
+      <h2>Processing Pipeline</h2>
 
       <div className="card">
-        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
-          <h3 style={{ margin: 0 }}>Current Status</h3>
-          {d && (
-            <div style={{ display: "flex", gap: "1rem", fontSize: "0.85rem" }}>
-              <span>LLM: <strong style={{ color: d.llm_online ? "var(--petrol-600)" : "var(--error)" }}>{d.llm_online ? "online" : "offline"}</strong></span>
-              <span>Embed: <strong style={{ color: d.embed_online ? "var(--petrol-600)" : "var(--error)" }}>{d.embed_online ? "online" : "offline"}</strong></span>
-            </div>
-          )}
-        </div>
-        {d && (
-          <div style={{ marginTop: "0.75rem", fontSize: "0.85rem" }}>
-            <div style={{ display: "flex", gap: "2rem" }}>
-              <div>
-                <span style={{ color: "var(--gray-500)" }}>Pending approval:</span>{" "}
-                <strong>{d.queue_pending}</strong>
-              </div>
-              <div>
-                <span style={{ color: "var(--gray-500)" }}>Indexed chunks:</span>{" "}
-                <strong>{d.embedded_chunks}</strong> / {d.total_documents} docs
-              </div>
-            </div>
-            {d.embedded_chunks < d.total_documents && d.total_documents > 0 && (
-              <div style={{ marginTop: "0.5rem" }}>
-                <div style={{ background: "var(--gray-200)", borderRadius: "4px", height: "6px", overflow: "hidden" }}>
-                  <div style={{
-                    background: "var(--petrol-500)", height: "100%", borderRadius: "4px",
-                    width: `${Math.min(100, (d.embedded_chunks / Math.max(1, d.total_documents * 5)) * 100)}%`,
-                    transition: "width 0.5s ease",
-                  }} />
-                </div>
-                <small style={{ color: "var(--gray-500)" }}>Embedding progress (approximate)</small>
-              </div>
-            )}
+        <h3>System Status</h3>
+        <div style={{ display: "flex", gap: "2rem", flexWrap: "wrap", fontSize: "0.9rem" }}>
+          <div>
+            <span style={{ color: "var(--gray-500)" }}>LLM:</span>{" "}
+            <strong style={{ color: d?.llm_online ? "var(--petrol-600)" : "var(--error)" }}>{d?.llm_online ? "online" : "offline"}</strong>
           </div>
+          <div>
+            <span style={{ color: "var(--gray-500)" }}>Embedding:</span>{" "}
+            <strong style={{ color: d?.embed_online ? "var(--petrol-600)" : "var(--error)" }}>{d?.embed_online ? "online" : "offline"}</strong>
+          </div>
+          <div>
+            <span style={{ color: "var(--gray-500)" }}>Approval queue:</span>{" "}
+            <strong>{d?.queue_pending ?? 0}</strong> pending
+          </div>
+        </div>
+      </div>
+
+      <div className="card" style={{ marginTop: "1rem" }}>
+        <h3>Current Task</h3>
+        {proc?.active_task ? (
+          <div style={{ fontSize: "0.9rem" }}>
+            <div style={{ display: "flex", alignItems: "center", gap: "0.5rem" }}>
+              <span style={{ display: "inline-block", width: "8px", height: "8px", borderRadius: "50%", background: "var(--petrol-500)", animation: "pulse 1.5s infinite" }} />
+              <strong>{String(proc.active_task)}</strong>
+              <span className="badge badge-pending">{String(proc.active_priority ?? "")}</span>
+            </div>
+          </div>
+        ) : (
+          <p style={{ color: "var(--gray-500)", fontSize: "0.9rem" }}>Idle — no task running</p>
+        )}
+        {(proc?.queue_size as number) > 0 && (
+          <p style={{ fontSize: "0.85rem", color: "var(--gray-500)", marginTop: "0.5rem" }}>
+            {String(proc?.queue_size)} task(s) waiting in queue
+          </p>
         )}
       </div>
 
       <div className="card" style={{ marginTop: "1rem" }}>
-        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", cursor: "pointer" }}
-          onClick={() => setExpanded(!expanded)}>
-          <h3 style={{ margin: 0 }}>
-            <span style={{ fontSize: "0.75rem", display: "inline-block", transform: expanded ? "rotate(90deg)" : "rotate(0deg)", transition: "transform 0.2s", marginRight: "0.5rem" }}>▶</span>
-            Approval Queue ({items.length})
-          </h3>
-        </div>
-        {expanded && (
-          <div style={{ marginTop: "0.75rem" }}>
-            {items.length === 0 && <p style={{ color: "var(--gray-500)", fontSize: "0.85rem" }}>No documents waiting for approval.</p>}
-            {items.map((item, idx) => (
-              <div key={String(item.id)} style={{
-                padding: "0.5rem 0.75rem", fontSize: "0.85rem",
-                borderBottom: idx < items.length - 1 ? "1px solid var(--gray-200)" : "none",
-                background: idx % 2 === 1 ? "var(--card-alt-bg, rgba(26,114,136,0.06))" : "transparent",
-              }}>
-                <div style={{ display: "flex", justifyContent: "space-between" }}>
-                  <span><strong>Doc {String(item.document_id)}</strong> — {String(item.title ?? "Untitled")}</span>
-                  <span className="badge badge-pending">pending</span>
-                </div>
-                {(item.tags as string[] | undefined)?.length ? (
-                  <div style={{ fontSize: "0.8rem", color: "var(--gray-500)", marginTop: "0.2rem" }}>
-                    Tags: {(item.tags as string[]).join(", ")}
-                  </div>
-                ) : null}
-              </div>
-            ))}
+        <h3>Vector Store Indexing</h3>
+        {proc?.embedding_active ? (
+          <div>
+            <div style={{ display: "flex", justifyContent: "space-between", fontSize: "0.9rem", marginBottom: "0.5rem" }}>
+              <span>Indexing documents into vector store…</span>
+              <strong>{String(proc.embedding_done)} / {String(proc.embedding_total)}</strong>
+            </div>
+            <div style={{ background: "var(--gray-200)", borderRadius: "4px", height: "8px", overflow: "hidden" }}>
+              <div style={{
+                background: "var(--petrol-500)", height: "100%", borderRadius: "4px",
+                width: `${Math.min(100, ((proc.embedding_done as number) / Math.max(1, proc.embedding_total as number)) * 100)}%`,
+                transition: "width 0.5s ease",
+              }} />
+            </div>
+          </div>
+        ) : (
+          <div style={{ fontSize: "0.9rem" }}>
+            <p style={{ color: "var(--gray-500)" }}>
+              {d?.embedded_chunks ? `${d.embedded_chunks} chunks indexed from ${d.total_documents} documents` : "No documents indexed yet"}
+            </p>
           </div>
         )}
       </div>
+
+      <style>{`
+        @keyframes pulse {
+          0%, 100% { opacity: 1; }
+          50% { opacity: 0.3; }
+        }
+      `}</style>
     </div>
   );
 }

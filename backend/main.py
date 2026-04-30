@@ -202,6 +202,7 @@ async def _background_index(
         headers = paperless_client._headers
         inbox_tag_id = config.inbox_tag_id
         indexed = 0
+        total_to_index = 0
 
         # Fetch entity name lookups for metadata enrichment
         tag_id_to_name: dict[int, str] = {}
@@ -246,11 +247,14 @@ async def _background_index(
                     try:
                         if queue:
                             await queue.submit_background(
-                                lambda did=doc_id, c=content, m=meta: vector_store.upsert(did, c, m)
+                                lambda did=doc_id, c=content, m=meta: vector_store.upsert(did, c, m),
+                                label=f"Embedding doc {doc_id}",
                             )
                         else:
                             await vector_store.upsert(doc_id, content, meta)
                         indexed += 1
+                        if queue:
+                            queue.set_embedding_progress(total_to_index, indexed)
                     except Exception:
                         logger.debug("Failed to index document %d", doc_id, exc_info=True)
                         await asyncio.sleep(2.0)  # back off on failure
@@ -880,6 +884,7 @@ async def manual_analyze(body: AnalyzeBody, request: Request) -> dict:
                     model_override=body.model,
                     mode_override=body.mode,
                 ),
+                label=f"Analyzing doc {body.document_id}",
             )
         else:
             suggestion = await svc.analyze(
@@ -1317,6 +1322,7 @@ async def get_status(request: Request) -> dict:
         "queue_processing": processing_count,
         "embedded_chunks": embedded_count,
         "total_documents": total_eligible,
+        "processing": queue.processing_status if queue else {},
     }
 
 
