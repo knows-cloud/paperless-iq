@@ -1,10 +1,19 @@
-import { useQuery } from "@tanstack/react-query";
+import { useState } from "react";
+import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { api } from "../api";
 
 export default function ProcessingPage() {
+  const qc = useQueryClient();
   const status = useQuery({ queryKey: ["status"], queryFn: api.getStatus, refetchInterval: 3000, retry: false });
+  const tracking = useQuery({ queryKey: ["tracking"], queryFn: api.getTrackingStats, refetchInterval: 10000, retry: false });
+  const [showResetConfirm, setShowResetConfirm] = useState<string | null>(null);
   const d = status.data;
   const proc = d?.processing as Record<string, unknown> | undefined;
+  const tr = tracking.data;
+
+  const resetAll = useMutation({ mutationFn: api.resetTracking, onSuccess: () => { qc.invalidateQueries({ queryKey: ["tracking"] }); setShowResetConfirm(null); } });
+  const resetRejected = useMutation({ mutationFn: api.resetRejected, onSuccess: () => { qc.invalidateQueries({ queryKey: ["tracking"] }); setShowResetConfirm(null); } });
+  const reindex = useMutation({ mutationFn: api.triggerReindex });
 
   return (
     <div>
@@ -69,6 +78,53 @@ export default function ProcessingPage() {
             <p style={{ color: "var(--gray-500)" }}>
               {d?.embedded_chunks ? `${d.embedded_chunks} chunks indexed from ${d.total_documents} documents` : "No documents indexed yet"}
             </p>
+          </div>
+        )}
+      </div>
+
+      <div className="card" style={{ marginTop: "1rem" }}>
+        <h3>Document Tracking</h3>
+        {tr && (
+          <div style={{ fontSize: "0.9rem" }}>
+            <div style={{ display: "flex", gap: "2rem", flexWrap: "wrap", marginBottom: "0.75rem" }}>
+              <div><span style={{ color: "var(--gray-500)" }}>Tracked (seen):</span> <strong>{tr.tracked_documents}</strong></div>
+              <div><span style={{ color: "var(--gray-500)" }}>Approved:</span> <strong style={{ color: "var(--success)" }}>{tr.suggestions_approved}</strong></div>
+              <div><span style={{ color: "var(--gray-500)" }}>Rejected:</span> <strong style={{ color: "var(--error)" }}>{tr.suggestions_rejected}</strong></div>
+              <div><span style={{ color: "var(--gray-500)" }}>Pending:</span> <strong>{tr.suggestions_pending}</strong></div>
+            </div>
+            <p style={{ fontSize: "0.82rem", color: "var(--gray-500)", marginBottom: "0.75rem" }}>
+              "Tracked" documents are ones the inbox monitor has seen. They won't be re-analyzed
+              unless you reset the tracking. Rejected documents stay tracked unless explicitly reset.
+            </p>
+            <div style={{ display: "flex", gap: "0.5rem", flexWrap: "wrap" }}>
+              <button className="btn" onClick={() => setShowResetConfirm("rejected")}
+                disabled={!tr.suggestions_rejected}>
+                Reset Rejected ({tr.suggestions_rejected})
+              </button>
+              <button className="btn" onClick={() => setShowResetConfirm("all")}>
+                Reset All Tracking
+              </button>
+              <button className="btn" onClick={() => reindex.mutate()} disabled={reindex.isPending}>
+                {reindex.isPending ? "Reindexing…" : "↻ Reindex Vector Store"}
+              </button>
+            </div>
+          </div>
+        )}
+        {showResetConfirm && (
+          <div style={{ marginTop: "0.75rem", padding: "0.75rem", background: "#fff3e0", borderRadius: "var(--radius-sm)", border: "1px solid #ffcc80" }}>
+            <p style={{ fontWeight: 600, margin: "0 0 0.5rem" }}>
+              {showResetConfirm === "all"
+                ? "⚠️ Reset all tracking? All inbox documents will be re-analyzed on the next poll cycle."
+                : `⚠️ Reset ${tr?.suggestions_rejected ?? 0} rejected documents? They will be re-analyzed on the next poll cycle.`}
+            </p>
+            <div style={{ display: "flex", gap: "0.5rem" }}>
+              <button className="btn btn-danger"
+                onClick={() => showResetConfirm === "all" ? resetAll.mutate() : resetRejected.mutate()}
+                disabled={resetAll.isPending || resetRejected.isPending}>
+                {resetAll.isPending || resetRejected.isPending ? "Resetting…" : "Confirm Reset"}
+              </button>
+              <button className="btn" onClick={() => setShowResetConfirm(null)}>Cancel</button>
+            </div>
           </div>
         )}
       </div>

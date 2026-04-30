@@ -101,6 +101,9 @@ export const api = {
   getTheme: () => request<{ primary_color: string; sidebar_from: string; sidebar_to: string; font: string; font_size: string; text_color: string; bg_color: string; card_color: string; card_alt_hex: string; card_alt_opacity: number; logo: string; nav_icons: Record<string, string>; ui_language: string }>("/theme"),
   getStatus: () => request<{ llm_online: boolean; embed_online: boolean; queue_pending: number; queue_processing: number; embedded_chunks: number; total_documents: number; processing: Record<string, unknown> }>("/status"),
   triggerReindex: () => request<{ detail: string }>("/reindex", { method: "POST" }),
+  getTrackingStats: () => request<{ tracked_documents: number; suggestions_pending: number; suggestions_approved: number; suggestions_rejected: number }>("/tracking/stats"),
+  resetTracking: () => request<{ cleared: number }>("/tracking/reset", { method: "POST" }),
+  resetRejected: () => request<{ deleted_suggestions: number; cleared_tracking: number }>("/tracking/reset-rejected", { method: "POST" }),
   getDocuments: (params?: Record<string, string>) => {
     const qs = params ? "?" + new URLSearchParams(params).toString() : "";
     return request<PagedResult<DocumentItem>>(`/documents${qs}`);

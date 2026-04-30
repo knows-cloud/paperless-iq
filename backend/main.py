@@ -653,6 +653,85 @@ async def empty_queue(
     return {"rejected_count": rejected}
 
 
+@app.get("/api/tracking/stats", tags=["queue"])
+async def tracking_stats() -> dict:
+    """Return document tracking and suggestion statistics."""
+    from backend.database import AsyncSessionLocal
+    from backend.orm_models import SuggestionORM, DocumentTrackingORM
+    from sqlalchemy import func, select
+
+    async with AsyncSessionLocal() as session:
+        tracked = (await session.execute(select(func.count()).select_from(DocumentTrackingORM))).scalar_one()
+        pending = (await session.execute(select(func.count()).select_from(SuggestionORM).where(SuggestionORM.status == "pending"))).scalar_one()
+        approved = (await session.execute(select(func.count()).select_from(SuggestionORM).where(SuggestionORM.status == "approved"))).scalar_one()
+        rejected = (await session.execute(select(func.count()).select_from(SuggestionORM).where(SuggestionORM.status == "rejected"))).scalar_one()
+
+    return {
+        "tracked_documents": tracked,
+        "suggestions_pending": pending,
+        "suggestions_approved": approved,
+        "suggestions_rejected": rejected,
+    }
+
+
+@app.post("/api/tracking/reset", tags=["queue"])
+async def reset_tracking() -> dict:
+    """Clear the document tracking table so all inbox documents are re-processed.
+
+    Does NOT delete suggestions — only resets the 'seen' status so the
+    inbox monitor will pick up documents again.
+    """
+    from backend.database import AsyncSessionLocal
+    from backend.orm_models import DocumentTrackingORM
+    from sqlalchemy import delete
+
+    async with AsyncSessionLocal() as session:
+        result = await session.execute(delete(DocumentTrackingORM))
+        await session.commit()
+        cleared = result.rowcount
+
+    logger.info("Reset document tracking: cleared %d entries.", cleared)
+    return {"cleared": cleared}
+
+
+@app.post("/api/tracking/reset-rejected", tags=["queue"])
+async def reset_rejected() -> dict:
+    """Delete all rejected suggestions and clear their tracking entries.
+
+    This allows rejected documents to be re-analyzed by the inbox monitor.
+    """
+    from backend.database import AsyncSessionLocal
+    from backend.orm_models import SuggestionORM, DocumentTrackingORM
+    from sqlalchemy import delete, select
+
+    async with AsyncSessionLocal() as session:
+        # Get document IDs of rejected suggestions
+        r = await session.execute(
+            select(SuggestionORM.document_id).where(SuggestionORM.status == "rejected")
+        )
+        rejected_doc_ids = [row[0] for row in r.all()]
+
+        # Delete rejected suggestions
+        del_result = await session.execute(
+            delete(SuggestionORM).where(SuggestionORM.status == "rejected")
+        )
+        deleted_suggestions = del_result.rowcount
+
+        # Clear tracking for those documents so they get re-processed
+        if rejected_doc_ids:
+            await session.execute(
+                delete(DocumentTrackingORM).where(
+                    DocumentTrackingORM.document_id.in_(rejected_doc_ids)
+                )
+            )
+
+        await session.commit()
+
+    logger.info("Reset rejected: deleted %d suggestions, cleared tracking for %d documents.",
+                deleted_suggestions, len(rejected_doc_ids))
+    return {"deleted_suggestions": deleted_suggestions, "cleared_tracking": len(rejected_doc_ids)}
+
+
 class ReanalyzeBody(BaseModel):
     suggestion_id: UUID
 
