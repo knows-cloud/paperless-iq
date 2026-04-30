@@ -117,21 +117,29 @@ export default function SettingsPage() {
   const handleSubmit = (e: React.FormEvent<HTMLFormElement>) => {
     e.preventDefault();
     const fd = new FormData(e.currentTarget);
-    const values: Record<string, unknown> = {};
+
+    // Start from the FULL current settings to avoid losing hidden tab values
+    const values: Record<string, unknown> = { ...(s ?? {}) };
+
+    // Overlay form fields that are present in the DOM
     fd.forEach((v, k) => { values[k] = v; });
 
-    if (values.audit_retention_days) values.audit_retention_days = Number(values.audit_retention_days);
-    if (values.poll_interval_seconds) values.poll_interval_seconds = Number(values.poll_interval_seconds);
-    if (values.batch_size) values.batch_size = Number(values.batch_size);
-    if (values.context_window_chars) values.context_window_chars = Number(values.context_window_chars);
-    if (values.similar_docs_count) values.similar_docs_count = Number(values.similar_docs_count);
-    if (values.frequency_fallback_count !== undefined) values.frequency_fallback_count = Number(values.frequency_fallback_count);
-    if (values.inbox_tag_id) values.inbox_tag_id = values.inbox_tag_id ? Number(values.inbox_tag_id) : null;
-    else values.inbox_tag_id = null;
+    // Number conversions (only if present in form)
+    if (fd.has("audit_retention_days")) values.audit_retention_days = Number(values.audit_retention_days);
+    if (fd.has("poll_interval_seconds")) values.poll_interval_seconds = Number(values.poll_interval_seconds);
+    if (fd.has("batch_size")) values.batch_size = Number(values.batch_size);
+    if (fd.has("context_window_chars")) values.context_window_chars = Number(values.context_window_chars);
+    if (fd.has("similar_docs_count")) values.similar_docs_count = Number(values.similar_docs_count);
+    if (fd.has("frequency_fallback_count")) values.frequency_fallback_count = Number(values.frequency_fallback_count);
 
-    values.auto_apply = fd.get("auto_apply") === "on";
-    values.automation_enabled = fd.get("automation_enabled") === "on";
-    values.smart_entity_selection = fd.get("smart_entity_selection") === "on";
+    // Checkboxes: only override if the field is on the current tab
+    if (settingsTab === "automation") {
+      values.auto_apply = fd.get("auto_apply") === "on";
+      values.automation_enabled = fd.get("automation_enabled") === "on";
+    }
+    if (settingsTab === "smartSelection") {
+      values.smart_entity_selection = fd.get("smart_entity_selection") === "on";
+    }
 
     for (const key of ["schedule_cron", "bedrock_kb_id", "target_language"]) {
       if (values[key] === "") values[key] = null;
@@ -146,17 +154,16 @@ export default function SettingsPage() {
       values.ollama_url = "http://localhost:11434";
     }
 
-    // Collect field descriptions (remove form keys, set as structured object)
+    // Field descriptions — always use React state (works across tabs)
     const allDescs: Record<string, string> = {};
     for (const f of METADATA_FIELDS) {
-      const v = fd.get(`field_desc_${f.key}`);
-      if (v && String(v).trim()) allDescs[f.key] = String(v).trim();
+      const v = fieldDescs[f.key];
+      if (v && v.trim()) allDescs[f.key] = v.trim();
       delete values[`field_desc_${f.key}`];
     }
-    // Custom field descriptions
     for (const cfId of selectedCustomFields) {
-      const v = fd.get(`field_desc_cf:${cfId}`);
-      if (v && String(v).trim()) allDescs[`cf:${cfId}`] = String(v).trim();
+      const v = fieldDescs[`cf:${cfId}`];
+      if (v && v.trim()) allDescs[`cf:${cfId}`] = v.trim();
       delete values[`field_desc_cf:${cfId}`];
     }
     values.field_descriptions = allDescs;
@@ -174,6 +181,10 @@ export default function SettingsPage() {
       if (v.trim()) pdtTemplates[k] = v.trim();
     }
     values.per_doctype_prompt_templates = pdtTemplates;
+
+    // Always send controlled state values (survive tab switches)
+    values.global_prompt_template = promptText;
+    values.inbox_tag_id = inboxTagId ? Number(inboxTagId) : null;
 
     // Theme values
     values.theme_primary_color = themePrimary;
