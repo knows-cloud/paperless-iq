@@ -47,6 +47,7 @@ class OllamaQueue:
         self._last_health_time: float = 0.0
         # Processing tracking
         self._active_label: str | None = None  # description of current task
+        self._pending_labels: list[str] = []  # labels of queued (waiting) tasks
         self._embedding_active: bool = False
         self._embedding_total: int = 0
         self._embedding_done: int = 0
@@ -67,6 +68,8 @@ class OllamaQueue:
     async def submit(self, priority: Priority, fn: Callable[[], Awaitable[T]], label: str = "") -> T:
         """Submit a request to the queue and wait for the result."""
         future: asyncio.Future[T] = asyncio.get_event_loop().create_future()
+        if label:
+            self._pending_labels.append(label)
         await self._queue.put((priority.value, time.monotonic(), future, fn, label))
 
         # If this is a high-priority request, pause background work
@@ -111,6 +114,7 @@ class OllamaQueue:
         return {
             "active_task": self._active_label,
             "active_priority": self._active_priority.name if self._active_priority else None,
+            "pending_tasks": list(self._pending_labels),
             "embedding_active": self._embedding_active,
             "embedding_total": self._embedding_total,
             "embedding_done": self._embedding_done,
@@ -134,6 +138,8 @@ class OllamaQueue:
 
             self._active_priority = Priority(priority_val)
             self._active_label = label or None
+            if label and label in self._pending_labels:
+                self._pending_labels.remove(label)
             try:
                 async with self._semaphore:
                     result = await fn()

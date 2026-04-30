@@ -38,9 +38,9 @@ export default function ProcessingPage() {
       </div>
 
       <div className="card" style={{ marginTop: "1rem" }}>
-        <h3>Current Task</h3>
+        <h3>Processing Queue</h3>
         {proc?.active_task ? (
-          <div style={{ fontSize: "0.9rem" }}>
+          <div style={{ fontSize: "0.9rem", marginBottom: "0.5rem" }}>
             <div style={{ display: "flex", alignItems: "center", gap: "0.5rem" }}>
               <span style={{ display: "inline-block", width: "8px", height: "8px", borderRadius: "50%", background: "var(--petrol-500)", animation: "pulse 1.5s infinite" }} />
               <strong>{String(proc.active_task)}</strong>
@@ -48,12 +48,24 @@ export default function ProcessingPage() {
             </div>
           </div>
         ) : (
-          <p style={{ color: "var(--gray-500)", fontSize: "0.9rem" }}>Idle — no task running</p>
+          <p style={{ color: "var(--gray-500)", fontSize: "0.9rem", marginBottom: "0.5rem" }}>Idle — no task running</p>
         )}
-        {(proc?.queue_size as number) > 0 && (
-          <p style={{ fontSize: "0.85rem", color: "var(--gray-500)", marginTop: "0.5rem" }}>
-            {String(proc?.queue_size)} task(s) waiting in queue
-          </p>
+        {((proc?.pending_tasks as string[]) ?? []).length > 0 && (
+          <div style={{ marginTop: "0.25rem" }}>
+            <p style={{ fontSize: "0.82rem", color: "var(--gray-500)", marginBottom: "0.3rem", fontWeight: 500 }}>Waiting:</p>
+            {((proc?.pending_tasks as string[]) ?? []).map((label, i) => (
+              <div key={i} style={{
+                fontSize: "0.85rem", padding: "0.3rem 0.6rem", marginBottom: "2px",
+                background: i % 2 === 0 ? "transparent" : "var(--card-alt-bg, rgba(26,114,136,0.06))",
+                borderRadius: "var(--radius-sm)",
+              }}>
+                {label}
+              </div>
+            ))}
+          </div>
+        )}
+        {!proc?.active_task && ((proc?.pending_tasks as string[]) ?? []).length === 0 && (proc?.queue_size as number) === 0 && (
+          <p style={{ fontSize: "0.82rem", color: "var(--gray-500)" }}>No tasks queued.</p>
         )}
       </div>
 

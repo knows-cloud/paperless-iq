@@ -1061,6 +1061,18 @@ async def manual_analyze(body: AnalyzeBody, request: Request) -> dict:
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail=f"Analysis failed: {exc}",
         )
+
+    # Auto-enqueue into approval queue so the suggestion persists
+    try:
+        from backend.approval_queue import ApprovalQueueService
+        from backend.database import AsyncSessionLocal
+        async with AsyncSessionLocal() as session:
+            queue_svc = ApprovalQueueService(session)
+            enqueued = await queue_svc.enqueue(suggestion)
+            suggestion = enqueued  # use the enqueued version (has DB-assigned fields)
+    except Exception:
+        logger.warning("Failed to auto-enqueue suggestion for doc %d", body.document_id, exc_info=True)
+
     return suggestion.model_dump(mode="json")
 
 
