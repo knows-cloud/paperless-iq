@@ -17,7 +17,6 @@ export default function SettingsPage() {
   const { data, isLoading, error } = useQuery({ queryKey: ["settings"], queryFn: api.getSettings });
   const tags = useQuery({ queryKey: ["tags"], queryFn: api.getTags, retry: false });
   const customFields = useQuery({ queryKey: ["customFields"], queryFn: api.getCustomFields, retry: false });
-  const docTypes = useQuery({ queryKey: ["docTypes"], queryFn: api.getDocumentTypes, retry: false });
   const [msg, setMsg] = useState("");
   const [fieldDescs, setFieldDescs] = useState<Record<string, string>>({});
   const [selectedCustomFields, setSelectedCustomFields] = useState<number[]>([]);
@@ -28,7 +27,6 @@ export default function SettingsPage() {
   const [testingConnection, setTestingConnection] = useState(false);
   const [perFieldPrompts, setPerFieldPrompts] = useState<Record<string, string>>({});
   const [perDoctypePrompts, setPerDoctypePrompts] = useState<Record<string, string>>({});
-  const [showAdvancedTemplates, setShowAdvancedTemplates] = useState(false);
   const [selectedProvider, setSelectedProvider] = useState("");
   const [promptText, setPromptText] = useState("");
   const [themePrimary, setThemePrimary] = useState("#1a7288");
@@ -216,7 +214,6 @@ export default function SettingsPage() {
 
   const cfList = (customFields.data ?? []) as PaperlessCustomField[];
   const tagList = (tags.data ?? []) as PaperlessEntity[];
-  const docTypeList = (docTypes.data ?? []) as PaperlessEntity[];
 
   type SettingsTab = "llm" | "prompts" | "smartSelection" | "fields" | "policies" | "automation" | "localization" | "theme";
   const SETTINGS_TABS: Array<{ id: SettingsTab; label: string }> = [
@@ -385,7 +382,7 @@ export default function SettingsPage() {
         )}
 
         {/* ── Per-Field Descriptions ── */}
-        {settingsTab === "fields" && (<>
+        {settingsTab === "fields" && (
         <div className="card">
           <h3>Field Instructions</h3>
           <p style={{ fontSize: "0.85rem", color: "#666", marginBottom: "1rem" }}>
@@ -424,8 +421,7 @@ export default function SettingsPage() {
             );
           })}
         </div>
-        </div>
-        </>)}
+        )}
 
         {/* ── Creation Policies ── */}
         {settingsTab === "policies" && (
