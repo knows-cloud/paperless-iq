@@ -89,7 +89,15 @@ async def _inbox_polling_loop(
 
                 async def submit_for_analysis(doc_id: int) -> Any:
                     try:
-                        suggestion = await manual_svc.analyze(doc_id)
+                        oq = getattr(app.state, "ollama_queue", None)
+                        if oq:
+                            suggestion = await oq.submit(
+                                Priority.ANALYSIS,
+                                lambda did=doc_id: manual_svc.analyze(did),
+                                label=f"Auto-analyzing doc {doc_id}",
+                            )
+                        else:
+                            suggestion = await manual_svc.analyze(doc_id)
                         from backend.approval_queue import ApprovalQueueService
                         queue_svc = ApprovalQueueService(session)
                         enqueued = await queue_svc.enqueue(suggestion)
@@ -147,7 +155,15 @@ async def _scheduler_loop(
 
                 async def submit_for_analysis(doc_id: int) -> Any:
                     try:
-                        suggestion = await manual_svc.analyze(doc_id)
+                        oq = getattr(app.state, "ollama_queue", None)
+                        if oq:
+                            suggestion = await oq.submit(
+                                Priority.ANALYSIS,
+                                lambda did=doc_id: manual_svc.analyze(did),
+                                label=f"Auto-analyzing doc {doc_id}",
+                            )
+                        else:
+                            suggestion = await manual_svc.analyze(doc_id)
                         from backend.approval_queue import ApprovalQueueService
                         queue_svc = ApprovalQueueService(session)
                         enqueued = await queue_svc.enqueue(suggestion)
@@ -230,20 +246,39 @@ async def _background_index(
             queue.set_embedding_progress(total_to_index, 0)
 
         # Get already-indexed document IDs to skip re-embedding
+        # Also checks chunk completeness: if a doc has fewer chunks than expected, re-index it
         already_indexed: set[int] = set()
         try:
             loop = asyncio.get_event_loop()
             existing = await loop.run_in_executor(
                 None,
-                lambda: vector_store._collection.get(include=[])
+                lambda: vector_store._collection.get(include=["metadatas"])
             )
-            for chunk_id in existing.get("ids", []):
+            # Count chunks per document and check against expected total
+            doc_chunk_counts: dict[int, int] = {}
+            doc_expected_chunks: dict[int, int] = {}
+            for i, chunk_id in enumerate(existing.get("ids", [])):
                 try:
                     doc_id_part = int(str(chunk_id).split("_")[0])
-                    already_indexed.add(doc_id_part)
+                    doc_chunk_counts[doc_id_part] = doc_chunk_counts.get(doc_id_part, 0) + 1
+                    meta = existing.get("metadatas", [])[i] if existing.get("metadatas") else {}
+                    if meta and "total_chunks" in meta:
+                        doc_expected_chunks[doc_id_part] = int(meta["total_chunks"])
                 except (ValueError, IndexError):
                     pass
-            logger.info("Vector store has %d documents already indexed. Skipping those.", len(already_indexed))
+
+            incomplete = 0
+            for doc_id_part, count in doc_chunk_counts.items():
+                expected = doc_expected_chunks.get(doc_id_part, count)
+                if count >= expected:
+                    already_indexed.add(doc_id_part)
+                else:
+                    incomplete += 1
+
+            logger.info(
+                "Vector store: %d documents fully indexed, %d incomplete (will re-index).",
+                len(already_indexed), incomplete,
+            )
         except Exception:
             logger.debug("Could not read existing index; will re-index all.", exc_info=True)
 
@@ -642,7 +677,15 @@ async def reanalyze_queue_item(
 
     # Analyze fresh FIRST — if this fails, the old suggestion stays
     try:
-        suggestion = await manual_svc.analyze(doc_id)
+        queue: OllamaQueue | None = getattr(request.app.state, "ollama_queue", None)
+        if queue:
+            suggestion = await queue.submit(
+                Priority.ANALYSIS,
+                lambda: manual_svc.analyze(doc_id),
+                label=f"Re-analyzing doc {doc_id}",
+            )
+        else:
+            suggestion = await manual_svc.analyze(doc_id)
     except Exception as exc:
         raise HTTPException(status_code=500, detail=f"Re-analysis failed (original kept): {exc}")
 
@@ -673,12 +716,21 @@ async def reanalyze_all_queue(
     pending, _ = await svc.list(status="pending", page=1, page_size=10000)
     items = [(s.id, s.document_id) for s in pending]
 
+    oq: OllamaQueue | None = getattr(request.app.state, "ollama_queue", None)
+
     async def _reanalyze_bg() -> None:
         from backend.database import AsyncSessionLocal
         from backend.approval_queue import ApprovalQueueService as QSvc
         for old_id, doc_id in items:
             try:
-                suggestion = await manual_svc.analyze(doc_id)
+                if oq:
+                    suggestion = await oq.submit(
+                        Priority.ANALYSIS,
+                        lambda did=doc_id: manual_svc.analyze(did),
+                        label=f"Re-analyzing doc {doc_id}",
+                    )
+                else:
+                    suggestion = await manual_svc.analyze(doc_id)
                 async with AsyncSessionLocal() as session:
                     q = QSvc(session)
                     # Reject old only after successful analysis
