@@ -296,10 +296,14 @@ async def _background_index(
                     # Skip docs with the inbox tag (unprocessed)
                     if inbox_tag_id and inbox_tag_id in doc_tags:
                         skipped += 1
+                        if queue:
+                            queue.set_embedding_progress(total_to_index, indexed + skipped)
                         continue
                     # Skip already-indexed documents
                     if doc_id in already_indexed:
                         skipped += 1
+                        if queue:
+                            queue.set_embedding_progress(total_to_index, indexed + skipped)
                         continue
                     content = doc.get("content", "")
                     if not content:
@@ -315,7 +319,7 @@ async def _background_index(
                         await vector_store.upsert(doc_id, content, meta)
                         indexed += 1
                         if queue:
-                            queue.set_embedding_progress(total_to_index, indexed)
+                            queue.set_embedding_progress(total_to_index, indexed + skipped)
                     except Exception:
                         logger.debug("Failed to index document %d", doc_id, exc_info=True)
                         await asyncio.sleep(2.0)  # back off on failure
@@ -324,6 +328,8 @@ async def _background_index(
                 await asyncio.sleep(0.1)
 
         logger.info("Background indexing complete: %d new documents indexed, %d skipped (already indexed or excluded).", indexed, skipped)
+        if queue:
+            queue.set_embedding_progress(total_to_index, total_to_index)  # mark complete
     except Exception:
         logger.warning("Background indexing failed.", exc_info=True)
 
