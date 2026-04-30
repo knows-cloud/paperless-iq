@@ -221,6 +221,14 @@ async def _background_index(
                         lookup[item["id"]] = item.get("name", "")
                     eurl = d.get("next")
 
+        # Get total count first for progress tracking
+        async with httpx.AsyncClient(headers=headers, timeout=30) as count_client:
+            r = await count_client.get(f"{base}/api/documents/", params={"page_size": 1})
+            if r.status_code == 200:
+                total_to_index = r.json().get("count", 0)
+        if queue:
+            queue.set_embedding_progress(total_to_index, 0)
+
         url: str | None = f"{base}/api/documents/?page_size=50&ordering=-added"
         async with httpx.AsyncClient(headers=headers, timeout=60) as client:
             while url:
@@ -245,13 +253,7 @@ async def _background_index(
                         "document_type": dt_id_to_name.get(doc.get("document_type") or 0, ""),
                     }
                     try:
-                        if queue:
-                            await queue.submit_background(
-                                lambda did=doc_id, c=content, m=meta: vector_store.upsert(did, c, m),
-                                label=f"Embedding doc {doc_id}",
-                            )
-                        else:
-                            await vector_store.upsert(doc_id, content, meta)
+                        await vector_store.upsert(doc_id, content, meta)
                         indexed += 1
                         if queue:
                             queue.set_embedding_progress(total_to_index, indexed)
