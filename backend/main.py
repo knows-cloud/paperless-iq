@@ -229,6 +229,25 @@ async def _background_index(
         if queue:
             queue.set_embedding_progress(total_to_index, 0)
 
+        # Get already-indexed document IDs to skip re-embedding
+        already_indexed: set[int] = set()
+        try:
+            loop = asyncio.get_event_loop()
+            existing = await loop.run_in_executor(
+                None,
+                lambda: vector_store._collection.get(include=[])
+            )
+            for chunk_id in existing.get("ids", []):
+                try:
+                    doc_id_part = int(str(chunk_id).split("_")[0])
+                    already_indexed.add(doc_id_part)
+                except (ValueError, IndexError):
+                    pass
+            logger.info("Vector store has %d documents already indexed. Skipping those.", len(already_indexed))
+        except Exception:
+            logger.debug("Could not read existing index; will re-index all.", exc_info=True)
+
+        skipped = 0
         url: str | None = f"{base}/api/documents/?page_size=50&ordering=-added"
         async with httpx.AsyncClient(headers=headers, timeout=60) as client:
             while url:
@@ -241,6 +260,11 @@ async def _background_index(
                     doc_tags = doc.get("tags", [])
                     # Skip docs with the inbox tag (unprocessed)
                     if inbox_tag_id and inbox_tag_id in doc_tags:
+                        skipped += 1
+                        continue
+                    # Skip already-indexed documents
+                    if doc_id in already_indexed:
+                        skipped += 1
                         continue
                     content = doc.get("content", "")
                     if not content:
@@ -264,7 +288,7 @@ async def _background_index(
                 # Yield to event loop between pages
                 await asyncio.sleep(0.1)
 
-        logger.info("Background indexing complete: %d documents indexed.", indexed)
+        logger.info("Background indexing complete: %d new documents indexed, %d skipped (already indexed or excluded).", indexed, skipped)
     except Exception:
         logger.warning("Background indexing failed.", exc_info=True)
 
