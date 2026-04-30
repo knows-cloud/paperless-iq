@@ -9,6 +9,7 @@ const METADATA_FIELDS = [
   { key: "correspondent", label: "Correspondent", description: "How should the LLM identify the correspondent?" },
   { key: "document_type", label: "Document Type", description: "How should the LLM classify the document type?" },
   { key: "storage_path", label: "Storage Path / Folder", description: "How should the LLM suggest a storage path?" },
+  { key: "created", label: "Date / Created", description: "How should the LLM determine the document date?" },
 ];
 
 export default function SettingsPage() {
@@ -412,59 +413,6 @@ export default function SettingsPage() {
             );
           })}
         </div>
-
-        {/* ── Advanced Prompt Templates ── */}
-        <div className="card">
-          <h3
-            style={{ cursor: "pointer", userSelect: "none", display: "flex", alignItems: "center", gap: "0.5rem" }}
-            onClick={() => setShowAdvancedTemplates(prev => !prev)}
-          >
-            <span style={{ fontSize: "0.75rem", transition: "transform 0.2s", display: "inline-block", transform: showAdvancedTemplates ? "rotate(90deg)" : "rotate(0deg)" }}>▶</span>
-            Advanced Prompt Templates
-          </h3>
-          {showAdvancedTemplates && (
-            <div>
-              <p style={{ fontSize: "0.85rem", color: "#666", marginBottom: "1rem", background: "#f8f8f0", padding: "0.75rem", borderRadius: "4px", border: "1px solid #e0e0d0" }}>
-                Per-field templates override the global prompt for that specific field.
-                Per-document-type templates override both per-field and global prompts when the document type matches.
-              </p>
-
-              <h4>Per-Field Templates</h4>
-              {METADATA_FIELDS.map(f => (
-                <div className="form-group" key={`pft_${f.key}`}>
-                  <label htmlFor={`pft_${f.key}`}>{f.label}</label>
-                  <textarea
-                    id={`pft_${f.key}`}
-                    rows={3}
-                    value={perFieldPrompts[f.key] ?? ""}
-                    onChange={e => setPerFieldPrompts(prev => ({ ...prev, [f.key]: e.target.value }))}
-                    placeholder={`Custom prompt template for ${f.label.toLowerCase()}`}
-                    style={{ fontFamily: "monospace", fontSize: "0.85rem" }}
-                  />
-                </div>
-              ))}
-
-              <h4 style={{ marginTop: "1rem" }}>Per-Document-Type Templates</h4>
-              {docTypeList.length === 0 && (
-                <p style={{ fontSize: "0.85rem", color: "#666" }}>
-                  {docTypes.isError ? "Cannot load document types from Paperless NGX." : "No document types found."}
-                </p>
-              )}
-              {docTypeList.map(dt => (
-                <div className="form-group" key={`pdt_${dt.id}`}>
-                  <label htmlFor={`pdt_${dt.id}`}>{dt.name}</label>
-                  <textarea
-                    id={`pdt_${dt.id}`}
-                    rows={3}
-                    value={perDoctypePrompts[String(dt.id)] ?? ""}
-                    onChange={e => setPerDoctypePrompts(prev => ({ ...prev, [String(dt.id)]: e.target.value }))}
-                    placeholder={`Custom prompt template for "${dt.name}" documents`}
-                    style={{ fontFamily: "monospace", fontSize: "0.85rem" }}
-                  />
-                </div>
-              ))}
-            </div>
-          )}
         </div>
         </>)}
 
@@ -653,57 +601,91 @@ export default function SettingsPage() {
         {settingsTab === "theme" && (
         <div className="card">
           <h3>Theme</h3>
+
+          <h4 style={{ marginTop: "0.5rem", borderBottom: "1px solid var(--gray-200)", paddingBottom: "0.3rem" }}>Colors</h4>
           <div style={{ display: "flex", gap: "1rem", flexWrap: "wrap" }}>
             <div className="form-group" style={{ flex: 1, minWidth: "200px" }}>
               <label>Primary Color</label>
               <div style={{ display: "flex", gap: "0.5rem", alignItems: "center" }}>
-                <input type="color" value={themePrimary} onChange={e => setThemePrimary(e.target.value)}
-                  style={{ width: "40px", height: "34px", padding: "2px", cursor: "pointer" }} />
-                <input value={themePrimary} onChange={e => setThemePrimary(e.target.value)}
-                  style={{ fontSize: "0.85rem", fontFamily: "'Roboto Mono', monospace", flex: 1 }}
-                  placeholder="#1a7288" />
+                <input type="color" value={themePrimary} onChange={e => setThemePrimary(e.target.value)} style={{ width: "40px", height: "34px", padding: "2px", cursor: "pointer" }} />
+                <input value={themePrimary} onChange={e => setThemePrimary(e.target.value)} style={{ fontSize: "0.85rem", fontFamily: "'Roboto Mono', monospace", flex: 1 }} />
               </div>
             </div>
             <div className="form-group" style={{ flex: 1, minWidth: "200px" }}>
-              <label>Sidebar Top</label>
+              <label>Text Color</label>
               <div style={{ display: "flex", gap: "0.5rem", alignItems: "center" }}>
-                <input type="color" value={themeSidebarFrom} onChange={e => setThemeSidebarFrom(e.target.value)}
-                  style={{ width: "40px", height: "34px", padding: "2px", cursor: "pointer" }} />
-                <input value={themeSidebarFrom} onChange={e => setThemeSidebarFrom(e.target.value)}
-                  style={{ fontSize: "0.85rem", fontFamily: "'Roboto Mono', monospace", flex: 1 }} />
-              </div>
-            </div>
-            <div className="form-group" style={{ flex: 1, minWidth: "200px" }}>
-              <label>Sidebar Bottom</label>
-              <div style={{ display: "flex", gap: "0.5rem", alignItems: "center" }}>
-                <input type="color" value={themeSidebarTo} onChange={e => setThemeSidebarTo(e.target.value)}
-                  style={{ width: "40px", height: "34px", padding: "2px", cursor: "pointer" }} />
-                <input value={themeSidebarTo} onChange={e => setThemeSidebarTo(e.target.value)}
-                  style={{ fontSize: "0.85rem", fontFamily: "'Roboto Mono', monospace", flex: 1 }} />
+                <input type="color" value={themeTextColor} onChange={e => setThemeTextColor(e.target.value)} style={{ width: "40px", height: "34px", padding: "2px", cursor: "pointer" }} />
+                <input value={themeTextColor} onChange={e => setThemeTextColor(e.target.value)} style={{ fontSize: "0.85rem", fontFamily: "'Roboto Mono', monospace", flex: 1 }} />
               </div>
             </div>
           </div>
 
-          <div className="form-group">
-            <label>Font</label>
-            <select value={themeFont} onChange={e => setThemeFont(e.target.value)} style={{ fontSize: "0.85rem" }}>
-              <option value="Roboto">Roboto</option>
-              <option value="Inter">Inter</option>
-              <option value="Fira Sans">Fira Sans</option>
-              <option value="Source Sans 3">Source Sans 3</option>
-              <option value="Nunito">Nunito</option>
-              <option value="JetBrains Mono">JetBrains Mono (Nerd Font)</option>
-              <option value="Fira Code">Fira Code (Nerd Font)</option>
-              <option value="Ubuntu">Ubuntu</option>
-              <option value="Noto Sans">Noto Sans (full Unicode)</option>
-              <option value="Open Sans">Open Sans</option>
-            </select>
-            <small>Font is loaded from Google Fonts. Nerd Font options have extended symbol support.</small>
-          </div>
-
+          <h4 style={{ marginTop: "1rem", borderBottom: "1px solid var(--gray-200)", paddingBottom: "0.3rem" }}>Sidebar</h4>
           <div style={{ display: "flex", gap: "1rem", flexWrap: "wrap" }}>
-            <div className="form-group" style={{ flex: 1, minWidth: "140px" }}>
-              <label>Font Size</label>
+            <div className="form-group" style={{ flex: 1, minWidth: "200px" }}>
+              <label>Gradient Top</label>
+              <div style={{ display: "flex", gap: "0.5rem", alignItems: "center" }}>
+                <input type="color" value={themeSidebarFrom} onChange={e => setThemeSidebarFrom(e.target.value)} style={{ width: "40px", height: "34px", padding: "2px", cursor: "pointer" }} />
+                <input value={themeSidebarFrom} onChange={e => setThemeSidebarFrom(e.target.value)} style={{ fontSize: "0.85rem", fontFamily: "'Roboto Mono', monospace", flex: 1 }} />
+              </div>
+            </div>
+            <div className="form-group" style={{ flex: 1, minWidth: "200px" }}>
+              <label>Gradient Bottom</label>
+              <div style={{ display: "flex", gap: "0.5rem", alignItems: "center" }}>
+                <input type="color" value={themeSidebarTo} onChange={e => setThemeSidebarTo(e.target.value)} style={{ width: "40px", height: "34px", padding: "2px", cursor: "pointer" }} />
+                <input value={themeSidebarTo} onChange={e => setThemeSidebarTo(e.target.value)} style={{ fontSize: "0.85rem", fontFamily: "'Roboto Mono', monospace", flex: 1 }} />
+              </div>
+            </div>
+          </div>
+
+          <h4 style={{ marginTop: "1rem", borderBottom: "1px solid var(--gray-200)", paddingBottom: "0.3rem" }}>Content Area</h4>
+          <div style={{ display: "flex", gap: "1rem", flexWrap: "wrap" }}>
+            <div className="form-group" style={{ flex: 1, minWidth: "200px" }}>
+              <label>Page Background</label>
+              <div style={{ display: "flex", gap: "0.5rem", alignItems: "center" }}>
+                <input type="color" value={themeBgColor} onChange={e => setThemeBgColor(e.target.value)} style={{ width: "40px", height: "34px", padding: "2px", cursor: "pointer" }} />
+                <input value={themeBgColor} onChange={e => setThemeBgColor(e.target.value)} style={{ fontSize: "0.85rem", fontFamily: "'Roboto Mono', monospace", flex: 1 }} />
+              </div>
+            </div>
+            <div className="form-group" style={{ flex: 1, minWidth: "200px" }}>
+              <label>Card Background</label>
+              <div style={{ display: "flex", gap: "0.5rem", alignItems: "center" }}>
+                <input type="color" value={themeCardColor} onChange={e => setThemeCardColor(e.target.value)} style={{ width: "40px", height: "34px", padding: "2px", cursor: "pointer" }} />
+                <input value={themeCardColor} onChange={e => setThemeCardColor(e.target.value)} style={{ fontSize: "0.85rem", fontFamily: "'Roboto Mono', monospace", flex: 1 }} />
+              </div>
+            </div>
+            <div className="form-group" style={{ flex: 1, minWidth: "200px" }}>
+              <label>Alternating Row</label>
+              <div style={{ display: "flex", gap: "0.5rem", alignItems: "center" }}>
+                <input type="color" value={themeCardAltHex} onChange={e => setThemeCardAltHex(e.target.value)} style={{ width: "40px", height: "34px", padding: "2px", cursor: "pointer" }} />
+                <input value={themeCardAltHex} onChange={e => setThemeCardAltHex(e.target.value)} style={{ fontSize: "0.85rem", fontFamily: "'Roboto Mono', monospace", flex: 1 }} />
+              </div>
+              <div style={{ display: "flex", gap: "0.5rem", alignItems: "center", marginTop: "0.35rem" }}>
+                <label style={{ fontSize: "0.8rem", color: "var(--gray-500)", margin: 0, minWidth: "65px" }}>Opacity {themeCardAltOpacity}%</label>
+                <input type="range" min="0" max="100" value={themeCardAltOpacity} onChange={e => setThemeCardAltOpacity(Number(e.target.value))} style={{ flex: 1 }} />
+              </div>
+            </div>
+          </div>
+
+          <h4 style={{ marginTop: "1rem", borderBottom: "1px solid var(--gray-200)", paddingBottom: "0.3rem" }}>Typography</h4>
+          <div style={{ display: "flex", gap: "1rem", flexWrap: "wrap" }}>
+            <div className="form-group" style={{ flex: 2, minWidth: "200px" }}>
+              <label>Font</label>
+              <select value={themeFont} onChange={e => setThemeFont(e.target.value)} style={{ fontSize: "0.85rem" }}>
+                <option value="Roboto">Roboto</option>
+                <option value="Open Sans">Open Sans</option>
+                <option value="Inter">Inter</option>
+                <option value="Fira Sans">Fira Sans</option>
+                <option value="Source Sans 3">Source Sans 3</option>
+                <option value="Nunito">Nunito</option>
+                <option value="Ubuntu">Ubuntu</option>
+                <option value="Noto Sans">Noto Sans (full Unicode)</option>
+                <option value="JetBrains Mono">JetBrains Mono</option>
+                <option value="Fira Code">Fira Code</option>
+              </select>
+            </div>
+            <div className="form-group" style={{ flex: 1, minWidth: "100px" }}>
+              <label>Size</label>
               <select value={themeFontSize} onChange={e => setThemeFontSize(e.target.value)} style={{ fontSize: "0.85rem" }}>
                 <option value="12px">12px</option>
                 <option value="13px">13px</option>
@@ -712,52 +694,9 @@ export default function SettingsPage() {
                 <option value="16px">16px</option>
               </select>
             </div>
-            <div className="form-group" style={{ flex: 1, minWidth: "200px" }}>
-              <label>Text Color</label>
-              <div style={{ display: "flex", gap: "0.5rem", alignItems: "center" }}>
-                <input type="color" value={themeTextColor} onChange={e => setThemeTextColor(e.target.value)}
-                  style={{ width: "40px", height: "34px", padding: "2px", cursor: "pointer" }} />
-                <input value={themeTextColor} onChange={e => setThemeTextColor(e.target.value)}
-                  style={{ fontSize: "0.85rem", fontFamily: "'Roboto Mono', monospace", flex: 1 }} />
-              </div>
-            </div>
           </div>
 
-          <div style={{ display: "flex", gap: "1rem", flexWrap: "wrap" }}>
-            <div className="form-group" style={{ flex: 1, minWidth: "200px" }}>
-              <label>Page Background</label>
-              <div style={{ display: "flex", gap: "0.5rem", alignItems: "center" }}>
-                <input type="color" value={themeBgColor} onChange={e => setThemeBgColor(e.target.value)}
-                  style={{ width: "40px", height: "34px", padding: "2px", cursor: "pointer" }} />
-                <input value={themeBgColor} onChange={e => setThemeBgColor(e.target.value)}
-                  style={{ fontSize: "0.85rem", fontFamily: "'Roboto Mono', monospace", flex: 1 }} />
-              </div>
-            </div>
-            <div className="form-group" style={{ flex: 1, minWidth: "200px" }}>
-              <label>Card Background</label>
-              <div style={{ display: "flex", gap: "0.5rem", alignItems: "center" }}>
-                <input type="color" value={themeCardColor} onChange={e => setThemeCardColor(e.target.value)}
-                  style={{ width: "40px", height: "34px", padding: "2px", cursor: "pointer" }} />
-                <input value={themeCardColor} onChange={e => setThemeCardColor(e.target.value)}
-                  style={{ fontSize: "0.85rem", fontFamily: "'Roboto Mono', monospace", flex: 1 }} />
-              </div>
-            </div>
-            <div className="form-group" style={{ flex: 1, minWidth: "200px" }}>
-              <label>Alternating Card</label>
-              <div style={{ display: "flex", gap: "0.5rem", alignItems: "center" }}>
-                <input type="color" value={themeCardAltHex} onChange={e => setThemeCardAltHex(e.target.value)}
-                  style={{ width: "40px", height: "34px", padding: "2px", cursor: "pointer" }} />
-                <input value={themeCardAltHex} onChange={e => setThemeCardAltHex(e.target.value)}
-                  style={{ fontSize: "0.85rem", fontFamily: "'Roboto Mono', monospace", flex: 1 }} />
-              </div>
-              <div style={{ display: "flex", gap: "0.5rem", alignItems: "center", marginTop: "0.35rem" }}>
-                <label style={{ fontSize: "0.8rem", color: "var(--gray-500)", margin: 0, minWidth: "65px" }}>Opacity {themeCardAltOpacity}%</label>
-                <input type="range" min="0" max="100" value={themeCardAltOpacity}
-                  onChange={e => setThemeCardAltOpacity(Number(e.target.value))}
-                  style={{ flex: 1 }} />
-              </div>
-            </div>
-          </div>
+          <h4 style={{ marginTop: "1rem", borderBottom: "1px solid var(--gray-200)", paddingBottom: "0.3rem" }}>Branding</h4>
 
           <div className="form-group">
             <label>Logo</label>
