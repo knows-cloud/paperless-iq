@@ -77,7 +77,23 @@ export default function ManualPage() {
   const handleBatchAnalyze = useCallback(async () => {
     if (selectedDocs.size === 0) return;
     setBatchRunning(true);
-    for (const id of Array.from(selectedDocs)) await analyzeOne(id);
+    const ids = Array.from(selectedDocs);
+    // Mark all as analyzing
+    setAnalyzingDocs(prev => { const next = new Set(prev); ids.forEach(id => next.add(id)); return next; });
+    // Submit all in parallel — they queue up in the backend OllamaQueue
+    const promises = ids.map(async (id) => {
+      setAnalysisErrors(prev => { const next = { ...prev }; delete next[id]; return next; });
+      try {
+        const data = await api.analyze(id);
+        setAnalysisResults(prev => ({ ...prev, [id]: data }));
+        setMergeTagsMap(prev => ({ ...prev, [id]: true }));
+      } catch (err: unknown) {
+        setAnalysisErrors(prev => ({ ...prev, [id]: (err as Error).message }));
+      } finally {
+        setAnalyzingDocs(prev => { const next = new Set(prev); next.delete(id); return next; });
+      }
+    });
+    await Promise.all(promises);
     setBatchRunning(false);
     setSelectedDocs(new Set());
   }, [selectedDocs, analyzeOne]);
