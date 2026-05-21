@@ -64,8 +64,8 @@ export default function CfNameEditor({ name, value, isNew, suggestions, onRename
   };
 
   const nameStyle = isNew
-    ? { color: "#c62828", fontWeight: 700, fontSize: "0.85rem" }
-    : { color: "#555", fontSize: "0.85rem" };
+    ? { color: "var(--error-on-card, #c62828)", fontWeight: 700, fontSize: "0.85rem" }
+    : { color: "var(--text-on-card-secondary)", fontSize: "0.85rem" };
 
   return (
     <div style={{ display: "flex", gap: "0.5rem", alignItems: "center", marginBottom: "0.35rem" }}>
@@ -81,7 +81,7 @@ export default function CfNameEditor({ name, value, isNew, suggestions, onRename
         {showSuggestions && filtered.length > 0 && (
           <ul style={{
             position: "absolute", top: "100%", left: 0, right: 0, zIndex: 20,
-            background: "#fff", border: "1px solid var(--gray-300)", borderTop: "none",
+            background: "var(--bg-input)", border: "1px solid var(--gray-300)", borderTop: "none",
             borderRadius: "0 0 var(--radius-sm) var(--radius-sm)",
             maxHeight: "150px", overflowY: "auto", margin: 0, padding: 0,
             listStyle: "none", boxShadow: "var(--shadow-md)",
@@ -104,7 +104,7 @@ export default function CfNameEditor({ name, value, isNew, suggestions, onRename
       <input value={String(value ?? "")} style={{ fontSize: "0.85rem", flex: 1 }}
         onChange={e => onChangeValue(e.target.value)} />
       <button type="button" onClick={onRemove}
-        style={{ background: "none", border: "none", cursor: "pointer", color: "#888", fontSize: "1rem" }}>×</button>
+        style={{ background: "none", border: "none", cursor: "pointer", color: "var(--text-on-card-muted)", fontSize: "1rem" }}>×</button>
     </div>
   );
 }

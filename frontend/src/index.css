@@ -68,7 +68,7 @@ body { min-height: 100vh; }
 .sidebar {
   width: 240px;
   background: var(--bg-sidebar);
-  color: white;
+  color: var(--text-on-sidebar, white);
   display: flex;
   flex-direction: column;
   flex-shrink: 0;
@@ -80,19 +80,19 @@ body { min-height: 100vh; }
 
 .sidebar-header {
   padding: 1.5rem 1.25rem 1rem;
-  border-bottom: 1px solid rgba(255, 255, 255, 0.1);
+  border-bottom: 1px solid var(--sidebar-divider, rgba(255, 255, 255, 0.1));
 }
 
 .sidebar-header h1 {
   font-size: 1.25rem;
   font-weight: 700;
   letter-spacing: -0.02em;
-  color: var(--petrol-200);
+  color: var(--text-on-sidebar, var(--petrol-200));
 }
 
 .sidebar-header .subtitle {
   font-size: 0.75rem;
-  color: var(--petrol-400);
+  color: var(--text-on-sidebar-muted, var(--petrol-400));
   font-weight: 300;
   margin-top: 0.15rem;
 }
@@ -107,7 +107,7 @@ body { min-height: 100vh; }
   align-items: center;
   gap: 0.75rem;
   padding: 0.65rem 1.25rem;
-  color: var(--petrol-300);
+  color: var(--text-on-sidebar-muted, var(--petrol-300));
   text-decoration: none;
   font-size: 0.875rem;
   font-weight: 400;
@@ -116,13 +116,13 @@ body { min-height: 100vh; }
 }
 
 .sidebar-nav a:hover {
-  color: white;
-  background: rgba(255, 255, 255, 0.06);
+  color: var(--text-on-sidebar, white);
+  background: var(--sidebar-hover-bg, rgba(255, 255, 255, 0.06));
 }
 
 .sidebar-nav a.active {
-  color: white;
-  background: rgba(255, 255, 255, 0.1);
+  color: var(--text-on-sidebar, white);
+  background: var(--sidebar-active-bg, rgba(255, 255, 255, 0.1));
   border-left-color: var(--petrol-400);
   font-weight: 500;
 }
@@ -145,7 +145,7 @@ body { min-height: 100vh; }
 h2 {
   font-size: 1.5rem;
   font-weight: 700;
-  color: var(--gray-900);
+  color: var(--text-on-body, var(--gray-900));
   margin-bottom: 1.25rem;
   letter-spacing: -0.02em;
 }
@@ -153,14 +153,14 @@ h2 {
 h3 {
   font-size: 1.1rem;
   font-weight: 600;
-  color: var(--petrol-800);
+  color: var(--text-on-card, var(--petrol-800));
   margin-bottom: 0.75rem;
 }
 
 h4 {
   font-size: 0.95rem;
   font-weight: 600;
-  color: var(--gray-700);
+  color: var(--text-on-card, var(--gray-700));
   margin-bottom: 0.5rem;
 }
 
@@ -174,6 +174,7 @@ h4 {
   margin-bottom: 1rem;
   box-shadow: var(--shadow-sm);
   transition: box-shadow 0.2s ease;
+  color: var(--text-on-card);
 }
 
 .card:hover {
@@ -182,6 +183,14 @@ h4 {
 
 .card-alt {
   background: var(--card-alt-bg, rgba(26, 114, 136, 0.12));
+  /* Redefine the card text tokens so every descendant using var(--text-on-card*)
+     automatically gets the right contrast for the blended alt background. */
+  --text-on-card:           var(--text-on-card-alt);
+  --text-on-card-secondary: var(--text-on-card-alt-secondary);
+  --text-on-card-muted:     var(--text-on-card-alt-muted);
+  --success-on-card:        var(--success-on-card-alt);
+  --error-on-card:          var(--error-on-card-alt);
+  color: var(--text-on-card-alt);
 }
 
 /* ── Forms ── */
@@ -195,7 +204,7 @@ h4 {
   font-weight: 500;
   margin-bottom: 0.3rem;
   font-size: 0.85rem;
-  color: var(--gray-700);
+  color: var(--text-on-card-secondary, var(--gray-700));
 }
 
 .form-group select,
@@ -229,7 +238,7 @@ h4 {
   display: block;
   margin-top: 0.25rem;
   font-size: 0.78rem;
-  color: var(--gray-500);
+  color: var(--text-on-card-muted, var(--gray-500));
   line-height: 1.4;
 }
 
@@ -257,44 +266,58 @@ h4 {
 .btn-primary {
   background: var(--petrol-600);
   color: white;
+  border-color: var(--petrol-700);
 }
 
 .btn-primary:hover:not(:disabled) {
   background: var(--petrol-700);
+  border-color: var(--petrol-800);
   box-shadow: var(--shadow-sm);
 }
 
 .btn-success {
   background: var(--success);
   color: white;
+  border-color: var(--success-dark, #15803d);
+}
+
+.btn-success:hover:not(:disabled) {
+  filter: brightness(0.92);
 }
 
 .btn-danger {
   background: var(--error);
   color: white;
+  border-color: var(--error-dark, #991b1b);
 }
 
+.btn-danger:hover:not(:disabled) {
+  filter: brightness(0.92);
+}
+
+/* Default / outline button — petrol-tinted instead of neutral grey */
 .btn:not(.btn-primary):not(.btn-success):not(.btn-danger) {
-  background: white;
-  border-color: var(--gray-300);
-  color: var(--gray-700);
+  background: var(--petrol-50);
+  border-color: var(--petrol-300);
+  color: var(--petrol-700);
 }
 
 .btn:not(.btn-primary):not(.btn-success):not(.btn-danger):hover:not(:disabled) {
-  background: var(--gray-100);
-  border-color: var(--gray-400);
+  background: var(--petrol-100);
+  border-color: var(--petrol-500);
+  color: var(--petrol-800);
 }
 
 /* ── Status messages ── */
 
 .error {
-  color: var(--error);
+  color: var(--error-text, var(--error));
   font-size: 0.85rem;
   margin-top: 0.25rem;
 }
 
 .success {
-  color: var(--success);
+  color: var(--success-text, var(--success));
   font-size: 0.85rem;
   margin-top: 0.25rem;
 }
@@ -330,20 +353,85 @@ input[type="checkbox"] {
 ::-webkit-scrollbar-thumb { background: var(--gray-300); border-radius: 3px; }
 ::-webkit-scrollbar-thumb:hover { background: var(--gray-400); }
 
-/* ── Responsive ── */
+/* ── Mobile sidebar toggle button (hidden on desktop) ── */
+
+.sidebar-toggle {
+  display: none;
+}
+
+/* ── Sidebar backdrop overlay (mobile only) ── */
+
+.sidebar-overlay {
+  display: none;
+}
+
+/* ── Responsive — mobile drawer ── */
 
 @media (max-width: 768px) {
-  .app-layout { flex-direction: column; }
-  .sidebar {
-    width: 100%;
-    height: auto;
-    position: relative;
-    flex-direction: row;
-    align-items: center;
+  /* Stack layout vertically; main content fills the viewport */
+  .app-layout {
+    flex-direction: column;
   }
-  .sidebar-header { padding: 0.75rem 1rem; border-bottom: none; border-right: 1px solid rgba(255,255,255,0.1); }
-  .sidebar-nav { display: flex; overflow-x: auto; padding: 0; }
-  .sidebar-nav a { padding: 0.75rem 1rem; border-left: none; border-bottom: 3px solid transparent; white-space: nowrap; }
-  .sidebar-nav a.active { border-bottom-color: var(--petrol-400); border-left-color: transparent; }
-  .main-content { padding: 1rem; }
+
+  /* Sidebar becomes a fixed off-screen drawer */
+  .sidebar {
+    position: fixed;
+    top: 0;
+    left: 0;
+    height: 100vh;
+    width: 260px;
+    z-index: 200;
+    transform: translateX(-100%);
+    transition: transform 0.25s cubic-bezier(0.4, 0, 0.2, 1);
+    /* keep flex-direction: column from the base rule */
+  }
+
+  /* Slide in when open */
+  .sidebar.sidebar--open {
+    transform: translateX(0);
+    box-shadow: 4px 0 24px rgba(0, 0, 0, 0.35);
+  }
+
+  /* Semi-transparent backdrop behind the open drawer */
+  .sidebar-overlay {
+    display: block;
+    position: fixed;
+    inset: 0;
+    background: rgba(0, 0, 0, 0.45);
+    z-index: 199;
+    opacity: 0;
+    pointer-events: none;
+    transition: opacity 0.25s ease;
+  }
+
+  .sidebar-overlay.sidebar--open {
+    opacity: 1;
+    pointer-events: auto;
+  }
+
+  /* Hamburger button — fixed top-left, always visible on mobile */
+  .sidebar-toggle {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    position: fixed;
+    top: 0.6rem;
+    left: 0.6rem;
+    z-index: 300;
+    width: 38px;
+    height: 38px;
+    background: var(--petrol-800);
+    border: 1px solid var(--sidebar-divider, rgba(255,255,255,0.15));
+    border-radius: var(--radius-sm);
+    color: white;
+    font-size: 1.25rem;
+    cursor: pointer;
+    line-height: 1;
+  }
+
+  /* Give the main content breathing room below the hamburger */
+  .main-content {
+    padding: 1rem;
+    padding-top: 3.5rem;
+  }
 }

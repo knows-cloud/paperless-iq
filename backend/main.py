@@ -5,15 +5,23 @@ from __future__ import annotations
 import asyncio
 import logging
 import os
+
+# Configure application logging so INFO messages from all backend modules appear
+# in the container log alongside uvicorn's own access log.
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(levelname)s:%(name)s: %(message)s",
+    force=True,  # override any handler uvicorn may have added first
+)
 from contextlib import asynccontextmanager
-from datetime import datetime
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Annotated, Any, AsyncGenerator
 from uuid import UUID
 
 from fastapi import Body, Depends, FastAPI, HTTPException, Query, Request, status
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import FileResponse, JSONResponse
+from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, Response
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -21,8 +29,15 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from backend.analyzer import PaperlessNGXClient
 from backend.approval_queue import ApprovalQueueService
 from backend.audit_log import AuditLogService
-from backend.auth import require_auth
+from backend.auth import (
+    create_session,
+    get_session_user,
+    require_auth,
+    revoke_session,
+    validate_paperless_credentials,
+)
 from backend.database import AsyncSessionLocal, get_session
+from backend.keystore import get_machine_key
 from backend.inbox_monitor import InboxMonitor, Scheduler
 from backend.manual_analysis import ManualAnalysisService
 from backend.models import MetadataSuggestion
@@ -36,6 +51,89 @@ logger = logging.getLogger(__name__)
 
 # Global settings service instance
 _settings_svc = SettingsService()
+
+
+_CLOUD_EMBED_PROVIDERS = {"bedrock", "openai", "anthropic"}
+
+
+def _embed_concurrency_for(provider_name: str) -> int:
+    """Return a safe embedding concurrency for the given provider.
+
+    Cloud APIs (Bedrock, OpenAI, Anthropic) can handle many parallel calls.
+    Local Ollama should stay sequential (1) to avoid burying the server.
+    """
+    return 10 if provider_name in _CLOUD_EMBED_PROVIDERS else 1
+
+
+def _resolve_embed_provider(config: Any, providers: dict) -> Any | None:
+    """Return the right embedding provider based on config.embed_provider.
+
+    - ollama  → fresh OllamaProvider using config.ollama_url + config.embedding_model
+    - bedrock → prefers the existing BedrockProvider instance when llm_provider=bedrock;
+                falls back to building a standalone BedrockProvider from stored credentials
+                so you can use Bedrock embeddings with any LLM (Ollama, Anthropic, etc.)
+    - openai  → reuses the OpenAIProvider instance; requires llm_provider=openai
+    """
+    ep = getattr(config, "embed_provider", "ollama")
+
+    if ep == "ollama":
+        from backend.providers.ollama_provider import OllamaProvider
+        embed_model = config.embedding_model or "nomic-embed-text"
+        ollama_url = config.ollama_url or os.environ.get("OLLAMA_URL", "http://localhost:11434")
+        return OllamaProvider(base_url=ollama_url, model=embed_model)
+
+    if ep == "bedrock":
+        # Case 1: LLM is also Bedrock — reuse the existing provider instance
+        provider = providers.get("bedrock")
+        if provider is not None:
+            provider._embed_model = config.embedding_model or "amazon.titan-embed-text-v1"
+            return provider
+
+        # Case 2: LLM is something else (Ollama, Anthropic, …) — build a standalone
+        # BedrockProvider from the credentials stored in llm_credentials.
+        raw = getattr(config, "llm_credentials", None)
+        if raw:
+            try:
+                import json as _json
+                creds_str = raw.decode("latin-1") if isinstance(raw, bytes) else str(raw)
+                creds = _json.loads(creds_str)
+                secret_key = get_machine_key()
+                from backend.providers.encryption import encrypt_credential
+                from backend.providers.bedrock import BedrockProvider
+                session_token_enc = None
+                if creds.get("session_token"):
+                    session_token_enc = encrypt_credential(creds["session_token"], secret_key)
+                return BedrockProvider(
+                    region=creds["region"],
+                    access_key_id_enc=encrypt_credential(creds["access_key_id"], secret_key),
+                    secret_access_key_enc=encrypt_credential(creds["secret_access_key"], secret_key),
+                    secret_key=secret_key,
+                    model="",  # unused — this instance is embed-only
+                    session_token_enc=session_token_enc,
+                    embed_model=config.embedding_model or "amazon.titan-embed-text-v1",
+                )
+            except Exception:
+                logger.warning(
+                    "embed_provider='bedrock' requested but could not build a standalone "
+                    "Bedrock embed provider from stored credentials. "
+                    "Check that Bedrock credentials are saved in Settings.",
+                    exc_info=True,
+                )
+        raise ValueError(
+            "embed_provider='bedrock' is configured but no Bedrock credentials are stored. "
+            "Go to Settings → LLM Provider and save your AWS credentials."
+        )
+
+    if ep == "openai":
+        provider = providers.get("openai")
+        if provider is None:
+            raise ValueError(
+                "embed_provider='openai' requires llm_provider='openai' as well "
+                "(credentials are shared). Use 'ollama' as embed_provider to mix providers."
+            )
+        return provider
+
+    return None
 
 
 async def _fetch_all_inbox_doc_ids(
@@ -212,7 +310,7 @@ async def _background_index(
 
     try:
         existing_count = vector_store.count()
-        logger.info("Vector store has %d documents. Starting background index...", existing_count)
+        logger.info("Vector store has %d chunks. Starting background index...", existing_count)
 
         base = paperless_client._base_url
         headers = paperless_client._headers
@@ -242,8 +340,6 @@ async def _background_index(
             r = await count_client.get(f"{base}/api/documents/", params={"page_size": 1})
             if r.status_code == 200:
                 total_to_index = r.json().get("count", 0)
-        if queue:
-            queue.set_embedding_progress(total_to_index, 0)
 
         # Get already-indexed document IDs to skip re-embedding
         # Also checks chunk completeness: if a doc has fewer chunks than expected, re-index it
@@ -282,7 +378,15 @@ async def _background_index(
         except Exception:
             logger.debug("Could not read existing index; will re-index all.", exc_info=True)
 
-        skipped = 0
+        # Initialise progress at the already-indexed count so the UI doesn't
+        # misleadingly show 0/N on every restart when most docs are done.
+        already_done = len(already_indexed)
+        if queue:
+            queue.set_embedding_progress(total_to_index, already_done)
+
+        # inbox_skipped: docs seen in this run that are excluded by the inbox tag
+        # (they are NOT in already_indexed, so we add them on top of already_done)
+        inbox_skipped = 0
         url: str | None = f"{base}/api/documents/?page_size=50&ordering=-added"
         async with httpx.AsyncClient(headers=headers, timeout=60) as client:
             while url:
@@ -293,17 +397,17 @@ async def _background_index(
                 for doc in data.get("results", []):
                     doc_id = doc["id"]
                     doc_tags = doc.get("tags", [])
-                    # Skip docs with the inbox tag (unprocessed)
+                    # Skip docs with the inbox tag (unprocessed); count them so
+                    # progress can still reach total_to_index at the end
                     if inbox_tag_id and inbox_tag_id in doc_tags:
-                        skipped += 1
+                        inbox_skipped += 1
                         if queue:
-                            queue.set_embedding_progress(total_to_index, indexed + skipped)
+                            queue.set_embedding_progress(
+                                total_to_index, already_done + indexed + inbox_skipped
+                            )
                         continue
-                    # Skip already-indexed documents
+                    # Already indexed — don't double-count vs. already_done
                     if doc_id in already_indexed:
-                        skipped += 1
-                        if queue:
-                            queue.set_embedding_progress(total_to_index, indexed + skipped)
                         continue
                     content = doc.get("content", "")
                     if not content:
@@ -319,15 +423,27 @@ async def _background_index(
                         await vector_store.upsert(doc_id, content, meta)
                         indexed += 1
                         if queue:
-                            queue.set_embedding_progress(total_to_index, indexed + skipped)
-                    except Exception:
+                            queue.set_embedding_progress(
+                                total_to_index, already_done + indexed + inbox_skipped
+                            )
+                    except Exception as exc:
+                        exc_str = str(exc)
+                        if "dimension" in exc_str.lower() and "got" in exc_str.lower():
+                            logger.warning(
+                                "Embedding dimension mismatch while indexing document %d: %s\n"
+                                "  → The vector store was built with a different embedding model.\n"
+                                "  → Go to Settings → Processing and click 'Reindex Vector Store' to rebuild it.",
+                                doc_id, exc_str,
+                            )
+                            # Stop indexing — every remaining document will fail too
+                            return
                         logger.debug("Failed to index document %d", doc_id, exc_info=True)
                         await asyncio.sleep(2.0)  # back off on failure
                 url = data.get("next")
                 # Yield to event loop between pages
                 await asyncio.sleep(0.1)
 
-        logger.info("Background indexing complete: %d new documents indexed, %d skipped (already indexed or excluded).", indexed, skipped)
+        logger.info("Background indexing complete: %d new documents indexed, %d inbox-skipped, %d already indexed.", indexed, inbox_skipped, already_done)
         if queue:
             queue.set_embedding_progress(total_to_index, total_to_index)  # mark complete
     except Exception:
@@ -346,6 +462,23 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     async with engine.begin() as conn:
         await conn.run_sync(Base.metadata.create_all)
 
+    # Prune conversation sessions older than 24 hours
+    try:
+        from sqlalchemy import delete as sa_delete
+        from backend.orm_models import ConversationSessionORM
+        cutoff = datetime.now(timezone.utc).timestamp() - 86400
+        from sqlalchemy import func as sa_func
+        async with AsyncSessionLocal() as db:
+            await db.execute(
+                sa_delete(ConversationSessionORM).where(
+                    ConversationSessionORM.updated_at < datetime.fromtimestamp(cutoff, tz=timezone.utc)
+                )
+            )
+            await db.commit()
+        logger.info("Pruned stale conversation sessions")
+    except Exception:
+        logger.warning("Failed to prune conversation sessions", exc_info=True)
+
     # Load persisted settings from DB (seeds from env vars on first run)
     await _settings_svc.load_from_db()
 
@@ -358,9 +491,10 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     app.state.scheduler_task = None
     app.state.vector_store = None
     app.state.ollama_queue = None
+    app.state.memory_store = None
 
     config = _settings_svc.config
-    secret_key = os.environ.get("SECRET_KEY", "")
+    secret_key = get_machine_key()
 
     # Build LLM providers (graceful degradation if credentials missing)
     providers: dict[str, Any] | None = None
@@ -391,16 +525,23 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     if providers and paperless_client:
         # Initialize vector store for smart entity selection
         try:
-            from backend.providers.ollama_provider import OllamaProvider as _OllamaEmbed
-            embed_model = config.embedding_model or "nomic-embed-text"
-            ollama_url = config.ollama_url or os.environ.get("OLLAMA_URL", "http://localhost:11434")
-            embed_provider = _OllamaEmbed(base_url=ollama_url, model=embed_model)
+            embed_provider = _resolve_embed_provider(config, providers)
+            if embed_provider is None:
+                raise ValueError(
+                    f"Provider '{config.llm_provider}' does not support embeddings; "
+                    "smart entity selection disabled."
+                )
+            ep_name = getattr(config, "embed_provider", "ollama")
             vector_store = ChromaVectorStore(
                 llm_provider=embed_provider,
                 persist_directory="/data/chroma",
+                embed_concurrency=_embed_concurrency_for(ep_name),
             )
             app.state.vector_store = vector_store
-            logger.info("Vector store initialized (ChromaDB, embedding model: %s).", embed_model)
+            logger.info(
+                "Vector store initialized (ChromaDB, embed_provider: %s, concurrency: %d).",
+                ep_name, vector_store._embed_concurrency,
+            )
         except Exception:
             logger.warning("Could not initialize vector store — smart entity selection disabled.", exc_info=True)
             vector_store = None
@@ -421,6 +562,17 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
         # Start background indexing of existing processed documents
         if vector_store and paperless_client:
             asyncio.create_task(_background_index(paperless_client, vector_store, config, ollama_queue))
+
+        # Initialise long-term memory store (same embed provider + Chroma dir as vector store)
+        try:
+            from backend.memory_store import MemoryStore
+            app.state.memory_store = MemoryStore(
+                llm_provider=embed_provider,
+                persist_directory="/data/chroma",
+            )
+            logger.info("Memory store initialised (embed_provider: %s).", ep_name)
+        except Exception:
+            logger.warning("Could not initialise memory store.", exc_info=True)
 
     # Start automation tasks if enabled
     if config.automation_enabled:
@@ -510,11 +662,57 @@ async def health_check() -> dict:
     return {"status": "ok", "service": "paperless-iq"}
 
 
+# ---------------------------------------------------------------------------
+# Auth endpoints
+# ---------------------------------------------------------------------------
+
+class LoginBody(BaseModel):
+    username: str
+    password: str
+
+
 @app.post("/api/auth/login", tags=["auth"])
-async def login() -> dict:
-    """Authentication login stub."""
-    # TODO: implement real credential validation
-    return {"detail": "Login endpoint — not yet implemented"}
+async def login(body: LoginBody) -> dict:
+    """Validate credentials against Paperless NGX and issue a session token.
+
+    Returns ``{"token": "...", "user": "..."}`` on success.
+    Returns HTTP 401 on invalid credentials.
+    Returns HTTP 503 if Paperless NGX is unreachable.
+    """
+    ok = await validate_paperless_credentials(body.username, body.password)
+    if not ok:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Invalid username or password",
+        )
+    token = create_session(body.username)
+    return {"token": token, "user": body.username}
+
+
+@app.post("/api/auth/logout", tags=["auth"])
+async def logout(request: Request) -> dict:
+    """Revoke the current session token."""
+    auth_header = request.headers.get("Authorization", "")
+    if auth_header.startswith("Bearer "):
+        revoke_session(auth_header[7:])
+    return {"detail": "Logged out"}
+
+
+@app.get("/api/auth/me", tags=["auth"])
+async def auth_me(request: Request) -> dict:
+    """Return current auth state.
+
+    Response shape: ``{"user": str | null, "auth_required": bool}``
+
+    - ``auth_required`` is True when PAPERLESS_URL is configured.
+    - ``user`` is the authenticated username, or null when not logged in / open mode.
+    """
+    auth_required = bool(os.environ.get("PAPERLESS_URL", "").strip())
+    user: str | None = None
+    auth_header = request.headers.get("Authorization", "")
+    if auth_header.startswith("Bearer "):
+        user = get_session_user(auth_header[7:])
+    return {"user": user, "auth_required": auth_required}
 
 
 # ---------------------------------------------------------------------------
@@ -860,6 +1058,52 @@ async def get_document_existing_tags(document_id: int, request: Request) -> list
         raise HTTPException(status_code=500, detail=str(exc))
 
 
+@app.get("/api/documents/{document_id}/preview", tags=["documents"])
+async def proxy_document_preview(document_id: int, request: Request) -> Response:
+    """Proxy the document preview (PDF/image) from Paperless NGX.
+
+    The frontend fetches this with an Authorization header, creates a Blob URL,
+    and embeds it in an iframe — avoiding any direct cross-origin auth issues.
+    """
+    pc = getattr(request.app.state, "paperless_client", None)
+    if not pc:
+        raise HTTPException(status_code=503, detail="Paperless NGX not configured.")
+    try:
+        import httpx
+        async with httpx.AsyncClient(headers=pc._headers, timeout=60) as client:
+            resp = await client.get(f"{pc._base_url}/api/documents/{document_id}/preview/")
+            resp.raise_for_status()
+            content_type = resp.headers.get("content-type", "application/octet-stream")
+            return Response(
+                content=resp.content,
+                media_type=content_type,
+                headers={"Content-Disposition": "inline"},
+            )
+    except httpx.HTTPStatusError as exc:
+        raise HTTPException(status_code=exc.response.status_code, detail="Could not fetch preview from Paperless NGX.")
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=str(exc))
+
+
+@app.get("/api/documents/{document_id}/thumb", tags=["documents"])
+async def proxy_document_thumb(document_id: int, request: Request) -> Response:
+    """Proxy the document thumbnail (JPEG) from Paperless NGX."""
+    pc = getattr(request.app.state, "paperless_client", None)
+    if not pc:
+        raise HTTPException(status_code=503, detail="Paperless NGX not configured.")
+    try:
+        import httpx
+        async with httpx.AsyncClient(headers=pc._headers, timeout=15) as client:
+            resp = await client.get(f"{pc._base_url}/api/documents/{document_id}/thumb/")
+            resp.raise_for_status()
+            content_type = resp.headers.get("content-type", "image/jpeg")
+            return Response(content=resp.content, media_type=content_type)
+    except httpx.HTTPStatusError as exc:
+        raise HTTPException(status_code=exc.response.status_code, detail="Could not fetch thumbnail from Paperless NGX.")
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=str(exc))
+
+
 # ---------------------------------------------------------------------------
 # Audit Log endpoints
 # ---------------------------------------------------------------------------
@@ -922,10 +1166,243 @@ async def semantic_search(
         raise HTTPException(status_code=500, detail=f"Search failed: {exc}")
 
 
+# How many recent turns to keep verbatim before compressing older ones.
+_DISCOVER_VERBATIM_WINDOW = 8
+
+
+async def _extract_memories_from_session(session, provider, memory_store, config) -> int:
+    """Extract memorable facts from a conversation session and persist them.
+
+    Called when a session is explicitly closed (DELETE /api/discover/sessions/{id}).
+    Returns the number of memories created or updated.
+    """
+    if not getattr(config, "memory_enabled", True):
+        return 0
+    if memory_store is None:
+        return 0
+
+    # Build the full conversation text (summary + verbatim turns)
+    parts: list[str] = []
+    if getattr(session, "summary", None):
+        parts.append(f"[Earlier summary]: {session.summary}")
+    for t in (session.turns or []):
+        role = "User" if t.get("role") == "user" else "Assistant"
+        parts.append(f"{role}: {t.get('content', '')[:600]}")
+
+    if not parts:
+        return 0
+
+    extraction_prompt = (
+        "Analyze this conversation and extract memorable facts about the user's document archive.\n"
+        "Output ONLY concrete, specific facts useful for future conversations — one per line.\n"
+        "Each fact should be concise (under 120 characters). "
+        "Skip questions, greetings, and vague statements.\n"
+        "If no memorable facts were established, output exactly: NONE\n\n"
+        "Good examples:\n"
+        "- Telekom mobile contract ends 2025-08, 24 months, €30/month\n"
+        "- Allianz home insurance #AH-123456, renews annually in March\n"
+        "- Landlord: Meyer Immobilien GmbH\n\n"
+        f"Conversation:\n{chr(10).join(parts)}\n\nFacts:"
+    )
+
+    try:
+        raw = (await provider.complete(extraction_prompt, 400)).strip()
+    except Exception:
+        logger.warning("Memory extraction: LLM call failed", exc_info=True)
+        return 0
+
+    if not raw or raw.upper().startswith("NONE"):
+        return 0
+
+    facts = [
+        line.strip().lstrip("-•*·▸→").strip()
+        for line in raw.splitlines()
+        if len(line.strip().lstrip("-•*·▸→").strip()) > 5
+    ]
+    if not facts:
+        return 0
+
+    from backend.orm_models import UserMemoryORM
+    from sqlalchemy import update as sa_update, select as sa_select
+
+    count = 0
+    for fact in facts:
+        try:
+            existing_id = await memory_store.find_similar(fact)
+            async with AsyncSessionLocal() as db:
+                if existing_id:
+                    await db.execute(
+                        sa_update(UserMemoryORM)
+                        .where(UserMemoryORM.id == existing_id)
+                        .values(text=fact, updated_at=datetime.now(timezone.utc))
+                    )
+                    await db.commit()
+                    await memory_store.upsert(existing_id, fact)
+                else:
+                    mem = UserMemoryORM(
+                        text=fact,
+                        source_session_id=getattr(session, "id", None),
+                        embedding_stored=True,
+                    )
+                    db.add(mem)
+                    await db.commit()
+                    await db.refresh(mem)
+                    await memory_store.upsert(mem.id, fact)
+            count += 1
+        except Exception:
+            logger.warning("Memory extraction: failed to store fact %r", fact, exc_info=True)
+
+    logger.info("Memory extraction: %d fact(s) from session %s", count, getattr(session, "id", "?"))
+    return count
+
+
 class DiscoverBody(BaseModel):
     question: str
     top_n: int = 5
+    # Session-based memory (Phase 2).  When provided the backend loads history
+    # from the DB and persists the new turn automatically.
+    session_id: str | None = None
+    # Inline history fallback (Phase 1).  Used when session_id is absent.
+    # Capped server-side to the last 8 entries (4 Q&A pairs).
+    history: list[dict[str, str]] = []
 
+
+# ---------------------------------------------------------------------------
+# Discovery session management
+# ---------------------------------------------------------------------------
+
+@app.post("/api/discover/sessions", tags=["search"])
+async def create_discover_session() -> dict:
+    """Create a new Discovery conversation session and return its ID."""
+    from backend.orm_models import ConversationSessionORM
+    async with AsyncSessionLocal() as db:
+        session = ConversationSessionORM()
+        db.add(session)
+        await db.commit()
+        await db.refresh(session)
+    return {"session_id": session.id}
+
+
+@app.delete("/api/discover/sessions/{session_id}", tags=["search"])
+async def delete_discover_session(session_id: str, request: Request) -> dict:
+    """Close a Discovery session: extract long-term memories, then delete."""
+    from sqlalchemy import delete as sa_delete
+    from backend.orm_models import ConversationSessionORM
+
+    config = _settings_svc.config
+    providers = getattr(request.app.state, "providers", None)
+    memory_store = getattr(request.app.state, "memory_store", None)
+
+    async with AsyncSessionLocal() as db:
+        session = await db.get(ConversationSessionORM, session_id)
+        if session and providers and memory_store:
+            provider = providers.get(config.llm_provider)
+            if provider:
+                try:
+                    await _extract_memories_from_session(session, provider, memory_store, config)
+                except Exception:
+                    logger.warning("Session close: memory extraction failed", exc_info=True)
+
+        await db.execute(
+            sa_delete(ConversationSessionORM).where(ConversationSessionORM.id == session_id)
+        )
+        await db.commit()
+
+    return {"deleted": session_id}
+
+
+# ---------------------------------------------------------------------------
+# Long-term memory management
+# ---------------------------------------------------------------------------
+
+class MemoryUpdateBody(BaseModel):
+    text: str
+
+
+@app.get("/api/memories", tags=["memory"])
+async def list_memories() -> list[dict]:
+    """Return all stored long-term memory facts, newest first."""
+    from backend.orm_models import UserMemoryORM
+    from sqlalchemy import select as sa_select
+    async with AsyncSessionLocal() as db:
+        rows = await db.execute(
+            sa_select(UserMemoryORM).order_by(UserMemoryORM.created_at.desc())
+        )
+        return [
+            {
+                "id": m.id,
+                "text": m.text,
+                "created_at": m.created_at.isoformat(),
+                "updated_at": m.updated_at.isoformat(),
+                "source_session_id": m.source_session_id,
+            }
+            for m in rows.scalars()
+        ]
+
+
+@app.put("/api/memories/{memory_id}", tags=["memory"])
+async def update_memory(memory_id: str, body: MemoryUpdateBody, request: Request) -> dict:
+    """Edit the text of a memory and re-embed it."""
+    from backend.orm_models import UserMemoryORM
+    from sqlalchemy import update as sa_update
+    memory_store = getattr(request.app.state, "memory_store", None)
+    async with AsyncSessionLocal() as db:
+        mem = await db.get(UserMemoryORM, memory_id)
+        if mem is None:
+            raise HTTPException(status_code=404, detail="Memory not found.")
+        await db.execute(
+            sa_update(UserMemoryORM)
+            .where(UserMemoryORM.id == memory_id)
+            .values(text=body.text.strip(), updated_at=datetime.now(timezone.utc))
+        )
+        await db.commit()
+    if memory_store:
+        try:
+            await memory_store.upsert(memory_id, body.text.strip())
+        except Exception:
+            logger.warning("Failed to re-embed memory %s", memory_id, exc_info=True)
+    return {"id": memory_id, "text": body.text.strip()}
+
+
+@app.delete("/api/memories/{memory_id}", tags=["memory"])
+async def delete_memory(memory_id: str, request: Request) -> dict:
+    """Delete a single memory from both the DB and the vector store."""
+    from backend.orm_models import UserMemoryORM
+    from sqlalchemy import delete as sa_delete
+    memory_store = getattr(request.app.state, "memory_store", None)
+    async with AsyncSessionLocal() as db:
+        await db.execute(
+            sa_delete(UserMemoryORM).where(UserMemoryORM.id == memory_id)
+        )
+        await db.commit()
+    if memory_store:
+        try:
+            await memory_store.delete(memory_id)
+        except Exception:
+            logger.warning("Failed to delete memory %s from vector store", memory_id, exc_info=True)
+    return {"deleted": memory_id}
+
+
+@app.delete("/api/memories", tags=["memory"])
+async def clear_all_memories(request: Request) -> dict:
+    """Delete every long-term memory from both the DB and the vector store."""
+    from backend.orm_models import UserMemoryORM
+    from sqlalchemy import delete as sa_delete
+    memory_store = getattr(request.app.state, "memory_store", None)
+    async with AsyncSessionLocal() as db:
+        await db.execute(sa_delete(UserMemoryORM))
+        await db.commit()
+    if memory_store:
+        try:
+            await memory_store.delete_all()
+        except Exception:
+            logger.warning("Failed to clear memory vector store", exc_info=True)
+    return {"cleared": True}
+
+
+# ---------------------------------------------------------------------------
+# Document discovery (RAG)
+# ---------------------------------------------------------------------------
 
 @app.post("/api/discover", tags=["search"])
 async def discover(body: DiscoverBody, request: Request) -> dict:
@@ -953,62 +1430,246 @@ async def discover(body: DiscoverBody, request: Request) -> dict:
     if provider is None:
         raise HTTPException(status_code=503, detail="LLM provider not available.")
 
+    # ── Retrieve relevant long-term memories ────────────────────────────────
+    memory_store = getattr(request.app.state, "memory_store", None)
+    injected_memories: list[str] = []
+    if memory_store and getattr(config, "memory_enabled", True):
+        try:
+            from backend.orm_models import UserMemoryORM
+            from sqlalchemy import select as sa_select
+            mem_pairs = await memory_store.query(body.question, top_n=5)
+            relevant_ids = [mid for mid, score in mem_pairs if score > 0.50]
+            if relevant_ids:
+                async with AsyncSessionLocal() as db:
+                    rows = await db.execute(
+                        sa_select(UserMemoryORM).where(UserMemoryORM.id.in_(relevant_ids))
+                    )
+                    injected_memories = [row.text for row in rows.scalars()]
+        except Exception:
+            logger.warning("Discovery: memory retrieval failed", exc_info=True)
+
+    # ── Load session (Phase 2) or fall back to inline history (Phase 1) ──────
+    from backend.orm_models import ConversationSessionORM
+
+    session_id: str | None = body.session_id
+    stored_turns: list[dict[str, str]] = []
+    stored_summary: str | None = None
+
+    if session_id:
+        async with AsyncSessionLocal() as db:
+            sess_row = await db.get(ConversationSessionORM, session_id)
+            if sess_row:
+                stored_turns = sess_row.turns or []
+                stored_summary = sess_row.summary
+            else:
+                # Unknown session ID — treat as a fresh session with that ID
+                session_id = session_id
+
+        history = stored_turns
+    else:
+        # Phase 1 fallback: inline history from request body
+        history = [
+            h for h in body.history[-_DISCOVER_VERBATIM_WINDOW:]
+            if h.get("role") in ("user", "assistant") and h.get("content", "").strip()
+        ]
+
+    # ── Query reformulation ─────────────────────────────────────────────────
+    # Follow-up questions ("When does the first one expire?") embed poorly.
+    # Ask the LLM to rewrite into a standalone search query given the context.
+    search_question = body.question
+    context_for_rewrite = history or stored_turns
+    if context_for_rewrite:
+        try:
+            parts: list[str] = []
+            if stored_summary:
+                parts.append(f"[Earlier context]: {stored_summary}")
+            parts.extend(
+                f"{'User' if h['role'] == 'user' else 'Assistant'}: {h['content'][:400]}"
+                for h in context_for_rewrite[-6:]
+            )
+            rewrite_prompt = (
+                "Rewrite the latest user question as a self-contained search query "
+                "for a document archive. Output ONLY the search query, nothing else.\n\n"
+                f"Conversation:\n{chr(10).join(parts)}\n\n"
+                f"Latest question: {body.question}\n\n"
+                "Search query:"
+            )
+            reformulated = (await provider.complete(rewrite_prompt, 60)).strip()
+            if reformulated and len(reformulated) <= 300:
+                search_question = reformulated
+                logger.info("Discovery: reformulated query %r → %r", body.question, search_question)
+        except Exception:
+            logger.warning("Discovery: query reformulation failed, using original", exc_info=True)
+
     try:
         # Get raw chunks for richer context (multiple chunks per document possible)
-        chunks = await vs.query_chunks(body.question, body.top_n * 3)
+        chunks = await vs.query_chunks(search_question, body.top_n * 3)
         # Also get grouped results for the source list
-        results = await vs.query(body.question, body.top_n)
+        results = await vs.query(search_question, body.top_n)
     except Exception as exc:
         raise HTTPException(status_code=500, detail=f"Vector search failed: {exc}")
 
     if not results:
+        lang = (config.target_language or "").strip()
+        no_results_msg = (
+            "Keine relevanten Dokumente für Ihre Frage gefunden." if lang.startswith("de")
+            else "No relevant documents found for your question."
+        )
         return {
-            "answer": "No relevant documents found for your question.",
+            "answer": no_results_msg,
             "sources": [],
             "question": body.question,
+            "session_id": session_id,
         }
 
-    # Build context from the best chunks (may include multiple from same doc)
-    context_parts: list[str] = []
-    for i, chunk in enumerate(chunks[:body.top_n * 2]):
-        passage = chunk["passage"] or ""
-        if passage:
-            context_parts.append(
-                f"[Document: \"{chunk['title']}\" (ID {chunk['document_id']})]\n{passage}"
-            )
+    # Determine the public base URL for browser-facing deeplinks.
+    # PAPERLESS_URL is the internal Docker network address; paperless_public_url is what
+    # the user's browser can actually reach.
+    internal_base = os.getenv("PAPERLESS_URL", "").rstrip("/")
+    public_base = (config.paperless_public_url or "").rstrip("/")
 
-    # Build source list (grouped by document)
+    def _public_deeplink(url: str) -> str:
+        """Rewrite an internal deeplink to use the public base URL."""
+        if public_base and internal_base and url.startswith(internal_base):
+            return public_base + url[len(internal_base):]
+        return url
+
+    # Build numbered context from the best chunks (may include multiple from same doc)
+    context_parts: list[str] = []
+    seen_doc_ids: list[int] = []  # track order for source numbering
+    for chunk in chunks[:body.top_n * 2]:
+        doc_id = chunk["document_id"]
+        passage = chunk["passage"] or ""
+        if not passage:
+            continue
+        if doc_id not in seen_doc_ids:
+            seen_doc_ids.append(doc_id)
+        cite_n = seen_doc_ids.index(doc_id) + 1
+        context_parts.append(f"[{cite_n}] {chunk['title']} (ID {doc_id})\n{passage}")
+
+    # Build source list (grouped by document, with longer passages for UI display)
     sources: list[dict] = []
     for r in results:
         sources.append({
             "document_id": r.document_id,
             "title": r.document_title,
             "score": round(r.score, 3),
-            "deeplink_url": r.deeplink_url,
-            "snippet": (r.passage or "")[:500],
+            "deeplink_url": _public_deeplink(r.deeplink_url),
+            "snippet": (r.passage or "")[:1500],
         })
 
     context = "\n\n".join(context_parts)
-    prompt = (
-        "You are a helpful document assistant. Answer the user's question based ONLY on the "
-        "provided document excerpts. Include direct quotes from the documents to support your answer. "
-        "Cite documents by their title. If the documents don't contain enough information to answer, "
-        "say so clearly.\n\n"
-        f"Documents:\n{context}\n\n"
-        f"Question: {body.question}\n\n"
-        "Answer (include quotes from the documents):"
+    lang = (config.target_language or "").strip()
+    lang_rule = (
+        f"- Always write your answer in {lang}.\n"
+        if lang
+        else "- Respond in the same language the user used for their question.\n"
     )
 
+    # ── Build multi-turn messages ────────────────────────────────────────────
+    # System message holds the persistent instructions + any rolling summary of
+    # turns that were compressed away in earlier rounds.
+    system_content = (
+        "You are an expert document analyst helping a user research their personal document archive. "
+        "Answer questions using ONLY the provided document excerpts — do not use outside knowledge.\n\n"
+        "Formatting rules:\n"
+        + lang_rule +
+        "- Use **bold** for key names, amounts, dates, and important terms\n"
+        "- Use bullet lists when enumerating multiple items or conditions\n"
+        "- Use > blockquote for direct quotes from documents\n"
+        "- Cite sources inline with bracketed numbers, e.g. [1], [2][3]\n"
+        "- For contracts: identify parties, obligations, dates, amounts, termination clauses, and conditions\n"
+        "- If documents partially answer the question, say what IS found and what is missing\n"
+        "- If nothing relevant is found, say so directly"
+    )
+    if injected_memories:
+        system_content += (
+            "\n\nWhat I already know about your documents (from past conversations):\n"
+            + "\n".join(f"- {m}" for m in injected_memories)
+        )
+    if stored_summary:
+        system_content += (
+            "\n\nContext from earlier in this conversation "
+            "(summary of prior exchanges):\n" + stored_summary
+        )
+
+    # Current user message: fresh document context + the actual question
+    current_user_msg = f"Documents:\n{context}\n\nQuestion: {body.question}"
+
+    llm_messages: list[dict[str, str]] = [{"role": "system", "content": system_content}]
+    llm_messages.extend(history)
+    llm_messages.append({"role": "user", "content": current_user_msg})
+
     try:
-        answer = await provider.complete(prompt, 2048)
+        answer = await provider.chat(llm_messages, 2048)
     except Exception as exc:
         logger.exception("Discovery LLM call failed")
         raise HTTPException(status_code=500, detail=f"LLM call failed: {exc}")
+
+    # ── Persist session ──────────────────────────────────────────────────────
+    if session_id is not None:
+        new_turns: list[dict[str, str]] = [
+            *stored_turns,
+            {"role": "user", "content": body.question},
+            {"role": "assistant", "content": answer},
+        ]
+        new_summary = stored_summary
+
+        # When the verbatim window overflows, compress the oldest turns.
+        if len(new_turns) > _DISCOVER_VERBATIM_WINDOW:
+            to_compress = new_turns[:-_DISCOVER_VERBATIM_WINDOW]
+            new_turns   = new_turns[-_DISCOVER_VERBATIM_WINDOW:]
+            try:
+                compress_parts: list[str] = []
+                if stored_summary:
+                    compress_parts.append(f"[Prior summary]: {stored_summary}")
+                compress_parts.append("\n".join(
+                    f"{'User' if t['role'] == 'user' else 'Assistant'}: {t['content'][:500]}"
+                    for t in to_compress
+                ))
+                summarize_prompt = (
+                    "Summarize this conversation excerpt in 4-6 concise sentences. "
+                    "Focus on what was asked, which documents were referenced, and any "
+                    "key facts established (names, dates, amounts, contract terms). "
+                    "Output ONLY the summary.\n\n"
+                    + "\n\n".join(compress_parts)
+                    + "\n\nSummary:"
+                )
+                new_summary = (await provider.complete(summarize_prompt, 300)).strip() or stored_summary
+                logger.info("Discovery: compressed %d turns into summary", len(to_compress))
+            except Exception:
+                logger.warning("Discovery: summarisation failed, keeping old summary", exc_info=True)
+                new_summary = stored_summary
+
+        try:
+            from sqlalchemy import update as sa_update
+            async with AsyncSessionLocal() as db:
+                existing = await db.get(ConversationSessionORM, session_id)
+                if existing:
+                    await db.execute(
+                        sa_update(ConversationSessionORM)
+                        .where(ConversationSessionORM.id == session_id)
+                        .values(
+                            turns=new_turns,
+                            summary=new_summary,
+                            updated_at=datetime.now(timezone.utc),
+                        )
+                    )
+                else:
+                    db.add(ConversationSessionORM(
+                        id=session_id,
+                        turns=new_turns,
+                        summary=new_summary,
+                    ))
+                await db.commit()
+        except Exception:
+            logger.warning("Discovery: failed to persist session %s", session_id, exc_info=True)
 
     return {
         "answer": answer,
         "sources": sources,
         "question": body.question,
+        "session_id": session_id,
     }
 
 
@@ -1085,9 +1746,9 @@ async def manual_analyze(body: AnalyzeBody, request: Request) -> dict:
 @app.get("/api/documents", tags=["documents"])
 async def list_documents(
     request: Request,
-    tag_id: int | None = Query(default=None, description="Filter by tag ID"),
-    correspondent_id: int | None = Query(default=None, description="Filter by correspondent ID"),
-    document_type_id: int | None = Query(default=None, description="Filter by document type ID"),
+    tag_ids: list[int] = Query(default=[], description="Filter by one or more tag IDs"),
+    correspondent_ids: list[int] = Query(default=[], description="Filter by one or more correspondent IDs"),
+    document_type_ids: list[int] = Query(default=[], description="Filter by one or more document type IDs"),
     query: str | None = Query(default=None, alias="query", description="Full-text search"),
     page: int = Query(default=1, ge=1),
     page_size: int = Query(default=25, ge=1, le=100),
@@ -1101,12 +1762,12 @@ async def list_documents(
                             detail="Paperless NGX not configured. Set PAPERLESS_URL and PAPERLESS_TOKEN.")
     import httpx
     params: dict[str, Any] = {"page": page, "page_size": page_size}
-    if tag_id is not None:
-        params["tags__id__in"] = tag_id
-    if correspondent_id is not None:
-        params["correspondent__id"] = correspondent_id
-    if document_type_id is not None:
-        params["document_type__id"] = document_type_id
+    if tag_ids:
+        params["tags__id__in"] = ",".join(str(i) for i in tag_ids)
+    if correspondent_ids:
+        params["correspondent__id__in"] = ",".join(str(i) for i in correspondent_ids)
+    if document_type_ids:
+        params["document_type__id__in"] = ",".join(str(i) for i in document_type_ids)
     if query:
         params["query"] = query
     # Forward custom field filters (e.g. custom_fields__5=value) to Paperless NGX
@@ -1236,7 +1897,9 @@ async def test_paperless_connection() -> JSONResponse:
 
     try:
         async with httpx.AsyncClient(
-            headers={"Authorization": f"Token {paperless_token}"}, timeout=15
+            headers={"Authorization": f"Token {paperless_token}"},
+            timeout=15,
+            follow_redirects=True,
         ) as client:
             resp = await client.get(f"{paperless_url.rstrip('/')}/api/")
             resp.raise_for_status()
@@ -1302,6 +1965,35 @@ async def update_settings(request: Request, body: dict[str, Any] = Body(...)) ->
         )
         if paperless_client is not None:
             vs = getattr(request.app.state, "vector_store", None)
+            # Update the embed provider in the vector store to match the new config
+            try:
+                new_embed = _resolve_embed_provider(new_config, providers)
+                if new_embed is not None:
+                    new_ep_name = getattr(new_config, "embed_provider", "ollama")
+                    new_concurrency = _embed_concurrency_for(new_ep_name)
+                    if vs is not None:
+                        vs._llm = new_embed
+                        # Update semaphore if concurrency changed (e.g. Ollama ↔ Bedrock)
+                        if vs._embed_concurrency != new_concurrency:
+                            vs._embed_sem = asyncio.Semaphore(new_concurrency)
+                            vs._embed_concurrency = new_concurrency
+                    else:
+                        vs = ChromaVectorStore(
+                            llm_provider=new_embed,
+                            persist_directory="/data/chroma",
+                            embed_concurrency=new_concurrency,
+                        )
+                        request.app.state.vector_store = vs
+                    logger.info(
+                        "Embed provider updated to '%s' (concurrency: %d) after settings change.",
+                        new_ep_name, new_concurrency,
+                    )
+                else:
+                    logger.info("Provider '%s' has no embedding support; vector store disabled.", new_config.llm_provider)
+                    request.app.state.vector_store = None
+                    vs = None
+            except Exception:
+                logger.warning("Could not update embed provider after settings change.", exc_info=True)
             request.app.state.manual_analysis_svc = ManualAnalysisService(
                 new_config, providers, paperless_client, vector_store=vs
             )
@@ -1424,12 +2116,12 @@ async def get_status(request: Request) -> dict:
     llm_online = False
     embed_online = False
 
-    if queue and queue.is_busy and queue.health_cache_age < 30.0:
-        # Queue is busy AND we have a recent cache — use cached values
+    if queue and queue.health_cache_age < 60.0 and queue.cached_health:
+        # Cache is fresh (< 60 s) — avoid a live check on every poll
         llm_online = queue.cached_health.get("llm", False)
         embed_online = queue.cached_health.get("embed", False)
     else:
-        # Queue is idle — do a real health check
+        # Cache is stale — do a real health check and refresh it
         providers = getattr(request.app.state, "providers", None)
         if providers:
             provider = providers.get(config.llm_provider)
@@ -1498,20 +2190,30 @@ async def get_status(request: Request) -> dict:
         "embedded_chunks": embedded_count,
         "total_documents": total_eligible,
         "processing": queue.processing_status if queue else {},
+        "paperless_url": os.getenv("PAPERLESS_URL", ""),
+        "paperless_public_url": _settings_svc.config.paperless_public_url or os.getenv("PAPERLESS_URL", ""),
     }
 
 
 @app.post("/api/reindex", tags=["system"])
 async def trigger_reindex(request: Request) -> dict:
-    """Trigger a background reindex of all documents into the vector store."""
-    vs = getattr(request.app.state, "vector_store", None)
+    """Wipe the vector store and re-embed all documents from scratch.
+
+    Always resets the collection first — this is required when the embedding
+    model (or its output dimension) has changed since the last index run.
+    """
+    vs: ChromaVectorStore | None = getattr(request.app.state, "vector_store", None)
     pc = getattr(request.app.state, "paperless_client", None)
     if not vs or not pc:
         raise HTTPException(status_code=503, detail="Vector store or Paperless client not available.")
 
+    # Reset the collection so the new embedding model can set a fresh dimension
+    await vs.reset()
+
     config = _settings_svc.config
-    asyncio.create_task(_background_index(pc, vs, config))
-    return {"detail": "Reindex started in background."}
+    oq = getattr(request.app.state, "ollama_queue", None)
+    asyncio.create_task(_background_index(pc, vs, config, oq))
+    return {"detail": "Vector store cleared. Full reindex started in the background."}
 
 
 # ---------------------------------------------------------------------------
@@ -1548,6 +2250,7 @@ async def get_theme() -> dict:
         "logo": config.theme_logo,
         "nav_icons": config.theme_nav_icons,
         "ui_language": config.ui_language,
+        "chip_color": config.theme_chip_color,
     }
 
 
@@ -1558,9 +2261,16 @@ if _FRONTEND_DIR.is_dir():
     app.mount("/assets", StaticFiles(directory=_FRONTEND_DIR / "assets"), name="static")
 
     @app.get("/{full_path:path}", include_in_schema=False)
-    async def serve_spa(full_path: str) -> FileResponse:
-        """Serve the SPA index.html for any non-API route."""
+    async def serve_spa(full_path: str) -> HTMLResponse:
+        """Serve the SPA index.html for any non-API route.
+
+        index.html is served with Cache-Control: no-store so browsers (Safari,
+        Chrome, Firefox) always fetch the latest version after a container rebuild.
+        JS/CSS assets use content-hash filenames and are served by the /assets
+        StaticFiles mount — those can be cached indefinitely.
+        """
         file_path = _FRONTEND_DIR / full_path
-        if file_path.is_file():
+        if file_path.is_file() and full_path != "index.html":
             return FileResponse(file_path)
-        return FileResponse(_FRONTEND_DIR / "index.html")
+        html = (_FRONTEND_DIR / "index.html").read_text(encoding="utf-8")
+        return HTMLResponse(content=html, headers={"Cache-Control": "no-store"})

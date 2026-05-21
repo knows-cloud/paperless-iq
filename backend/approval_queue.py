@@ -157,8 +157,26 @@ class ApprovalQueueService:
         """
         Add a suggestion to the queue with status "pending".
 
+        Idempotent: if a suggestion with the same UUID already exists in the
+        database (e.g. because the backend auto-enqueued it inside the
+        /api/analyze endpoint before returning), the existing record is
+        returned without attempting a second INSERT.
+
         Validates: Requirements 7.1
         """
+        # Guard against double-enqueue: the /api/analyze endpoint already
+        # inserts the suggestion before returning it to the caller.  If the
+        # frontend (or any other code path) calls enqueue() a second time with
+        # the same object, we return the already-persisted row instead of
+        # raising IntegrityError on the UNIQUE constraint.
+        existing = await self._session.get(SuggestionORM, str(suggestion.id))
+        if existing is not None:
+            logger.debug(
+                "Suggestion %s already exists (status=%s); skipping duplicate enqueue.",
+                existing.id, existing.status,
+            )
+            return _orm_to_pydantic(existing)
+
         pending = suggestion.model_copy(update={"status": "pending"})
         row = _pydantic_to_orm(pending)
         self._session.add(row)

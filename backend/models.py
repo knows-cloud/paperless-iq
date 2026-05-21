@@ -90,7 +90,8 @@ class PaperlessIQConfig(BaseModel):
     smart_entity_selection: bool = True
     similar_docs_count: int = 10  # how many similar docs to use for entity suggestions
     frequency_fallback_count: int = 20  # top-N most frequent entities as fallback
-    embedding_model: str = "nomic-embed-text"  # model used for embeddings
+    embed_provider: Literal["ollama", "bedrock", "openai"] = "ollama"  # provider used for embeddings
+    embedding_model: str = "nomic-embed-text"  # embedding model name (used when embed_provider=ollama)
 
     # Prompt templates
     global_prompt_template: str = (
@@ -129,12 +130,19 @@ class PaperlessIQConfig(BaseModel):
     schedule_cron: str | None = None
     automation_enabled: bool = False
 
+    # Long-term memory
+    memory_enabled: bool = True
+
     # Audit
     audit_retention_days: int = 90  # minimum 90
 
     # Localization
     target_language: str | None = None
     ui_language: str = "en"
+
+    # Paperless NGX public URL for browser-facing links (may differ from PAPERLESS_URL which
+    # uses the internal Docker hostname/network address)
+    paperless_public_url: str = ""
 
     # Theme
     theme_primary_color: str = "#1a7288"
@@ -147,6 +155,7 @@ class PaperlessIQConfig(BaseModel):
     theme_card_color: str = "#ffffff"
     theme_card_alt_hex: str = "#1a7288"
     theme_card_alt_opacity: int = 12
+    theme_chip_color: str = ""  # empty = derive from primary_color
     theme_logo: str = "iq_1.png"
     theme_nav_icons: dict[str, str] = {
         "manual": "🔍",

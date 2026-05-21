@@ -16,7 +16,35 @@ from typing import Any
 
 from pydantic import ValidationError
 
+from backend.keystore import get_machine_key
 from backend.models import PaperlessIQConfig
+from backend.providers.encryption import decrypt_credential, encrypt_credential
+
+# Prefix that marks an encrypted credential blob in the database.
+# Old plaintext entries lack this prefix and are still loadable (backward compat).
+_CRED_ENC_PREFIX = "enc1:"
+
+
+def _encrypt_creds(plaintext: str) -> str:
+    """Encrypt a credential string for DB storage using the machine key."""
+    secret_key = get_machine_key()
+    return _CRED_ENC_PREFIX + encrypt_credential(plaintext, secret_key)
+
+
+def _decrypt_creds(stored: str) -> str:
+    """Decrypt a credential blob loaded from the DB.
+
+    Accepts both encrypted (``enc1:…``) and legacy plaintext values.
+    Returns an empty string on decryption failure (wrong key, corrupt data).
+    """
+    if not stored.startswith(_CRED_ENC_PREFIX):
+        return stored  # plaintext / legacy
+    secret_key = get_machine_key()
+    try:
+        return decrypt_credential(stored[len(_CRED_ENC_PREFIX):], secret_key)
+    except Exception:
+        logger.error("Failed to decrypt stored credentials — wrong machine key?", exc_info=True)
+        return ""
 
 logger = logging.getLogger(__name__)
 
@@ -48,6 +76,7 @@ _ENV_MAP: dict[str, tuple[str, type]] = {
     "smart_entity_selection":      ("PIQ_SMART_ENTITY_SELECTION", bool),
     "similar_docs_count":          ("PIQ_SIMILAR_DOCS_COUNT", int),
     "frequency_fallback_count":    ("PIQ_FREQUENCY_FALLBACK_COUNT", int),
+    "embed_provider":              ("PIQ_EMBED_PROVIDER", str),
     "embedding_model":             ("PIQ_EMBEDDING_MODEL", str),
     "tag_creation_policy":         ("PIQ_TAG_CREATION_POLICY", str),
     "correspondent_creation_policy": ("PIQ_CORRESPONDENT_CREATION_POLICY", str),
@@ -61,6 +90,7 @@ _ENV_MAP: dict[str, tuple[str, type]] = {
     "audit_retention_days":        ("PIQ_AUDIT_RETENTION_DAYS", int),
     "target_language":             ("PIQ_TARGET_LANGUAGE", str),
     "ui_language":                 ("PIQ_UI_LANGUAGE", str),
+    "paperless_public_url":        ("PIQ_PAPERLESS_PUBLIC_URL", str),
 }
 
 
@@ -126,9 +156,9 @@ class SettingsService:
             if row is not None:
                 try:
                     data = json.loads(row.config_json)
-                    # Apply env-var overrides on top for fields that are set
-                    # but only for fields NOT already saved in DB
-                    # (DB values win; env vars are just initial seed)
+                    # Decrypt credential blob if it was stored encrypted
+                    if data.get("llm_credentials"):
+                        data["llm_credentials"] = _decrypt_creds(data["llm_credentials"])
                     self._config = PaperlessIQConfig(**data)
                     logger.info("Settings loaded from database.")
                     return
@@ -141,7 +171,7 @@ class SettingsService:
             logger.info("Settings seeded from environment variables and saved to database.")
 
     async def _persist(self, session: Any | None = None) -> None:
-        """Write current config to the database."""
+        """Write current config to the database (credentials encrypted at rest)."""
         from backend.database import AsyncSessionLocal
         from backend.orm_models import SettingsORM
 
@@ -151,9 +181,13 @@ class SettingsService:
 
         try:
             data = self._config.model_dump(mode="json")
-            # Store credentials as base64 string for JSON compatibility
-            if isinstance(self._config.llm_credentials, bytes):
-                data["llm_credentials"] = self._config.llm_credentials.decode("latin-1")
+            # Encrypt credentials before writing to disk
+            raw = self._config.llm_credentials
+            if raw:
+                plaintext = raw.decode("latin-1") if isinstance(raw, bytes) else str(raw)
+                data["llm_credentials"] = _encrypt_creds(plaintext)
+            else:
+                data["llm_credentials"] = ""
 
             row = await session.get(SettingsORM, 1)
             if row is None:
@@ -171,8 +205,29 @@ class SettingsService:
     # ------------------------------------------------------------------
 
     def get_masked(self) -> dict[str, Any]:
-        """Return config as dict with credentials masked."""
+        """Return config as dict with credentials masked.
+
+        For Bedrock: also exposes non-sensitive credential sub-fields
+        (region, access_key_id) so the UI can pre-populate them, and
+        adds ``bedrock_has_secret`` / ``bedrock_has_session_token`` flags
+        so the UI can show a "stored" indicator without revealing the values.
+        """
         data = self._config.model_dump(mode="json")
+
+        # Extract non-sensitive Bedrock sub-fields BEFORE redacting the blob
+        if self._config.llm_provider == "bedrock":
+            raw = self._config.llm_credentials
+            creds_str = raw.decode("latin-1") if isinstance(raw, bytes) else str(raw)
+            if creds_str and creds_str.strip().startswith("{"):
+                try:
+                    creds = json.loads(creds_str)
+                    data["bedrock_region"] = creds.get("region", "")
+                    data["bedrock_access_key_id"] = creds.get("access_key_id", "")
+                    data["bedrock_has_secret"] = bool(creds.get("secret_access_key"))
+                    data["bedrock_has_session_token"] = bool(creds.get("session_token"))
+                except (json.JSONDecodeError, Exception):
+                    pass
+
         for field in CREDENTIAL_FIELDS:
             if field in data:
                 data[field] = REDACTED_PLACEHOLDER
@@ -182,6 +237,12 @@ class SettingsService:
         """Validate and apply partial settings update.
 
         Raises ValueError with descriptive message on validation failure.
+
+        Special handling for Bedrock credentials:
+        - ``__KEEP__`` as the ``secret_access_key`` or ``session_token`` value
+          means "leave the existing value unchanged".  This lets the UI send
+          an updated region / access_key_id without requiring the user to
+          re-enter the secret key.
         """
         current = self._config.model_dump()
 
@@ -189,6 +250,39 @@ class SettingsService:
         for field in CREDENTIAL_FIELDS:
             if field in values and values[field] == REDACTED_PLACEHOLDER:
                 del values[field]
+
+        # Bedrock partial-update: merge __KEEP__ sentinel with existing creds
+        if "llm_credentials" in values:
+            try:
+                raw = values["llm_credentials"]
+                creds_str = raw.decode("latin-1") if isinstance(raw, bytes) else str(raw)
+                new_creds = json.loads(creds_str)
+                needs_merge = (
+                    new_creds.get("secret_access_key") == "__KEEP__"
+                    or new_creds.get("session_token") == "__KEEP__"
+                )
+                if needs_merge:
+                    existing_raw = current.get("llm_credentials", b"")
+                    existing_str = (
+                        existing_raw.decode("latin-1")
+                        if isinstance(existing_raw, bytes)
+                        else str(existing_raw)
+                    )
+                    try:
+                        existing_creds = json.loads(existing_str)
+                    except (json.JSONDecodeError, Exception):
+                        existing_creds = {}
+                    if new_creds.get("secret_access_key") == "__KEEP__":
+                        new_creds["secret_access_key"] = existing_creds.get("secret_access_key", "")
+                    if new_creds.get("session_token") == "__KEEP__":
+                        st = existing_creds.get("session_token", "")
+                        if st:
+                            new_creds["session_token"] = st
+                        else:
+                            new_creds.pop("session_token", None)
+                    values["llm_credentials"] = json.dumps(new_creds)
+            except (json.JSONDecodeError, AttributeError):
+                pass  # leave values["llm_credentials"] as-is
 
         current.update(values)
 

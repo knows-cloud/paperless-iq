@@ -65,10 +65,13 @@ class ChromaVectorStore:
         collection_name: str = "paperless_iq_chunks",
         chunk_size: int = DEFAULT_CHUNK_SIZE,
         chunk_overlap: int = DEFAULT_CHUNK_OVERLAP,
+        embed_concurrency: int = 1,
     ) -> None:
         self._llm = llm_provider
         self._chunk_size = chunk_size
         self._chunk_overlap = chunk_overlap
+        self._embed_sem = asyncio.Semaphore(embed_concurrency)
+        self._embed_concurrency = embed_concurrency
         self._client = chromadb.PersistentClient(path=persist_directory)
         self._collection = self._client.get_or_create_collection(
             name=collection_name,
@@ -80,7 +83,7 @@ class ChromaVectorStore:
         return await self._llm.embed(text)
 
     async def upsert(self, doc_id: int, text: str, metadata: dict) -> None:
-        """Split document into chunks, embed each, and store with metadata."""
+        """Split document into chunks, embed all in parallel, and store with metadata."""
         # First delete any existing chunks for this document
         await self.delete(doc_id)
 
@@ -95,28 +98,30 @@ class ChromaVectorStore:
             "correspondent": metadata.get("correspondent") or "",
             "document_type": metadata.get("document_type") or "",
         }
+        total = len(chunks)
+        loop = asyncio.get_event_loop()
+        succeeded = 0
 
-        for i, chunk in enumerate(chunks):
+        async def _embed_and_store(i: int, chunk: str) -> None:
+            nonlocal succeeded
+            async with self._embed_sem:
+                try:
+                    embedding = await self._embed(chunk)
+                except Exception:
+                    logger.debug("Failed to embed chunk %d of doc %d", i, doc_id, exc_info=True)
+                    return
             chunk_id = f"{doc_id}_{i}"
-            try:
-                embedding = await self._embed(chunk)
-            except Exception:
-                logger.debug("Failed to embed chunk %d of doc %d", i, doc_id, exc_info=True)
-                continue
-
-            chunk_meta = {**base_meta, "chunk_index": i, "total_chunks": len(chunks)}
-            loop = asyncio.get_event_loop()
+            chunk_meta = {**base_meta, "chunk_index": i, "total_chunks": total}
             await loop.run_in_executor(
                 None,
                 lambda cid=chunk_id, emb=embedding, ch=chunk, cm=chunk_meta: self._collection.upsert(
                     ids=[cid], embeddings=[emb], documents=[ch], metadatas=[cm],
                 ),
             )
-            # Small delay between chunks to avoid overwhelming the embedding server
-            if i < len(chunks) - 1:
-                await asyncio.sleep(0.2)
+            succeeded += 1
 
-        logger.info("Upserted %d chunks for document %d.", len(chunks), doc_id)
+        await asyncio.gather(*[_embed_and_store(i, chunk) for i, chunk in enumerate(chunks)])
+        logger.info("Upserted %d/%d chunks for document %d.", succeeded, total, doc_id)
 
     async def delete(self, doc_id: int) -> None:
         """Remove all chunks for a document."""
@@ -325,19 +330,30 @@ class ChromaVectorStore:
 
     async def reindex_all(self, documents: list[dict[str, Any]]) -> None:
         """Re-index all documents with chunking. Clears existing data first."""
+        await self.reset()
+        for doc in documents:
+            await self.upsert(doc["doc_id"], doc["text"], doc.get("metadata", {}))
+
+    async def reset(self) -> None:
+        """Delete and recreate the ChromaDB collection (wipes all vectors).
+
+        Call this before switching embedding models or to recover from a
+        dimension-mismatch error.  All documents will need to be re-indexed.
+        """
         loop = asyncio.get_event_loop()
         collection_name = self._collection.name
         await loop.run_in_executor(
             None,
             lambda: self._client.delete_collection(collection_name),
         )
-        self._collection = self._client.get_or_create_collection(
-            name=collection_name,
-            metadata={"hnsw:space": "cosine"},
+        self._collection = await loop.run_in_executor(
+            None,
+            lambda: self._client.get_or_create_collection(
+                name=collection_name,
+                metadata={"hnsw:space": "cosine"},
+            ),
         )
-        for doc in documents:
-            await self.upsert(doc["doc_id"], doc["text"], doc.get("metadata", {}))
-        logger.info("Re-indexed %d documents.", len(documents))
+        logger.info("Vector store collection '%s' reset (all vectors cleared).", collection_name)
 
 
 class BedrockKnowledgeBaseStore:

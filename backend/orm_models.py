@@ -83,3 +83,57 @@ class SettingsORM(Base):
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True, default=1)
     config_json: Mapped[str] = mapped_column(Text, nullable=False, default="{}")
+
+
+class ConversationSessionORM(Base):
+    """A Discovery chat session with sliding-window conversation history.
+
+    ``turns`` holds the most recent verbatim Q&A pairs (capped at
+    VERBATIM_WINDOW entries).  When the window fills, older turns are folded
+    into ``summary`` via an LLM summarisation call so the model always has
+    full context without unbounded token growth.
+
+    Sessions expire automatically after 24 hours of inactivity.
+    """
+
+    __tablename__ = "conversation_sessions"
+
+    id: Mapped[str] = mapped_column(
+        String(36), primary_key=True, default=lambda: str(uuid.uuid4())
+    )
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, default=_utcnow
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, default=_utcnow
+    )
+    # Verbatim recent turns: [{role: "user"|"assistant", content: str}, ...]
+    turns: Mapped[list] = mapped_column(JSON, nullable=False, default=list)
+    # Rolling prose summary of turns that were compressed away
+    summary: Mapped[str | None] = mapped_column(Text, nullable=True)
+
+
+class UserMemoryORM(Base):
+    """A single long-term memory fact extracted from a Discovery conversation.
+
+    Each row is one concrete fact (e.g. "Telekom contract ends 2025-08, €30/mo").
+    Facts are embedded into a dedicated ChromaDB collection for semantic retrieval
+    and injected into new Discovery conversations as prior context.
+    """
+
+    __tablename__ = "user_memories"
+
+    id: Mapped[str] = mapped_column(
+        String(36), primary_key=True, default=lambda: str(uuid.uuid4())
+    )
+    text: Mapped[str] = mapped_column(Text, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, default=_utcnow
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, default=_utcnow
+    )
+    # Which conversation session this fact was extracted from (for traceability)
+    source_session_id: Mapped[str | None] = mapped_column(String(36), nullable=True)
+    # Whether this fact has been embedded into ChromaDB
+    embedding_stored: Mapped[bool] = mapped_column(default=False)

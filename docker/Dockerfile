@@ -46,4 +46,4 @@ ENV PYTHONUNBUFFERED=1
 EXPOSE 8080
 VOLUME ["/data"]
 
-CMD ["sh", "-c", "python -m alembic upgrade head 2>/dev/null; uvicorn backend.main:app --host 0.0.0.0 --port 8080"]
+CMD ["sh", "-c", "python -m alembic upgrade head 2>/dev/null; uvicorn backend.main:app --host 0.0.0.0 --port 8080 --log-level info"]

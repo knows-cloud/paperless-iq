@@ -12,8 +12,17 @@ if TYPE_CHECKING:
 class LLMProvider(Protocol):
     """Unified interface for all LLM provider implementations."""
 
+    async def chat(self, messages: list[dict], max_tokens: int) -> str:
+        """Send a multi-turn chat request and return the response text.
+
+        ``messages`` is a list of ``{role, content}`` dicts.  A leading entry
+        with ``role == "system"`` is extracted and forwarded correctly for each
+        provider's API.
+        """
+        ...
+
     async def complete(self, prompt: str, max_tokens: int) -> str:
-        """Send a completion request and return the response text."""
+        """Single-turn convenience wrapper — equivalent to chat([user_msg])."""
         ...
 
     async def embed(self, text: str) -> list[float]:

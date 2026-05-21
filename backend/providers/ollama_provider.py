@@ -15,15 +15,23 @@ class OllamaProvider:
     def _client(self) -> ollama.AsyncClient:
         return ollama.AsyncClient(host=self._base_url)
 
-    async def complete(self, prompt: str, max_tokens: int) -> str:
-        """Send a chat completion request to Ollama."""
+    async def chat(self, messages: list[dict], max_tokens: int) -> str:
+        """Send a multi-turn chat request to Ollama.
+
+        Ollama's chat API accepts a ``system`` role natively, so messages are
+        passed through as-is.
+        """
         client = self._client()
         response = await client.chat(
             model=self._model,
-            messages=[{"role": "user", "content": prompt}],
+            messages=messages,
             options={"num_predict": max_tokens},
         )
         return response["message"]["content"]
+
+    async def complete(self, prompt: str, max_tokens: int) -> str:
+        """Single-turn convenience wrapper around chat()."""
+        return await self.chat([{"role": "user", "content": prompt}], max_tokens)
 
     async def embed(self, text: str) -> list[float]:
         """Generate embeddings via Ollama."""

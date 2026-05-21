@@ -2,17 +2,62 @@
 
 const BASE = "/api";
 
+const TOKEN_KEY = "piq_session_token";
+
+export function getStoredToken(): string | null {
+  return localStorage.getItem(TOKEN_KEY);
+}
+
+export function setStoredToken(token: string): void {
+  localStorage.setItem(TOKEN_KEY, token);
+}
+
+export function clearStoredToken(): void {
+  localStorage.removeItem(TOKEN_KEY);
+}
+
 async function request<T>(path: string, options?: RequestInit): Promise<T> {
+  const token = getStoredToken();
+  const authHeaders: Record<string, string> = token
+    ? { Authorization: `Bearer ${token}` }
+    : {};
+
   const resp = await fetch(`${BASE}${path}`, {
-    headers: { "Content-Type": "application/json", ...options?.headers },
+    headers: { "Content-Type": "application/json", ...authHeaders, ...options?.headers },
     ...options,
   });
+
+  if (resp.status === 401) {
+    // Token expired or invalid — clear it and notify the app to show login
+    clearStoredToken();
+    window.dispatchEvent(new CustomEvent("piq-logout"));
+    throw new Error("Session expired — please log in again.");
+  }
+
   if (!resp.ok) {
     const body = await resp.json().catch(() => ({ detail: resp.statusText }));
     const detail = typeof body.detail === "string" ? body.detail : JSON.stringify(body.detail ?? resp.statusText);
     throw new Error(detail);
   }
   return resp.json();
+}
+
+/** Like `request` but returns a Blob (for binary content like PDFs/images). */
+async function requestBlob(path: string): Promise<Blob> {
+  const token = getStoredToken();
+  const authHeaders: Record<string, string> = token
+    ? { Authorization: `Bearer ${token}` }
+    : {};
+  const resp = await fetch(`${BASE}${path}`, { headers: authHeaders });
+  if (resp.status === 401) {
+    clearStoredToken();
+    window.dispatchEvent(new CustomEvent("piq-logout"));
+    throw new Error("Session expired — please log in again.");
+  }
+  if (!resp.ok) {
+    throw new Error(`HTTP ${resp.status}: ${resp.statusText}`);
+  }
+  return resp.blob();
 }
 
 export interface PaperlessEntity { id: number; name: string; }
@@ -43,7 +88,37 @@ export interface ConnectionTestResult {
   version?: string;
 }
 
+export interface AuthMeResponse {
+  user: string | null;
+  auth_required: boolean;
+}
+
 export const api = {
+  // Auth
+  getMe: () =>
+    fetch(`${BASE}/auth/me`, {
+      headers: getStoredToken() ? { Authorization: `Bearer ${getStoredToken()}` } : {},
+    }).then(r => r.json()) as Promise<AuthMeResponse>,
+
+  login: (username: string, password: string) =>
+    fetch(`${BASE}/auth/login`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ username, password }),
+    }).then(async r => {
+      if (!r.ok) {
+        const body = await r.json().catch(() => ({ detail: r.statusText }));
+        throw new Error(typeof body.detail === "string" ? body.detail : "Login failed");
+      }
+      return r.json() as Promise<{ token: string; user: string }>;
+    }),
+
+  logout: () => {
+    const result = request<{ detail: string }>("/auth/logout", { method: "POST" });
+    clearStoredToken();
+    return result;
+  },
+
   getSettings: () => request<Record<string, unknown>>("/settings"),
   updateSettings: (data: Record<string, unknown>) =>
     request<Record<string, unknown>>("/settings", { method: "PUT", body: JSON.stringify(data) }),
@@ -73,9 +148,20 @@ export const api = {
   search: (q: string, topN = 5) =>
     request<{ results: unknown[]; query: string }>(`/search?q=${encodeURIComponent(q)}&top_n=${topN}`),
 
-  discover: (question: string, topN = 5) =>
-    request<{ answer: string; sources: Array<{ document_id: number; title: string; score: number; deeplink_url: string; snippet: string }>; question: string }>(
-      "/discover", { method: "POST", body: JSON.stringify({ question, top_n: topN }) }
+  createDiscoverSession: () =>
+    request<{ session_id: string }>("/discover/sessions", { method: "POST" }),
+
+  deleteDiscoverSession: (sessionId: string) =>
+    request<{ deleted: string }>(`/discover/sessions/${sessionId}`, { method: "DELETE" }),
+
+  discover: (
+    question: string,
+    topN = 5,
+    sessionId: string | null = null,
+    history: Array<{ role: string; content: string }> = [],
+  ) =>
+    request<{ answer: string; sources: Array<{ document_id: number; title: string; score: number; deeplink_url: string; snippet: string }>; question: string; session_id: string | null }>(
+      "/discover", { method: "POST", body: JSON.stringify({ question, top_n: topN, session_id: sessionId, history }) }
     ),
 
   analyze: (documentId: number, overrides?: Record<string, unknown>) =>
@@ -98,14 +184,33 @@ export const api = {
   getCustomFields: () => request<PaperlessCustomField[]>("/paperless/custom_fields"),
   getStoragePaths: () => request<PaperlessEntity[]>("/paperless/storage_paths"),
   getLogos: () => request<string[]>("/logos"),
-  getTheme: () => request<{ primary_color: string; sidebar_from: string; sidebar_to: string; font: string; font_size: string; text_color: string; bg_color: string; card_color: string; card_alt_hex: string; card_alt_opacity: number; logo: string; nav_icons: Record<string, string>; ui_language: string }>("/theme"),
-  getStatus: () => request<{ llm_online: boolean; embed_online: boolean; queue_pending: number; queue_processing: number; embedded_chunks: number; total_documents: number; processing: Record<string, unknown> }>("/status"),
+  getTheme: () => request<{ primary_color: string; sidebar_from: string; sidebar_to: string; font: string; font_size: string; text_color: string; bg_color: string; card_color: string; card_alt_hex: string; card_alt_opacity: number; logo: string; nav_icons: Record<string, string>; ui_language: string; chip_color: string }>("/theme"),
+  getStatus: () => request<{ llm_online: boolean; embed_online: boolean; queue_pending: number; queue_processing: number; embedded_chunks: number; total_documents: number; processing: Record<string, unknown>; paperless_url: string; paperless_public_url: string }>("/status"),
+  getDocumentPreview: (id: number) => requestBlob(`/documents/${id}/preview`),
+  getDocumentThumb: (id: number) => requestBlob(`/documents/${id}/thumb`),
   triggerReindex: () => request<{ detail: string }>("/reindex", { method: "POST" }),
   getTrackingStats: () => request<{ tracked_documents: number; suggestions_pending: number; suggestions_approved: number; suggestions_rejected: number }>("/tracking/stats"),
   resetTracking: () => request<{ cleared: number }>("/tracking/reset", { method: "POST" }),
   resetRejected: () => request<{ deleted_suggestions: number; cleared_tracking: number }>("/tracking/reset-rejected", { method: "POST" }),
-  getDocuments: (params?: Record<string, string>) => {
-    const qs = params ? "?" + new URLSearchParams(params).toString() : "";
-    return request<PagedResult<DocumentItem>>(`/documents${qs}`);
+  // Long-term memories
+  getMemories: () =>
+    request<Array<{ id: string; text: string; created_at: string; updated_at: string; source_session_id: string | null }>>("/memories"),
+  updateMemory: (id: string, text: string) =>
+    request<{ id: string; text: string }>(`/memories/${id}`, { method: "PUT", body: JSON.stringify({ text }) }),
+  deleteMemory: (id: string) =>
+    request<{ deleted: string }>(`/memories/${id}`, { method: "DELETE" }),
+  clearMemories: () =>
+    request<{ cleared: boolean }>("/memories", { method: "DELETE" }),
+
+  getDocuments: (params?: Record<string, string | string[]>) => {
+    const qs = new URLSearchParams();
+    if (params) {
+      for (const [key, val] of Object.entries(params)) {
+        if (Array.isArray(val)) { for (const v of val) qs.append(key, v); }
+        else qs.append(key, val);
+      }
+    }
+    const qStr = qs.toString();
+    return request<PagedResult<DocumentItem>>(`/documents${qStr ? "?" + qStr : ""}`);
   },
 };

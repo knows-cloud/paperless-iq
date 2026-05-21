@@ -66,7 +66,7 @@ export default function TagInput({ allTags, placeholder, onAdd }: TagInputProps)
       {showSuggestions && filtered.length > 0 && (
         <ul style={{
           position: "absolute", top: "100%", left: 0, right: 0, zIndex: 20,
-          background: "#fff", border: "1px solid var(--gray-300)", borderTop: "none",
+          background: "var(--bg-input)", border: "1px solid var(--gray-300)", borderTop: "none",
           borderRadius: "0 0 var(--radius-sm) var(--radius-sm)",
           maxHeight: "180px", overflowY: "auto", margin: 0, padding: 0,
           listStyle: "none", boxShadow: "var(--shadow-md)",

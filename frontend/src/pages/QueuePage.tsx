@@ -1,4 +1,4 @@
-import { useState, useMemo, useEffect } from "react";
+import { useState, useMemo, useEffect, useCallback } from "react";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { api, type PaperlessEntity, type PaperlessCustomField } from "../api";
 import TagInput from "../TagInput";
@@ -20,11 +20,14 @@ interface QueueItem {
 export default function QueuePage() {
   const qc = useQueryClient();
   const { data, isLoading } = useQuery({ queryKey: ["queue"], queryFn: () => api.getQueue({ status: "pending" }) });
+  const statusQ = useQuery({ queryKey: ["status"], queryFn: api.getStatus, retry: false, staleTime: 60_000 });
   const tagsQ = useQuery({ queryKey: ["tags"], queryFn: api.getTags, retry: false });
   const corrsQ = useQuery({ queryKey: ["correspondents"], queryFn: api.getCorrespondents, retry: false });
   const dtQ = useQuery({ queryKey: ["docTypes"], queryFn: api.getDocumentTypes, retry: false });
   const cfQ = useQuery({ queryKey: ["customFields"], queryFn: api.getCustomFields, retry: false });
   const spQ = useQuery({ queryKey: ["storagePaths"], queryFn: api.getStoragePaths, retry: false });
+
+  const paperlessUrl = (statusQ.data?.paperless_public_url || statusQ.data?.paperless_url || "").replace(/\/$/, "");
 
   const tagNames = useMemo(() => new Set((tagsQ.data ?? []).map((t: PaperlessEntity) => t.name.toLowerCase())), [tagsQ.data]);
   const corrNames = useMemo(() => new Set((corrsQ.data ?? []).map((c: PaperlessEntity) => c.name.toLowerCase())), [corrsQ.data]);
@@ -39,6 +42,18 @@ export default function QueuePage() {
   const [reanalyzingIds, setReanalyzingIds] = useState<Set<string>>(new Set());
   const [removedExistingTags, setRemovedExistingTags] = useState<Record<string, Set<string>>>({});
 
+  // Preview state
+  const [openPreviews, setOpenPreviews] = useState<Set<number>>(new Set());
+  const [previewUrls, setPreviewUrls] = useState<Record<number, string>>({});
+  const [previewErrors, setPreviewErrors] = useState<Record<number, string>>({});
+  const [previewLoading, setPreviewLoading] = useState<Set<number>>(new Set());
+
+  // Revoke blob URLs on unmount to prevent memory leaks
+  useEffect(() => {
+    const urls = previewUrls;
+    return () => { Object.values(urls).forEach(u => URL.revokeObjectURL(u)); };
+  }, []); // eslint-disable-line react-hooks/exhaustive-deps
+
   const items = (data?.items ?? []) as Array<Record<string, unknown>>;
 
   // Fetch existing tags for each document in the queue
@@ -51,7 +66,27 @@ export default function QueuePage() {
         }).catch(() => {});
       }
     }
-  }, [items.length]);
+  }, [items.length]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  /** Toggle the preview panel; fetches blob on first open. */
+  const togglePreview = useCallback(async (docId: number) => {
+    if (openPreviews.has(docId)) {
+      setOpenPreviews(prev => { const next = new Set(prev); next.delete(docId); return next; });
+      return;
+    }
+    setOpenPreviews(prev => new Set(prev).add(docId));
+    if (previewUrls[docId] || previewLoading.has(docId)) return; // already loaded or loading
+    setPreviewLoading(prev => new Set(prev).add(docId));
+    try {
+      const blob = await api.getDocumentPreview(docId);
+      const url = URL.createObjectURL(blob);
+      setPreviewUrls(prev => ({ ...prev, [docId]: url }));
+    } catch (err: unknown) {
+      setPreviewErrors(prev => ({ ...prev, [docId]: (err as Error).message }));
+    } finally {
+      setPreviewLoading(prev => { const next = new Set(prev); next.delete(docId); return next; });
+    }
+  }, [openPreviews, previewUrls, previewLoading]);
 
   const approve = useMutation({
     mutationFn: ({ id, item, docId }: { id: string; item: QueueItem; docId: number }) => {
@@ -61,12 +96,11 @@ export default function QueuePage() {
       let finalTags = item.tags;
 
       if (removed && removed.size > 0) {
-        // Build explicit tag list: existing (minus removed) + suggested
         const existing = existingTagsMap[docId] ?? [];
         const kept = existing.filter(t => !removed.has(t));
         const merged = [...new Set([...kept, ...item.tags])];
         finalTags = merged;
-        mergeTags = false; // we're sending the complete list
+        mergeTags = false;
       }
 
       return api.approveItem(id, {
@@ -119,12 +153,13 @@ export default function QueuePage() {
     setEdits(prev => ({ ...prev, [id]: { ...current, [field]: value } }));
   };
 
-  if (isLoading) return <p>Loading queue…</p>;
+  if (isLoading) return <p style={{ color: "var(--text-on-body)" }}>{t("audit.loading")}</p>;
 
-  const existingChip = { background: "#e0e0e0", borderRadius: "3px", padding: "2px 8px", fontSize: "0.8rem", display: "inline-flex" as const, alignItems: "center" as const, gap: "4px" };
-  const newChip = { ...existingChip, background: "#ffcdd2", color: "#b71c1c", fontWeight: 700 as const };
-  const docTagChip = { ...existingChip, background: "#e3f2fd", color: "#1565c0" };
-  const newInputStyle = { fontSize: "0.85rem", color: "#c62828", fontWeight: 700 };
+  const existingChip: React.CSSProperties = { background: "var(--chip-bg)", color: "var(--chip-text)", border: "1px solid var(--chip-border)", borderRadius: "3px", padding: "2px 8px", fontSize: "0.8rem", display: "inline-flex", alignItems: "center", gap: "4px" };
+  const newChip: React.CSSProperties = { ...existingChip, background: "var(--error-band-bg)", color: "var(--error-on-card)", border: "1px solid var(--error-band-border)", fontWeight: 700 };
+  const docTagChip: React.CSSProperties = { ...existingChip, background: "var(--chip-bg-subtle)", color: "var(--chip-subtle-text)", border: "1px solid var(--chip-border)", cursor: "pointer" };
+  const newInputStyle = { fontSize: "0.85rem", color: "var(--error-on-card, #c62828)", fontWeight: 700 };
+  const labelColor: React.CSSProperties = { fontWeight: 600, color: "var(--text-on-card-secondary)", fontSize: "0.85rem" };
 
   return (
     <div>
@@ -134,35 +169,40 @@ export default function QueuePage() {
           <div style={{ display: "flex", gap: "0.5rem" }}>
             <button className="btn btn-primary" onClick={() => reanalyzeAll.mutate()}
               disabled={reanalyzeAll.isPending}>
-              {reanalyzeAll.isPending ? "Re-analyzing…" : `↻ Re-analyze All (${items.length})`}
+              {reanalyzeAll.isPending
+                ? t("queue.reanalyzingAll")
+                : t("queue.reanalyzeAll", { count: String(items.length) })}
             </button>
             <button className="btn btn-danger" onClick={() => setShowEmptyConfirm(true)}>
-              Empty Queue
+              {t("queue.emptyQueue")}
             </button>
           </div>
         )}
       </div>
 
       {showEmptyConfirm && (
-        <div className="card" style={{ background: "#fff3e0", border: "1px solid #ffcc80", marginBottom: "1rem" }}>
-          <p style={{ fontWeight: 600, margin: "0 0 0.5rem" }}>⚠️ Are you sure you want to empty the queue?</p>
-          <p style={{ fontSize: "0.85rem", margin: "0 0 0.75rem", color: "#555" }}>
-            This will reject all {items.length} pending suggestion(s). This cannot be undone.
+        <div className="card" style={{ background: "rgba(234,88,12,0.08)", border: "1px solid rgba(234,88,12,0.25)", marginBottom: "1rem" }}>
+          <p style={{ fontWeight: 600, margin: "0 0 0.5rem", color: "var(--text-on-card)" }}>{t("queue.emptyConfirm")}</p>
+          <p style={{ fontSize: "0.85rem", margin: "0 0 0.75rem", color: "var(--text-on-card-secondary)" }}>
+            {t("queue.emptyConfirmDetail", { count: String(items.length) })}
           </p>
           <div style={{ display: "flex", gap: "0.5rem" }}>
             <button className="btn btn-danger" onClick={() => emptyQueue.mutate()} disabled={emptyQueue.isPending}>
-              {emptyQueue.isPending ? "Emptying…" : "Yes, empty the queue"}
+              {emptyQueue.isPending ? t("queue.emptyingQueue") : t("queue.emptyConfirmYes")}
             </button>
-            <button className="btn" onClick={() => setShowEmptyConfirm(false)}>Cancel</button>
+            <button className="btn" onClick={() => setShowEmptyConfirm(false)}>{t("processing.cancel")}</button>
           </div>
         </div>
       )}
 
-      {items.length === 0 && !showEmptyConfirm && <p>{t("queue.empty")}</p>}
+      {items.length === 0 && !showEmptyConfirm && (
+        <p style={{ color: "var(--text-on-body-secondary)" }}>{t("queue.empty")}</p>
+      )}
+
       {items.map((raw, idx) => {
         const item = getItem(raw);
         const id = item.id;
-        const isNewTag = (t: string) => !tagNames.has(t.toLowerCase());
+        const isNewTag = (tg: string) => !tagNames.has(tg.toLowerCase());
         const isNewCorr = item.correspondent ? !corrNames.has(item.correspondent.toLowerCase()) : false;
         const isNewDt = item.document_type ? !dtNames.has(item.document_type.toLowerCase()) : false;
         const cfEntries = Object.entries(item.custom_fields ?? {});
@@ -172,21 +212,83 @@ export default function QueuePage() {
         const createMissing = createMissingMap[id] ?? false;
         const docExistingTags = existingTagsMap[item.document_id] ?? [];
         const isReanalyzing = reanalyzingIds.has(id);
+        const previewOpen = openPreviews.has(item.document_id);
+        const previewUrl = previewUrls[item.document_id];
+        const previewErr = previewErrors[item.document_id];
+        const previewIsLoading = previewLoading.has(item.document_id);
 
         return (
           <div key={id} className={`card${idx % 2 === 1 ? " card-alt" : ""}`} style={{ marginBottom: "0.5rem" }}>
-            <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: "0.5rem" }}>
-              <p style={{ margin: 0, fontWeight: 600 }}>Document {item.document_id}</p>
-              <button className="btn" onClick={() => handleReanalyze(id)} disabled={isReanalyzing}
-                style={{ fontSize: "0.78rem", padding: "0.25rem 0.6rem" }}>
-                {isReanalyzing ? "Analyzing…" : "↻ Re-analyze"}
-              </button>
+
+            {/* ── Card header ── */}
+            <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", marginBottom: previewOpen ? "0.5rem" : "0.75rem" }}>
+              <div>
+                <p style={{ margin: 0, fontWeight: 600, color: "var(--text-on-card)" }}>
+                  {item.title || `${t("queue.document")} #${item.document_id}`}
+                </p>
+                {item.title && (
+                  <p style={{ margin: "0.1rem 0 0", fontSize: "0.78rem", color: "var(--text-on-card-muted)" }}>
+                    #{item.document_id}
+                    {paperlessUrl && (
+                      <a href={`${paperlessUrl}/documents/${item.document_id}/details`}
+                        target="_blank" rel="noreferrer"
+                        style={{ marginLeft: "0.5rem", color: "var(--petrol-700)", fontWeight: 500, textDecoration: "underline" }}>
+                        {t("queue.openInPaperless")}
+                      </a>
+                    )}
+                  </p>
+                )}
+              </div>
+              <div style={{ display: "flex", gap: "0.4rem", flexShrink: 0, marginLeft: "1rem" }}>
+                <button
+                  className="btn"
+                  onClick={() => togglePreview(item.document_id)}
+                  style={{ fontSize: "0.78rem", padding: "0.25rem 0.6rem" }}
+                >
+                  {previewOpen ? `✕ ${t("queue.hidePreview")}` : `📄 ${t("queue.preview")}`}
+                </button>
+                <button className="btn" onClick={() => handleReanalyze(id)} disabled={isReanalyzing}
+                  style={{ fontSize: "0.78rem", padding: "0.25rem 0.6rem" }}>
+                  {isReanalyzing ? t("queue.reanalyzing") : t("queue.reanalyze")}
+                </button>
+              </div>
             </div>
 
+            {/* ── Preview panel ── */}
+            {previewOpen && (
+              <div style={{ marginBottom: "0.75rem", borderRadius: "var(--radius-sm)", overflow: "hidden", border: "1px solid var(--gray-200)" }}>
+                {previewIsLoading ? (
+                  <div style={{ padding: "2.5rem", textAlign: "center", color: "var(--text-on-card-muted)", fontSize: "0.85rem" }}>
+                    {t("queue.previewLoading")}
+                  </div>
+                ) : previewErr ? (
+                  <div style={{ padding: "1rem", display: "flex", gap: "0.75rem", alignItems: "center", flexWrap: "wrap" }}>
+                    <span style={{ color: "var(--error-on-card, var(--error))", fontSize: "0.85rem" }}>
+                      {t("queue.previewError")} {previewErr}
+                    </span>
+                    {paperlessUrl && (
+                      <a href={`${paperlessUrl}/documents/${item.document_id}/details`}
+                        target="_blank" rel="noreferrer"
+                        style={{ color: "var(--petrol-600)", fontSize: "0.85rem", textDecoration: "none" }}>
+                        {t("queue.openInPaperless")}
+                      </a>
+                    )}
+                  </div>
+                ) : previewUrl ? (
+                  <iframe
+                    src={previewUrl}
+                    title={`Preview #${item.document_id}`}
+                    style={{ width: "100%", height: "640px", border: "none", display: "block" }}
+                  />
+                ) : null}
+              </div>
+            )}
+
+            {/* ── Existing document tags ── */}
             {docExistingTags.length > 0 && (
               <div style={{ marginBottom: "0.5rem" }}>
-                <label style={{ fontWeight: 500, color: "#555", fontSize: "0.8rem", display: "block", marginBottom: "0.2rem" }}>
-                  Current tags on document <span style={{ color: "#999", fontWeight: 400 }}>(click to mark for removal)</span>:
+                <label style={{ ...labelColor, display: "block", marginBottom: "0.2rem" }}>
+                  {t("queue.currentTags")} <span style={{ color: "var(--text-on-card-muted)", fontWeight: 400 }}>{t("queue.currentTagsHint")}</span>
                 </label>
                 <div style={{ display: "flex", flexWrap: "wrap", gap: "0.25rem" }}>
                   {docExistingTags.map(tag => {
@@ -202,11 +304,10 @@ export default function QueuePage() {
                         }}
                         style={{
                           ...docTagChip,
-                          cursor: "pointer",
                           textDecoration: removed ? "line-through" : "none",
                           opacity: removed ? 0.5 : 1,
-                          background: removed ? "#ffcdd2" : "#e3f2fd",
-                          color: removed ? "#c62828" : "#1565c0",
+                          background: removed ? "var(--error-band-bg)" : "var(--chip-bg-subtle)",
+                          color: removed ? "var(--error-on-card)" : "var(--chip-subtle-text)",
                           transition: "all 0.15s ease",
                         }}>
                         {tag}
@@ -217,44 +318,45 @@ export default function QueuePage() {
               </div>
             )}
 
+            {/* ── Edit form ── */}
             <div style={{ fontSize: "0.85rem" }}>
               <div className="form-group" style={{ marginBottom: "0.4rem" }}>
-                <label style={{ fontWeight: 600, color: "#555", fontSize: "0.85rem" }}>Title</label>
+                <label style={labelColor}>Title</label>
                 <input value={item.title ?? ""} style={{ fontSize: "0.85rem" }}
                   onChange={e => updateField(id, raw, "title", e.target.value || null)} />
               </div>
               <div className="form-group" style={{ marginBottom: "0.4rem" }}>
-                <label style={{ fontWeight: 600, color: "#555", fontSize: "0.85rem" }}>Suggested Tags</label>
+                <label style={labelColor}>{t("queue.suggestedTags")}</label>
                 <div style={{ display: "flex", flexWrap: "wrap", gap: "0.25rem", marginBottom: "0.25rem" }}>
                   {item.tags.map((tag, i) => (
                     <span key={i} style={isNewTag(tag) ? newChip : existingChip}>
-                      {tag}{isNewTag(tag) && " (new)"}
+                      {tag}{isNewTag(tag) && ` (${t("analysis.newValue")})`}
                       <button type="button" onClick={() => updateField(id, raw, "tags", item.tags.filter((_: string, j: number) => j !== i))}
-                        style={{ background: "none", border: "none", cursor: "pointer", padding: 0, fontSize: "0.9rem", color: isNewTag(tag) ? "#b71c1c" : "#888", lineHeight: 1 }}>×</button>
+                        style={{ background: "none", border: "none", cursor: "pointer", padding: 0, fontSize: "0.9rem", color: isNewTag(tag) ? "var(--error-on-card)" : "var(--text-on-card-muted)", lineHeight: 1 }}>×</button>
                     </span>
                   ))}
                 </div>
-                <TagInput allTags={(tagsQ.data ?? []).map((t: PaperlessEntity) => t.name)} placeholder="Add tag…"
+                <TagInput allTags={(tagsQ.data ?? []).map((t: PaperlessEntity) => t.name)} placeholder={t("analysis.addTag")}
                   onAdd={tag => { if (!item.tags.includes(tag)) updateField(id, raw, "tags", [...item.tags, tag]); }} />
               </div>
               <div className="form-group" style={{ marginBottom: "0.4rem" }}>
-                <label style={{ fontWeight: 600, color: "#555", fontSize: "0.85rem" }}>Correspondent</label>
+                <label style={labelColor}>{t("analysis.correspondent_field")}</label>
                 <AutocompleteInput value={item.correspondent ?? ""} suggestions={(corrsQ.data ?? []).map((c: PaperlessEntity) => c.name)}
                   onChange={v => updateField(id, raw, "correspondent", v || null)} style={isNewCorr ? newInputStyle : undefined} />
-                {isNewCorr && <small style={{ color: "#c62828" }}>New — will be created if "Create missing" is checked</small>}
+                {isNewCorr && <small className="error">{t("analysis.newHint")}</small>}
               </div>
               <div className="form-group" style={{ marginBottom: "0.4rem" }}>
-                <label style={{ fontWeight: 600, color: "#555", fontSize: "0.85rem" }}>Document Type</label>
+                <label style={labelColor}>{t("analysis.docType_field")}</label>
                 <AutocompleteInput value={item.document_type ?? ""} suggestions={(dtQ.data ?? []).map((d: PaperlessEntity) => d.name)}
                   onChange={v => updateField(id, raw, "document_type", v || null)} style={isNewDt ? newInputStyle : undefined} />
-                {isNewDt && <small style={{ color: "#c62828" }}>New — will be created if "Create missing" is checked</small>}
+                {isNewDt && <small className="error">{t("analysis.newHint")}</small>}
               </div>
               <div className="form-group" style={{ marginBottom: "0.4rem" }}>
-                <label style={{ fontWeight: 600, color: "#555", fontSize: "0.85rem" }}>Storage Path</label>
+                <label style={labelColor}>{t("analysis.storagePath_field")}</label>
                 <AutocompleteInput value={item.storage_path ?? ""} suggestions={(spQ.data ?? []).map((s: PaperlessEntity) => s.name)}
                   onChange={v => updateField(id, raw, "storage_path", v || null)} />
               </div>
-              {cfEntries.length > 0 && <label style={{ fontWeight: 600, color: "#555", fontSize: "0.85rem", display: "block", marginTop: "0.25rem" }}>Custom Fields</label>}
+              {cfEntries.length > 0 && <label style={{ ...labelColor, display: "block", marginTop: "0.25rem" }}>{t("analysis.customFields")}</label>}
               {cfEntries.map(([key, val]) => (
                 <CfNameEditor key={key} name={key} value={val} isNew={isNewCf(key)}
                   suggestions={(cfQ.data ?? []).map((c: PaperlessCustomField) => c.name)}
@@ -263,28 +365,37 @@ export default function QueuePage() {
                   onRemove={() => { const cf = { ...item.custom_fields }; delete cf[key]; updateField(id, raw, "custom_fields", cf); }} />
               ))}
             </div>
-            <div style={{ marginTop: "0.5rem" }}>
+
+            {/* ── Approve / Reject ── */}
+            <div style={{ marginTop: "0.75rem" }}>
               <div style={{ display: "flex", gap: "1rem", marginBottom: "0.5rem", fontSize: "0.85rem" }}>
-                <label style={{ cursor: "pointer", display: "flex", alignItems: "center", gap: "0.25rem" }}>
+                <label style={{ cursor: "pointer", display: "flex", alignItems: "center", gap: "0.25rem", color: "var(--text-on-card-secondary)" }}>
                   <input type="checkbox" checked={mergeTags} onChange={e => setMergeTagsMap(prev => ({ ...prev, [id]: e.target.checked }))} />
-                  Keep existing tags
+                  {t("queue.keepExistingTags")}
                 </label>
                 {hasAnyNew && (
-                  <label style={{ cursor: "pointer", display: "flex", alignItems: "center", gap: "0.25rem" }}>
+                  <label style={{ cursor: "pointer", display: "flex", alignItems: "center", gap: "0.25rem", color: "var(--text-on-card-secondary)" }}>
                     <input type="checkbox" checked={createMissing} onChange={e => setCreateMissingMap(prev => ({ ...prev, [id]: e.target.checked }))} />
-                    Create missing values
+                    {t("queue.createMissing")}
                   </label>
                 )}
               </div>
               <div style={{ display: "flex", gap: "0.5rem" }}>
-                <button className="btn btn-primary" onClick={() => approve.mutate({ id, item, docId: item.document_id })}
+                <button className="btn btn-primary"
+                  onClick={() => approve.mutate({ id, item, docId: item.document_id })}
                   disabled={approve.isPending && approve.variables?.id === id}>
-                  {approve.isPending && approve.variables?.id === id ? "Approving…" : "Approve"}
+                  {approve.isPending && approve.variables?.id === id ? t("queue.approving") : t("queue.approve")}
                 </button>
-                <button className="btn" onClick={() => reject.mutate(id)} disabled={reject.isPending && reject.variables === id}>Reject</button>
+                <button className="btn"
+                  onClick={() => reject.mutate(id)}
+                  disabled={reject.isPending && reject.variables === id}>
+                  {t("queue.reject")}
+                </button>
               </div>
               {approve.isError && approve.variables?.id === id && (
-                <p className="error" style={{ marginTop: "0.5rem" }}>Approval failed: {(approve.error as Error).message}</p>
+                <p className="error" style={{ marginTop: "0.5rem" }}>
+                  {t("queue.approvalFailed")} {(approve.error as Error).message}
+                </p>
               )}
             </div>
           </div>

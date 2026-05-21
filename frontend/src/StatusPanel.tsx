@@ -17,33 +17,30 @@ export default function StatusPanel() {
   const embeddingTotal = (proc.embedding_total as number) ?? 0;
   const chunksOk = d.embedded_chunks > 0;
 
-  const iconStyle = (color: string, flash?: boolean): React.CSSProperties => ({
+  const iconStyle = (isOk: boolean, flash?: boolean): React.CSSProperties => ({
     display: "inline-block", width: "10px", height: "10px", borderRadius: "50%",
-    background: color,
-    boxShadow: `0 0 4px ${color}60`,
+    background: isOk ? "var(--status-ok)" : "var(--status-error)",
+    boxShadow: isOk ? "0 0 4px var(--status-ok)" : "0 0 4px var(--status-error)",
     animation: flash ? "statusPulse 1.2s infinite" : "none",
   });
 
   return (
     <div style={{
       padding: "0.5rem 1.25rem",
-      borderTop: "1px solid rgba(255,255,255,0.08)",
-      borderBottom: "1px solid rgba(255,255,255,0.08)",
+      borderTop: "1px solid var(--sidebar-divider)",
+      borderBottom: "1px solid var(--sidebar-divider)",
       display: "flex",
       justifyContent: "space-around",
       gap: "0.5rem",
     }}>
       <span title={`LLM: ${d.llm_online ? "online" : "offline"}`}
-        style={iconStyle(d.llm_online ? "#3b82f6" : "#ef4444")} />
+        style={iconStyle(d.llm_online)} />
       <span title={`Embedding: ${d.embed_online ? "online" : "offline"}`}
-        style={iconStyle(d.embed_online ? "#3b82f6" : "#ef4444")} />
+        style={iconStyle(d.embed_online)} />
       <span title={`Processing queue: ${queueSize} items`}
-        style={iconStyle(queueSize > 15 ? "#ef4444" : "#3b82f6")} />
+        style={iconStyle(queueSize <= 15)} />
       <span title={`Vector DB: ${d.embedded_chunks} chunks, ${embeddingDone}/${embeddingTotal} docs indexed`}
-        style={iconStyle(
-          !chunksOk ? "#ef4444" : "#3b82f6",
-          embeddingActive,
-        )} />
+        style={iconStyle(chunksOk, embeddingActive)} />
       <style>{`
         @keyframes statusPulse {
           0%, 100% { opacity: 1; }

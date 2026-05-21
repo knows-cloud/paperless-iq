@@ -1,18 +1,27 @@
+name: paperless
+
 services:
   paperless-iq:
     build:
       context: .
       dockerfile: docker/Dockerfile
+    restart: unless-stopped
     ports:
-      - "8080:8080"
+      - "0.0.0.0:8082:8080"
     volumes:
-      - paperless_iq_data:/data
+      - paperless-iq-data:/data
     environment:
-      PAPERLESS_URL: ${PAPERLESS_URL:-http://paperless-ngx:8000}
-      PAPERLESS_TOKEN: ${PAPERLESS_TOKEN:-}
+      OLLAMA_HOST: http://REDACTED_IP:11434
+      PAPERLESS_URL: http://webserver:8000
+      PAPERLESS_TOKEN: ${PAPERLESS_TOKEN:-REDACTED}
       SECRET_KEY: ${SECRET_KEY:-change-me-in-production}
       DATABASE_URL: sqlite+aiosqlite:////data/paperless_iq.db
-    restart: unless-stopped
+    networks:
+      - paperless_default
+
+networks:
+  paperless_default:
+    external: true
 
 volumes:
-  paperless_iq_data:
+  paperless-iq-data:

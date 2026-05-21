@@ -78,6 +78,15 @@ def build_providers(
 
         access_key_enc = encrypt_credential(creds["access_key_id"], secret_key)
         secret_access_key_enc = encrypt_credential(creds["secret_access_key"], secret_key)
+        # session_token is optional — only needed for temporary STS credentials
+        session_token_enc: str | None = None
+        if creds.get("session_token"):
+            session_token_enc = encrypt_credential(creds["session_token"], secret_key)
+
+        # embedding_model is only meaningful when embed_provider="bedrock".
+        # We pass it here so the provider is ready regardless of whether
+        # it will be used for LLM only, embeddings only, or both.
+        embed_model = config.embedding_model or "amazon.titan-embed-text-v1"
 
         provider = BedrockProvider(
             region=creds["region"],
@@ -85,6 +94,8 @@ def build_providers(
             secret_access_key_enc=secret_access_key_enc,
             secret_key=secret_key,
             model=model,
+            session_token_enc=session_token_enc,
+            embed_model=embed_model,
         )
 
     else:

@@ -534,7 +534,16 @@ class DocumentAnalyzer:
                 + _SYSTEM_SUFFIX
             )
 
+        logger.info(
+            "Sending doc %d to LLM: provider=%s model=%s mode=%s "
+            "content=%d chars entity_ctx=%d chars total_prompt=%d chars (~%d tokens est.)",
+            document_id, self._provider_name, self._config.llm_model, mode,
+            len(content), len(entity_context), len(prompt), len(prompt) // 4,
+        )
+
         raw_response = await self._provider.complete(prompt, self._max_tokens)
+
+        logger.info("LLM response for doc %d: %d chars", document_id, len(raw_response))
 
         # 7. Parse response into MetadataSuggestion
         parsed = _parse_llm_response(raw_response)
