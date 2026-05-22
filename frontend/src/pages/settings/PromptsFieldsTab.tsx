@@ -1,13 +1,5 @@
 import { api, type PaperlessCustomField } from "../../api";
-
-const METADATA_FIELDS = [
-  { key: "title", label: "Title", description: "How should the LLM generate the document title?" },
-  { key: "tags", label: "Tags", description: "How should the LLM select or suggest tags?" },
-  { key: "correspondent", label: "Correspondent", description: "How should the LLM identify the correspondent?" },
-  { key: "document_type", label: "Document Type", description: "How should the LLM classify the document type?" },
-  { key: "storage_path", label: "Storage Path / Folder", description: "How should the LLM suggest a storage path?" },
-  { key: "created", label: "Date / Created", description: "How should the LLM determine the document date?" },
-];
+import { METADATA_FIELDS } from "./constants";
 
 interface Props {
   s: Record<string, unknown>;

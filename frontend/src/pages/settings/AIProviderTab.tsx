@@ -1,14 +1,4 @@
-const LLM_MODEL_DEFAULTS: Record<string, string> = {
-  ollama:    "llama3",
-  bedrock:   "anthropic.claude-3-haiku-20240307-v1:0",
-  anthropic: "claude-3-5-haiku-20241022",
-  openai:    "gpt-4o-mini",
-};
-const EMBED_MODEL_DEFAULTS: Record<string, string> = {
-  ollama:  "nomic-embed-text",
-  bedrock: "amazon.titan-embed-text-v1",
-  openai:  "text-embedding-3-small",
-};
+import { LLM_MODEL_DEFAULTS, EMBED_MODEL_DEFAULTS } from "./constants";
 
 interface Props {
   s: Record<string, unknown>;

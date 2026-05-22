@@ -9,15 +9,7 @@ import { MetadataRulesTab } from "./settings/MetadataRulesTab";
 import { AutomationTab } from "./settings/AutomationTab";
 import { AppearanceTab } from "./settings/AppearanceTab";
 import { MemoriesTab, type MemoryItem } from "./settings/MemoriesTab";
-
-const METADATA_FIELDS = [
-  { key: "title",         label: "Title",                  description: "How should the LLM generate the document title?" },
-  { key: "tags",          label: "Tags",                   description: "How should the LLM select or suggest tags?" },
-  { key: "correspondent", label: "Correspondent",          description: "How should the LLM identify the correspondent?" },
-  { key: "document_type", label: "Document Type",          description: "How should the LLM classify the document type?" },
-  { key: "storage_path",  label: "Storage Path / Folder",  description: "How should the LLM suggest a storage path?" },
-  { key: "created",       label: "Date / Created",         description: "How should the LLM determine the document date?" },
-];
+import { METADATA_FIELDS, LLM_MODEL_DEFAULTS, EMBED_MODEL_DEFAULTS } from "./settings/constants";
 
 type SettingsTab = "connection" | "aiProvider" | "promptsFields" | "metadataRules" | "automation" | "appearance" | "memories";
 
@@ -120,11 +112,11 @@ export default function SettingsPage() {
       if (s.bedrock_access_key_id) setBedrockAccessKeyId(String(s.bedrock_access_key_id));
     }
 
-    const serverModel = String(s.llm_model ?? "");
+    const serverModel = String(s.llm_model ?? LLM_MODEL_DEFAULTS[prov] ?? "");
     if (serverModel) localStorage.setItem(`piq_llm_model_${prov}`, serverModel);
     setLlmModel(serverModel);
 
-    const serverEmbedModel = String(s.embedding_model ?? "");
+    const serverEmbedModel = String(s.embedding_model ?? EMBED_MODEL_DEFAULTS[embedProv] ?? "");
     if (serverEmbedModel) localStorage.setItem(`piq_embed_model_${embedProv}`, serverEmbedModel);
     setEmbedModel(serverEmbedModel);
 
