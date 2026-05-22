@@ -245,4 +245,4 @@ docker compose build paperless-iq && docker compose up -d paperless-iq
 
 ## License
 
-Private — all rights reserved.
+[PolyForm Noncommercial License 1.0.0](LICENSE) — free for personal, research, educational, and non-commercial use. Commercial use requires a separate agreement. Contributions are welcome via pull request and are accepted under the same license terms.
