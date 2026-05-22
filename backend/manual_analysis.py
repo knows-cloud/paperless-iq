@@ -9,7 +9,7 @@ Validates: Requirements 6.1, 6.2, 6.3, 6.4
 from __future__ import annotations
 
 import logging
-from typing import Any, Literal
+from typing import Literal
 
 from backend.analyzer import DocumentAnalyzer, PaperlessNGXClient
 from backend.models import MetadataSuggestion, PaperlessIQConfig
@@ -82,38 +82,3 @@ class ManualAnalysisService:
         return suggestion
 
 
-async def list_documents_by_tag(
-    paperless_client: PaperlessNGXClient,
-    tag_id: int | None = None,
-    page: int = 1,
-    page_size: int = 25,
-) -> dict[str, Any]:
-    """List documents from Paperless NGX, optionally filtered by tag.
-
-    Validates: Requirements 6.4
-    """
-    import httpx
-
-    params: dict[str, Any] = {
-        "page": page,
-        "page_size": page_size,
-    }
-    if tag_id is not None:
-        params["tags__id__in"] = tag_id
-
-    url = f"{paperless_client._base_url.rstrip('/')}/api/documents/"
-
-    async with httpx.AsyncClient(headers=paperless_client._headers, timeout=30) as client:
-        resp = await client.get(url, params=params)
-        resp.raise_for_status()
-        data = resp.json()
-
-    results = data.get("results", [])
-    total = data.get("count", len(results))
-
-    return {
-        "items": results,
-        "total": total,
-        "page": page,
-        "page_size": page_size,
-    }

@@ -19,11 +19,13 @@ from pathlib import Path
 from typing import Annotated, Any, AsyncGenerator
 from uuid import UUID
 
+import httpx
 from fastapi import Body, Depends, FastAPI, HTTPException, Query, Request, status
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, Response
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
+from sqlalchemy import delete as sa_delete, func, select, update as sa_update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from backend.analyzer import PaperlessNGXClient
@@ -42,6 +44,12 @@ from backend.inbox_monitor import InboxMonitor, Scheduler
 from backend.manual_analysis import ManualAnalysisService
 from backend.models import MetadataSuggestion
 from backend.ollama_queue import OllamaQueue, Priority
+from backend.orm_models import (
+    ConversationSessionORM,
+    DocumentTrackingORM,
+    SuggestionORM,
+    UserMemoryORM,
+)
 from backend.provider_registry import build_providers
 from backend.rate_limiter import RateLimiter
 from backend.settings_service import SettingsService
@@ -77,7 +85,7 @@ def _resolve_embed_provider(config: Any, providers: dict) -> Any | None:
     ep = getattr(config, "embed_provider", "ollama")
 
     if ep == "ollama":
-        from backend.providers.ollama_provider import OllamaProvider
+        from backend.providers.ollama_provider import OllamaProvider  # local provider; only load if needed
         embed_model = config.embedding_model or "nomic-embed-text"
         ollama_url = config.ollama_url or os.environ.get("OLLAMA_URL", "http://localhost:11434")
         return OllamaProvider(base_url=ollama_url, model=embed_model)
@@ -141,7 +149,6 @@ async def _fetch_all_inbox_doc_ids(
     inbox_tag_id: int | None,
 ) -> list[int]:
     """Fetch ALL document IDs with the inbox tag, following pagination."""
-    import httpx
     all_ids: list[int] = []
     base_url = f"{paperless_client._base_url}/api/documents/"
     params: dict[str, Any] = {"page_size": 100}
@@ -163,11 +170,19 @@ async def _fetch_all_inbox_doc_ids(
     return all_ids
 
 
-async def _inbox_polling_loop(
+async def _automation_loop(
     app: FastAPI,
     poll_interval: int,
+    batch_size: int | None = None,
 ) -> None:
-    """Run the InboxMonitor poll loop at the configured interval."""
+    """Unified automation loop for inbox monitoring and scheduled batch processing.
+
+    When ``batch_size`` is None the loop acts as an inbox monitor (processes every
+    document with the inbox tag on each poll).  When ``batch_size`` is an integer
+    the loop runs as a scheduler (processes up to *batch_size* unanalysed documents
+    per tick).
+    """
+    mode_label = "Scheduler" if batch_size is not None else "Inbox polling"
     while True:
         try:
             async with AsyncSessionLocal() as session:
@@ -176,7 +191,7 @@ async def _inbox_polling_loop(
                 manual_svc: ManualAnalysisService | None = app.state.manual_analysis_svc
 
                 if paperless_client is None or manual_svc is None:
-                    logger.warning("Inbox polling skipped: services not configured.")
+                    logger.warning("%s skipped: services not configured.", mode_label)
                     await asyncio.sleep(poll_interval)
                     continue
 
@@ -196,73 +211,6 @@ async def _inbox_polling_loop(
                             )
                         else:
                             suggestion = await manual_svc.analyze(doc_id)
-                        from backend.approval_queue import ApprovalQueueService
-                        queue_svc = ApprovalQueueService(session)
-                        enqueued = await queue_svc.enqueue(suggestion)
-                        if config.auto_apply:
-                            # Auto-approve: apply to Paperless NGX immediately
-                            # Use create_missing=True when creation policies allow new values
-                            create_missing = (
-                                config.tag_creation_policy == "allow_new"
-                                or config.correspondent_creation_policy == "allow_new"
-                                or config.doctype_creation_policy == "allow_new"
-                            )
-                            await queue_svc.approve(
-                                enqueued.id, merge_tags=True, create_missing=create_missing,
-                            )
-                            logger.info("Auto-approved suggestion for document %d.", doc_id)
-                        else:
-                            logger.info("Enqueued suggestion for document %d.", doc_id)
-                    except Exception:
-                        logger.exception("Inbox analysis failed for doc %d", doc_id)
-
-                monitor = InboxMonitor(session, fetch_inbox_docs, submit_for_analysis)
-                submitted = await monitor.poll()
-                if submitted:
-                    logger.info("Inbox poll submitted %d documents.", len(submitted))
-        except asyncio.CancelledError:
-            raise
-        except Exception:
-            logger.exception("Inbox polling loop error")
-
-        await asyncio.sleep(poll_interval)
-
-
-async def _scheduler_loop(
-    app: FastAPI,
-    poll_interval: int,
-    batch_size: int,
-) -> None:
-    """Run the Scheduler batch loop at the configured interval."""
-    while True:
-        try:
-            async with AsyncSessionLocal() as session:
-                config = _settings_svc.config
-                paperless_client: PaperlessNGXClient | None = app.state.paperless_client
-                manual_svc: ManualAnalysisService | None = app.state.manual_analysis_svc
-
-                if paperless_client is None or manual_svc is None:
-                    logger.warning("Scheduler skipped: services not configured.")
-                    await asyncio.sleep(poll_interval)
-                    continue
-
-                inbox_tag_id = config.inbox_tag_id
-
-                async def fetch_inbox_docs() -> list[int]:
-                    return await _fetch_all_inbox_doc_ids(paperless_client, inbox_tag_id)
-
-                async def submit_for_analysis(doc_id: int) -> Any:
-                    try:
-                        oq = getattr(app.state, "ollama_queue", None)
-                        if oq:
-                            suggestion = await oq.submit(
-                                Priority.ANALYSIS,
-                                lambda did=doc_id: manual_svc.analyze(did),
-                                label=f"Auto-analyzing doc {doc_id}",
-                            )
-                        else:
-                            suggestion = await manual_svc.analyze(doc_id)
-                        from backend.approval_queue import ApprovalQueueService
                         queue_svc = ApprovalQueueService(session)
                         enqueued = await queue_svc.enqueue(suggestion)
                         if config.auto_apply:
@@ -274,23 +222,27 @@ async def _scheduler_loop(
                             await queue_svc.approve(
                                 enqueued.id, merge_tags=True, create_missing=create_missing,
                             )
-                            logger.info("Scheduler auto-approved suggestion for document %d.", doc_id)
+                            logger.info("%s auto-approved suggestion for doc %d.", mode_label, doc_id)
                         else:
-                            logger.info("Scheduler enqueued suggestion for document %d.", doc_id)
+                            logger.info("%s enqueued suggestion for doc %d.", mode_label, doc_id)
                     except Exception:
-                        logger.exception("Scheduler analysis failed for doc %d", doc_id)
+                        logger.exception("%s analysis failed for doc %d", mode_label, doc_id)
 
-                scheduler = Scheduler(
-                    session, fetch_inbox_docs, submit_for_analysis, batch_size
-                )
-                batches = await scheduler.run_batch()
-                if batches:
-                    total = sum(len(b) for b in batches)
-                    logger.info("Scheduler processed %d documents in %d batches.", total, len(batches))
+                if batch_size is not None:
+                    scheduler = Scheduler(session, fetch_inbox_docs, submit_for_analysis, batch_size)
+                    batches = await scheduler.run_batch()
+                    if batches:
+                        total = sum(len(b) for b in batches)
+                        logger.info("Scheduler processed %d documents in %d batches.", total, len(batches))
+                else:
+                    monitor = InboxMonitor(session, fetch_inbox_docs, submit_for_analysis)
+                    submitted = await monitor.poll()
+                    if submitted:
+                        logger.info("Inbox poll submitted %d documents.", len(submitted))
         except asyncio.CancelledError:
             raise
         except Exception:
-            logger.exception("Scheduler loop error")
+            logger.exception("%s loop error", mode_label)
 
         await asyncio.sleep(poll_interval)
 
@@ -306,8 +258,6 @@ async def _background_index(
     Fetches all documents from Paperless NGX (excluding the inbox tag),
     and upserts those not already in the store.
     """
-    import httpx
-
     try:
         existing_count = vector_store.count()
         logger.info("Vector store has %d chunks. Starting background index...", existing_count)
@@ -345,7 +295,7 @@ async def _background_index(
         # Also checks chunk completeness: if a doc has fewer chunks than expected, re-index it
         already_indexed: set[int] = set()
         try:
-            loop = asyncio.get_event_loop()
+            loop = asyncio.get_running_loop()
             existing = await loop.run_in_executor(
                 None,
                 lambda: vector_store._collection.get(include=["metadatas"])
@@ -464,10 +414,7 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
 
     # Prune conversation sessions older than 24 hours
     try:
-        from sqlalchemy import delete as sa_delete
-        from backend.orm_models import ConversationSessionORM
         cutoff = datetime.now(timezone.utc).timestamp() - 86400
-        from sqlalchemy import func as sa_func
         async with AsyncSessionLocal() as db:
             await db.execute(
                 sa_delete(ConversationSessionORM).where(
@@ -578,11 +525,11 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     if config.automation_enabled:
         logger.info("Automation enabled — starting inbox monitor and scheduler.")
         app.state.inbox_task = asyncio.create_task(
-            _inbox_polling_loop(app, config.poll_interval_seconds)
+            _automation_loop(app, config.poll_interval_seconds)
         )
         if config.schedule_cron:
             app.state.scheduler_task = asyncio.create_task(
-                _scheduler_loop(app, config.poll_interval_seconds, config.batch_size)
+                _automation_loop(app, config.poll_interval_seconds, batch_size=config.batch_size)
             )
 
     yield
@@ -858,18 +805,14 @@ async def empty_queue(
 
 
 @app.get("/api/tracking/stats", tags=["queue"])
-async def tracking_stats() -> dict:
+async def tracking_stats(
+    session: Annotated[AsyncSession, Depends(get_session)],
+) -> dict:
     """Return document tracking and suggestion statistics."""
-    from backend.database import AsyncSessionLocal
-    from backend.orm_models import SuggestionORM, DocumentTrackingORM
-    from sqlalchemy import func, select
-
-    async with AsyncSessionLocal() as session:
-        tracked = (await session.execute(select(func.count()).select_from(DocumentTrackingORM))).scalar_one()
-        pending = (await session.execute(select(func.count()).select_from(SuggestionORM).where(SuggestionORM.status == "pending"))).scalar_one()
-        approved = (await session.execute(select(func.count()).select_from(SuggestionORM).where(SuggestionORM.status == "approved"))).scalar_one()
-        rejected = (await session.execute(select(func.count()).select_from(SuggestionORM).where(SuggestionORM.status == "rejected"))).scalar_one()
-
+    tracked = (await session.execute(select(func.count()).select_from(DocumentTrackingORM))).scalar_one()
+    pending = (await session.execute(select(func.count()).select_from(SuggestionORM).where(SuggestionORM.status == "pending"))).scalar_one()
+    approved = (await session.execute(select(func.count()).select_from(SuggestionORM).where(SuggestionORM.status == "approved"))).scalar_one()
+    rejected = (await session.execute(select(func.count()).select_from(SuggestionORM).where(SuggestionORM.status == "rejected"))).scalar_one()
     return {
         "tracked_documents": tracked,
         "suggestions_pending": pending,
@@ -879,58 +822,50 @@ async def tracking_stats() -> dict:
 
 
 @app.post("/api/tracking/reset", tags=["queue"])
-async def reset_tracking() -> dict:
+async def reset_tracking(
+    session: Annotated[AsyncSession, Depends(get_session)],
+) -> dict:
     """Clear the document tracking table so all inbox documents are re-processed.
 
     Does NOT delete suggestions — only resets the 'seen' status so the
     inbox monitor will pick up documents again.
     """
-    from backend.database import AsyncSessionLocal
-    from backend.orm_models import DocumentTrackingORM
-    from sqlalchemy import delete
-
-    async with AsyncSessionLocal() as session:
-        result = await session.execute(delete(DocumentTrackingORM))
-        await session.commit()
-        cleared = result.rowcount
-
+    result = await session.execute(sa_delete(DocumentTrackingORM))
+    await session.commit()
+    cleared = result.rowcount
     logger.info("Reset document tracking: cleared %d entries.", cleared)
     return {"cleared": cleared}
 
 
 @app.post("/api/tracking/reset-rejected", tags=["queue"])
-async def reset_rejected() -> dict:
+async def reset_rejected(
+    session: Annotated[AsyncSession, Depends(get_session)],
+) -> dict:
     """Delete all rejected suggestions and clear their tracking entries.
 
     This allows rejected documents to be re-analyzed by the inbox monitor.
     """
-    from backend.database import AsyncSessionLocal
-    from backend.orm_models import SuggestionORM, DocumentTrackingORM
-    from sqlalchemy import delete, select
+    # Get document IDs of rejected suggestions
+    r = await session.execute(
+        select(SuggestionORM.document_id).where(SuggestionORM.status == "rejected")
+    )
+    rejected_doc_ids = [row[0] for row in r.all()]
 
-    async with AsyncSessionLocal() as session:
-        # Get document IDs of rejected suggestions
-        r = await session.execute(
-            select(SuggestionORM.document_id).where(SuggestionORM.status == "rejected")
-        )
-        rejected_doc_ids = [row[0] for row in r.all()]
+    # Delete rejected suggestions
+    del_result = await session.execute(
+        sa_delete(SuggestionORM).where(SuggestionORM.status == "rejected")
+    )
+    deleted_suggestions = del_result.rowcount
 
-        # Delete rejected suggestions
-        del_result = await session.execute(
-            delete(SuggestionORM).where(SuggestionORM.status == "rejected")
-        )
-        deleted_suggestions = del_result.rowcount
-
-        # Clear tracking for those documents so they get re-processed
-        if rejected_doc_ids:
-            await session.execute(
-                delete(DocumentTrackingORM).where(
-                    DocumentTrackingORM.document_id.in_(rejected_doc_ids)
-                )
+    # Clear tracking for those documents so they get re-processed
+    if rejected_doc_ids:
+        await session.execute(
+            sa_delete(DocumentTrackingORM).where(
+                DocumentTrackingORM.document_id.in_(rejected_doc_ids)
             )
+        )
 
-        await session.commit()
-
+    await session.commit()
     logger.info("Reset rejected: deleted %d suggestions, cleared tracking for %d documents.",
                 deleted_suggestions, len(rejected_doc_ids))
     return {"deleted_suggestions": deleted_suggestions, "cleared_tracking": len(rejected_doc_ids)}
@@ -952,7 +887,6 @@ async def reanalyze_queue_item(
         raise HTTPException(status_code=503, detail="Analysis service not configured.")
 
     # Get the old suggestion to find the document ID
-    from backend.orm_models import SuggestionORM
     row = await svc._session.get(SuggestionORM, str(body.suggestion_id))
     if row is None:
         raise HTTPException(status_code=404, detail="Suggestion not found.")
@@ -1002,8 +936,6 @@ async def reanalyze_all_queue(
     oq: OllamaQueue | None = getattr(request.app.state, "ollama_queue", None)
 
     async def _reanalyze_bg() -> None:
-        from backend.database import AsyncSessionLocal
-        from backend.approval_queue import ApprovalQueueService as QSvc
         for old_id, doc_id in items:
             try:
                 if oq:
@@ -1015,7 +947,7 @@ async def reanalyze_all_queue(
                 else:
                     suggestion = await manual_svc.analyze(doc_id)
                 async with AsyncSessionLocal() as session:
-                    q = QSvc(session)
+                    q = ApprovalQueueService(session)
                     # Reject old only after successful analysis
                     try:
                         await q.reject(old_id)
@@ -1037,7 +969,6 @@ async def get_document_existing_tags(document_id: int, request: Request) -> list
     if not pc:
         raise HTTPException(status_code=503, detail="Paperless NGX not configured.")
     try:
-        import httpx
         async with httpx.AsyncClient(headers=pc._headers, timeout=15) as client:
             resp = await client.get(f"{pc._base_url}/api/documents/{document_id}/")
             resp.raise_for_status()
@@ -1069,7 +1000,6 @@ async def proxy_document_preview(document_id: int, request: Request) -> Response
     if not pc:
         raise HTTPException(status_code=503, detail="Paperless NGX not configured.")
     try:
-        import httpx
         async with httpx.AsyncClient(headers=pc._headers, timeout=60) as client:
             resp = await client.get(f"{pc._base_url}/api/documents/{document_id}/preview/")
             resp.raise_for_status()
@@ -1092,7 +1022,6 @@ async def proxy_document_thumb(document_id: int, request: Request) -> Response:
     if not pc:
         raise HTTPException(status_code=503, detail="Paperless NGX not configured.")
     try:
-        import httpx
         async with httpx.AsyncClient(headers=pc._headers, timeout=15) as client:
             resp = await client.get(f"{pc._base_url}/api/documents/{document_id}/thumb/")
             resp.raise_for_status()
@@ -1222,14 +1151,11 @@ async def _extract_memories_from_session(session, provider, memory_store, config
     if not facts:
         return 0
 
-    from backend.orm_models import UserMemoryORM
-    from sqlalchemy import update as sa_update, select as sa_select
-
     count = 0
-    for fact in facts:
-        try:
-            existing_id = await memory_store.find_similar(fact)
-            async with AsyncSessionLocal() as db:
+    async with AsyncSessionLocal() as db:
+        for fact in facts:
+            try:
+                existing_id = await memory_store.find_similar(fact)
                 if existing_id:
                     await db.execute(
                         sa_update(UserMemoryORM)
@@ -1248,9 +1174,9 @@ async def _extract_memories_from_session(session, provider, memory_store, config
                     await db.commit()
                     await db.refresh(mem)
                     await memory_store.upsert(mem.id, fact)
-            count += 1
-        except Exception:
-            logger.warning("Memory extraction: failed to store fact %r", fact, exc_info=True)
+                count += 1
+            except Exception:
+                logger.warning("Memory extraction: failed to store fact %r", fact, exc_info=True)
 
     logger.info("Memory extraction: %d fact(s) from session %s", count, getattr(session, "id", "?"))
     return count
@@ -1274,7 +1200,6 @@ class DiscoverBody(BaseModel):
 @app.post("/api/discover/sessions", tags=["search"])
 async def create_discover_session() -> dict:
     """Create a new Discovery conversation session and return its ID."""
-    from backend.orm_models import ConversationSessionORM
     async with AsyncSessionLocal() as db:
         session = ConversationSessionORM()
         db.add(session)
@@ -1286,9 +1211,6 @@ async def create_discover_session() -> dict:
 @app.delete("/api/discover/sessions/{session_id}", tags=["search"])
 async def delete_discover_session(session_id: str, request: Request) -> dict:
     """Close a Discovery session: extract long-term memories, then delete."""
-    from sqlalchemy import delete as sa_delete
-    from backend.orm_models import ConversationSessionORM
-
     config = _settings_svc.config
     providers = getattr(request.app.state, "providers", None)
     memory_store = getattr(request.app.state, "memory_store", None)
@@ -1320,42 +1242,41 @@ class MemoryUpdateBody(BaseModel):
 
 
 @app.get("/api/memories", tags=["memory"])
-async def list_memories() -> list[dict]:
+async def list_memories(
+    db: Annotated[AsyncSession, Depends(get_session)],
+) -> list[dict]:
     """Return all stored long-term memory facts, newest first."""
-    from backend.orm_models import UserMemoryORM
-    from sqlalchemy import select as sa_select
-    async with AsyncSessionLocal() as db:
-        rows = await db.execute(
-            sa_select(UserMemoryORM).order_by(UserMemoryORM.created_at.desc())
-        )
-        return [
-            {
-                "id": m.id,
-                "text": m.text,
-                "created_at": m.created_at.isoformat(),
-                "updated_at": m.updated_at.isoformat(),
-                "source_session_id": m.source_session_id,
-            }
-            for m in rows.scalars()
-        ]
+    rows = await db.execute(select(UserMemoryORM).order_by(UserMemoryORM.created_at.desc()))
+    return [
+        {
+            "id": m.id,
+            "text": m.text,
+            "created_at": m.created_at.isoformat(),
+            "updated_at": m.updated_at.isoformat(),
+            "source_session_id": m.source_session_id,
+        }
+        for m in rows.scalars()
+    ]
 
 
 @app.put("/api/memories/{memory_id}", tags=["memory"])
-async def update_memory(memory_id: str, body: MemoryUpdateBody, request: Request) -> dict:
+async def update_memory(
+    memory_id: str,
+    body: MemoryUpdateBody,
+    request: Request,
+    db: Annotated[AsyncSession, Depends(get_session)],
+) -> dict:
     """Edit the text of a memory and re-embed it."""
-    from backend.orm_models import UserMemoryORM
-    from sqlalchemy import update as sa_update
     memory_store = getattr(request.app.state, "memory_store", None)
-    async with AsyncSessionLocal() as db:
-        mem = await db.get(UserMemoryORM, memory_id)
-        if mem is None:
-            raise HTTPException(status_code=404, detail="Memory not found.")
-        await db.execute(
-            sa_update(UserMemoryORM)
-            .where(UserMemoryORM.id == memory_id)
-            .values(text=body.text.strip(), updated_at=datetime.now(timezone.utc))
-        )
-        await db.commit()
+    mem = await db.get(UserMemoryORM, memory_id)
+    if mem is None:
+        raise HTTPException(status_code=404, detail="Memory not found.")
+    await db.execute(
+        sa_update(UserMemoryORM)
+        .where(UserMemoryORM.id == memory_id)
+        .values(text=body.text.strip(), updated_at=datetime.now(timezone.utc))
+    )
+    await db.commit()
     if memory_store:
         try:
             await memory_store.upsert(memory_id, body.text.strip())
@@ -1365,16 +1286,15 @@ async def update_memory(memory_id: str, body: MemoryUpdateBody, request: Request
 
 
 @app.delete("/api/memories/{memory_id}", tags=["memory"])
-async def delete_memory(memory_id: str, request: Request) -> dict:
+async def delete_memory(
+    memory_id: str,
+    request: Request,
+    db: Annotated[AsyncSession, Depends(get_session)],
+) -> dict:
     """Delete a single memory from both the DB and the vector store."""
-    from backend.orm_models import UserMemoryORM
-    from sqlalchemy import delete as sa_delete
     memory_store = getattr(request.app.state, "memory_store", None)
-    async with AsyncSessionLocal() as db:
-        await db.execute(
-            sa_delete(UserMemoryORM).where(UserMemoryORM.id == memory_id)
-        )
-        await db.commit()
+    await db.execute(sa_delete(UserMemoryORM).where(UserMemoryORM.id == memory_id))
+    await db.commit()
     if memory_store:
         try:
             await memory_store.delete(memory_id)
@@ -1384,14 +1304,14 @@ async def delete_memory(memory_id: str, request: Request) -> dict:
 
 
 @app.delete("/api/memories", tags=["memory"])
-async def clear_all_memories(request: Request) -> dict:
+async def clear_all_memories(
+    request: Request,
+    db: Annotated[AsyncSession, Depends(get_session)],
+) -> dict:
     """Delete every long-term memory from both the DB and the vector store."""
-    from backend.orm_models import UserMemoryORM
-    from sqlalchemy import delete as sa_delete
     memory_store = getattr(request.app.state, "memory_store", None)
-    async with AsyncSessionLocal() as db:
-        await db.execute(sa_delete(UserMemoryORM))
-        await db.commit()
+    await db.execute(sa_delete(UserMemoryORM))
+    await db.commit()
     if memory_store:
         try:
             await memory_store.delete_all()
@@ -1435,8 +1355,6 @@ async def discover(body: DiscoverBody, request: Request) -> dict:
     injected_memories: list[str] = []
     if memory_store and getattr(config, "memory_enabled", True):
         try:
-            from backend.orm_models import UserMemoryORM
-            from sqlalchemy import select as sa_select
             mem_pairs = await memory_store.query(body.question, top_n=5)
             relevant_ids = [mid for mid, score in mem_pairs if score > 0.50]
             if relevant_ids:
@@ -1449,8 +1367,6 @@ async def discover(body: DiscoverBody, request: Request) -> dict:
             logger.warning("Discovery: memory retrieval failed", exc_info=True)
 
     # ── Load session (Phase 2) or fall back to inline history (Phase 1) ──────
-    from backend.orm_models import ConversationSessionORM
-
     session_id: str | None = body.session_id
     stored_turns: list[dict[str, str]] = []
     stored_summary: str | None = None
@@ -1461,9 +1377,7 @@ async def discover(body: DiscoverBody, request: Request) -> dict:
             if sess_row:
                 stored_turns = sess_row.turns or []
                 stored_summary = sess_row.summary
-            else:
-                # Unknown session ID — treat as a fresh session with that ID
-                session_id = session_id
+            # else: unknown session ID — treat as a fresh session with that ID
 
         history = stored_turns
     else:
@@ -1642,7 +1556,6 @@ async def discover(body: DiscoverBody, request: Request) -> dict:
                 new_summary = stored_summary
 
         try:
-            from sqlalchemy import update as sa_update
             async with AsyncSessionLocal() as db:
                 existing = await db.get(ConversationSessionORM, session_id)
                 if existing:
@@ -1731,8 +1644,6 @@ async def manual_analyze(body: AnalyzeBody, request: Request) -> dict:
 
     # Auto-enqueue into approval queue so the suggestion persists
     try:
-        from backend.approval_queue import ApprovalQueueService
-        from backend.database import AsyncSessionLocal
         async with AsyncSessionLocal() as session:
             queue_svc = ApprovalQueueService(session)
             enqueued = await queue_svc.enqueue(suggestion)
@@ -1754,13 +1665,11 @@ async def list_documents(
     page_size: int = Query(default=25, ge=1, le=100),
 ) -> dict:
     """List/search documents from Paperless NGX."""
-    import os
     paperless_url = os.getenv("PAPERLESS_URL", "")
     paperless_token = os.getenv("PAPERLESS_TOKEN", "")
     if not paperless_url or not paperless_token:
         raise HTTPException(status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
                             detail="Paperless NGX not configured. Set PAPERLESS_URL and PAPERLESS_TOKEN.")
-    import httpx
     params: dict[str, Any] = {"page": page, "page_size": page_size}
     if tag_ids:
         params["tags__id__in"] = ",".join(str(i) for i in tag_ids)
@@ -1794,25 +1703,40 @@ async def list_documents(
 # Paperless NGX metadata proxy endpoints
 # ---------------------------------------------------------------------------
 
-async def _paperless_list(entity: str) -> list[dict]:
-    """Fetch all entities of a given type from Paperless NGX with pagination."""
-    import os
-    import httpx
+async def _paperless_list(
+    entity: str,
+    extra_fields: list[str] | None = None,
+) -> list[dict]:
+    """Fetch all entities of a given type from Paperless NGX with pagination.
+
+    ``extra_fields`` names additional JSON keys to include alongside ``id``
+    and ``name`` (e.g. ``["data_type"]`` for custom fields).
+    """
     paperless_url = os.getenv("PAPERLESS_URL", "")
     paperless_token = os.getenv("PAPERLESS_TOKEN", "")
     if not paperless_url or not paperless_token:
-        raise HTTPException(status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
-                            detail="Paperless NGX not configured. Set PAPERLESS_URL and PAPERLESS_TOKEN.")
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="Paperless NGX not configured. Set PAPERLESS_URL and PAPERLESS_TOKEN.",
+        )
     items: list[dict] = []
     url: str | None = f"{paperless_url.rstrip('/')}/api/{entity}/?page_size=100"
-    async with httpx.AsyncClient(headers={"Authorization": f"Token {paperless_token}"}, timeout=30) as client:
+    async with httpx.AsyncClient(
+        headers={"Authorization": f"Token {paperless_token}"}, timeout=30
+    ) as client:
         while url:
             resp = await client.get(url)
             if resp.status_code != 200:
-                raise HTTPException(status_code=resp.status_code, detail=f"Paperless NGX {entity} request failed")
+                raise HTTPException(
+                    status_code=resp.status_code,
+                    detail=f"Paperless NGX {entity} request failed",
+                )
             data = resp.json()
             for item in data.get("results", []):
-                items.append({"id": item["id"], "name": item.get("name", "")})
+                entry: dict = {"id": item["id"], "name": item.get("name", "")}
+                for field in (extra_fields or []):
+                    entry[field] = item.get(field, "")
+                items.append(entry)
             url = data.get("next")
     return items
 
@@ -1838,55 +1762,18 @@ async def list_document_types() -> list[dict]:
 @app.get("/api/paperless/custom_fields", tags=["paperless"])
 async def list_custom_fields() -> list[dict]:
     """List all custom fields from Paperless NGX."""
-    import os
-    import httpx
-    paperless_url = os.getenv("PAPERLESS_URL", "")
-    paperless_token = os.getenv("PAPERLESS_TOKEN", "")
-    if not paperless_url or not paperless_token:
-        raise HTTPException(status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
-                            detail="Paperless NGX not configured.")
-    items: list[dict] = []
-    url: str | None = f"{paperless_url.rstrip('/')}/api/custom_fields/?page_size=100"
-    async with httpx.AsyncClient(headers={"Authorization": f"Token {paperless_token}"}, timeout=30) as client:
-        while url:
-            resp = await client.get(url)
-            if resp.status_code != 200:
-                raise HTTPException(status_code=resp.status_code, detail="Paperless NGX custom_fields request failed")
-            data = resp.json()
-            for item in data.get("results", []):
-                items.append({"id": item["id"], "name": item.get("name", ""), "data_type": item.get("data_type", "")})
-            url = data.get("next")
-    return items
+    return await _paperless_list("custom_fields", extra_fields=["data_type"])
 
 
 @app.get("/api/paperless/storage_paths", tags=["paperless"])
 async def list_storage_paths() -> list[dict]:
     """List all storage paths from Paperless NGX."""
-    import os
-    import httpx
-    paperless_url = os.getenv("PAPERLESS_URL", "")
-    paperless_token = os.getenv("PAPERLESS_TOKEN", "")
-    if not paperless_url or not paperless_token:
-        raise HTTPException(status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail="Paperless NGX not configured.")
-    items: list[dict] = []
-    url: str | None = f"{paperless_url.rstrip('/')}/api/storage_paths/?page_size=100"
-    async with httpx.AsyncClient(headers={"Authorization": f"Token {paperless_token}"}, timeout=30) as client:
-        while url:
-            resp = await client.get(url)
-            if resp.status_code != 200:
-                raise HTTPException(status_code=resp.status_code, detail="Paperless NGX storage_paths request failed")
-            data = resp.json()
-            for item in data.get("results", []):
-                items.append({"id": item["id"], "name": item.get("name", "")})
-            url = data.get("next")
-    return items
+    return await _paperless_list("storage_paths")
 
 
 @app.get("/api/paperless/test", tags=["paperless"])
 async def test_paperless_connection() -> JSONResponse:
     """Test connectivity to the configured Paperless NGX instance."""
-    import httpx
-
     paperless_url = os.getenv("PAPERLESS_URL", "")
     paperless_token = os.getenv("PAPERLESS_TOKEN", "")
     if not paperless_url or not paperless_token:
@@ -2014,7 +1901,7 @@ async def update_settings(request: Request, body: dict[str, Any] = Body(...)) ->
         inbox_task: asyncio.Task[Any] | None = getattr(request.app.state, "inbox_task", None)
         if inbox_task is None or inbox_task.done():
             request.app.state.inbox_task = asyncio.create_task(
-                _inbox_polling_loop(request.app, new_config.poll_interval_seconds)
+                _automation_loop(request.app, new_config.poll_interval_seconds)
             )
             logger.info("Inbox polling started after settings update.")
 
@@ -2022,7 +1909,7 @@ async def update_settings(request: Request, body: dict[str, Any] = Body(...)) ->
         scheduler_task: asyncio.Task[Any] | None = getattr(request.app.state, "scheduler_task", None)
         if new_config.schedule_cron and (scheduler_task is None or scheduler_task.done()):
             request.app.state.scheduler_task = asyncio.create_task(
-                _scheduler_loop(request.app, new_config.poll_interval_seconds, new_config.batch_size)
+                _automation_loop(request.app, new_config.poll_interval_seconds, batch_size=new_config.batch_size)
             )
             logger.info("Scheduler started after settings update.")
 
@@ -2143,9 +2030,6 @@ async def get_status(request: Request) -> dict:
             queue.update_health_cache("embed", embed_online)
 
     # 3 & 4. Queue counts
-    from backend.database import AsyncSessionLocal
-    from backend.orm_models import SuggestionORM
-    from sqlalchemy import func, select
     pending_count = 0
     processing_count = 0
     try:
@@ -2170,7 +2054,6 @@ async def get_status(request: Request) -> dict:
     pc = getattr(request.app.state, "paperless_client", None)
     if pc:
         try:
-            import httpx
             inbox_tag_id = config.inbox_tag_id
             async with httpx.AsyncClient(headers=pc._headers, timeout=10) as client:
                 resp = await client.get(

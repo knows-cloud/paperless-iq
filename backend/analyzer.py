@@ -33,12 +33,6 @@ Return ONLY a JSON object with these keys (omit keys you cannot determine):
 Do not include any explanation or markdown — only the raw JSON object.
 """
 
-_DEFAULT_PROMPT = (
-    "Analyze the following document and suggest appropriate metadata.\n\n"
-    "Document content:\n{content}\n"
-)
-
-
 class PaperlessNGXClient:
     """Minimal async client for the Paperless NGX REST API."""
 
@@ -175,10 +169,7 @@ def resolve_prompt_template(
         if per_field:
             return per_field
 
-    if config.global_prompt_template:
-        return config.global_prompt_template
-
-    return _DEFAULT_PROMPT
+    return config.global_prompt_template
 
 
 def truncate_to_context_window(
@@ -231,6 +222,10 @@ async def _apply_creation_policy(
     suggestion: MetadataSuggestion,
     config: PaperlessIQConfig,
     paperless_client: PaperlessNGXClient,
+    *,
+    all_tags: list[str] | None = None,
+    all_correspondents: list[str] | None = None,
+    all_document_types: list[str] | None = None,
 ) -> MetadataSuggestion:
     """
     Enforce creation policies for tags, correspondents, and document types.
@@ -239,26 +234,38 @@ async def _apply_creation_policy(
     - "existing_only": filter suggested values to those already present in Paperless NGX.
     - "allow_new": keep all suggested values as-is (creation happens at approval time).
 
+    When the caller passes pre-fetched entity lists via ``all_tags``,
+    ``all_correspondents``, or ``all_document_types``, those are used directly
+    and no additional API calls are made for that entity type.
+
     Returns a new MetadataSuggestion with the policy applied.
     """
     # --- Tags ---
     if suggestion.tags and config.tag_creation_policy == "existing_only":
-        existing_tags = await paperless_client.list_entities("tags")
-        existing_set = {t.lower() for t in existing_tags}
+        existing = all_tags if all_tags is not None else await paperless_client.list_entities("tags")
+        existing_set = {t.lower() for t in existing}
         filtered = [t for t in suggestion.tags if t.lower() in existing_set]
         suggestion = suggestion.model_copy(update={"tags": filtered})
 
     # --- Correspondent ---
     if suggestion.correspondent and config.correspondent_creation_policy == "existing_only":
-        existing_correspondents = await paperless_client.list_entities("correspondents")
-        existing_set = {c.lower() for c in existing_correspondents}
+        existing = (
+            all_correspondents
+            if all_correspondents is not None
+            else await paperless_client.list_entities("correspondents")
+        )
+        existing_set = {c.lower() for c in existing}
         if suggestion.correspondent.lower() not in existing_set:
             suggestion = suggestion.model_copy(update={"correspondent": None})
 
     # --- Document type ---
     if suggestion.document_type and config.doctype_creation_policy == "existing_only":
-        existing_doctypes = await paperless_client.list_entities("document_types")
-        existing_set = {d.lower() for d in existing_doctypes}
+        existing = (
+            all_document_types
+            if all_document_types is not None
+            else await paperless_client.list_entities("document_types")
+        )
+        existing_set = {d.lower() for d in existing}
         if suggestion.document_type.lower() not in existing_set:
             suggestion = suggestion.model_copy(update={"document_type": None})
 
@@ -332,9 +339,14 @@ class DocumentAnalyzer:
         self._custom_field_defs: list[dict[str, Any]] = []
         self._vector_store = vector_store
 
-    async def _fetch_entity_context(self, document_content: str = "") -> str:
-        """
-        Fetch entity lists for the LLM prompt.
+    async def _fetch_entity_context(
+        self, document_content: str = ""
+    ) -> tuple[str, list[str], list[str], list[str]]:
+        """Fetch entity lists for the LLM prompt.
+
+        Returns ``(context_str, all_tags, all_correspondents, all_document_types)``.
+        The raw lists are returned so the caller can pass them to
+        ``_apply_creation_policy`` and avoid a second round of API calls.
 
         When smart_entity_selection is enabled and a vector store is available,
         queries similar documents to build a focused entity set (hybrid approach:
@@ -342,7 +354,7 @@ class DocumentAnalyzer:
 
         Otherwise falls back to sending all entities.
 
-        On any failure, logs a warning and returns an empty string.
+        On any failure, logs a warning and returns empty values.
         """
         try:
             custom_field_defs = await self._paperless.list_custom_field_definitions()
@@ -362,7 +374,7 @@ class DocumentAnalyzer:
                 "proceeding without entity context.",
                 exc_info=True,
             )
-            return ""
+            return "", [], [], []
 
         # Smart entity selection: use vector similarity + frequency fallback
         if (
@@ -413,7 +425,7 @@ class DocumentAnalyzer:
             cf_parts = [f"{cf['name']} ({cf['data_type']})" for cf in custom_field_defs]
             sections.append(f"Available custom fields: {', '.join(cf_parts)}")
 
-        return "\n".join(sections)
+        return "\n".join(sections), all_tags, all_correspondents, all_document_types
 
     def _build_field_instructions(self) -> str:
         """
@@ -486,10 +498,14 @@ class DocumentAnalyzer:
             # Decode bytes to text for LLM; non-decodable bytes are replaced
             content = raw_bytes.decode("utf-8", errors="replace")
         else:
-            content = await self._paperless.get_document_ocr_text(document_id)
+            # OCR text is already in the metadata response — reuse it to avoid
+            # a second GET /api/documents/{id}/ call.
+            content = doc_meta.get("content", "") or ""
 
         # 3. Fetch entity lists for prompt context (Req 12.1–12.6)
-        entity_context = await self._fetch_entity_context(document_content=content)
+        entity_context, all_tags, all_correspondents, all_document_types = (
+            await self._fetch_entity_context(document_content=content)
+        )
 
         # 4. Build per-field instructions from config (Req 9.1–9.4, 5.5)
         field_instructions = self._build_field_instructions()
@@ -558,11 +574,14 @@ class DocumentAnalyzer:
             raw_llm_response=raw_response,
         )
 
-        # 8. Enforce creation policies for tags, correspondents, document types
+        # 8. Enforce creation policies — reuse entity lists already fetched in step 3
         suggestion = await _apply_creation_policy(
             suggestion=suggestion,
             config=self._config,
             paperless_client=self._paperless,
+            all_tags=all_tags,
+            all_correspondents=all_correspondents,
+            all_document_types=all_document_types,
         )
 
         return suggestion

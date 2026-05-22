@@ -60,7 +60,7 @@ class MemoryStore:
     async def upsert(self, memory_id: str, text: str) -> None:
         """Embed ``text`` and store / update the entry for ``memory_id``."""
         embedding = await self._embed(text)
-        loop = asyncio.get_event_loop()
+        loop = asyncio.get_running_loop()
         await loop.run_in_executor(
             None,
             lambda: self._col.upsert(
@@ -72,7 +72,7 @@ class MemoryStore:
 
     async def delete(self, memory_id: str) -> None:
         """Remove a single memory entry by ID."""
-        loop = asyncio.get_event_loop()
+        loop = asyncio.get_running_loop()
         try:
             await loop.run_in_executor(
                 None, lambda: self._col.delete(ids=[memory_id])
@@ -82,7 +82,7 @@ class MemoryStore:
 
     async def delete_all(self) -> None:
         """Remove every memory from the collection."""
-        loop = asyncio.get_event_loop()
+        loop = asyncio.get_running_loop()
         all_ids = await loop.run_in_executor(
             None, lambda: self._col.get(include=[])["ids"]
         )
@@ -100,7 +100,7 @@ class MemoryStore:
         if count == 0:
             return []
         embedding = await self._embed(text)
-        loop = asyncio.get_event_loop()
+        loop = asyncio.get_running_loop()
         results = await loop.run_in_executor(
             None,
             lambda: self._col.query(

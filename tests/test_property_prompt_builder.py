@@ -238,7 +238,7 @@ async def test_property_11_entity_lists_appear_in_prompt(
     config = _make_config()
     analyzer = _make_analyzer(config, paperless=paperless)
 
-    result = await analyzer._fetch_entity_context()
+    result, *_ = await analyzer._fetch_entity_context()
 
     # Tags
     if tags:
@@ -294,7 +294,7 @@ async def test_property_11_tags_section_contains_all_names(
     config = _make_config()
     analyzer = _make_analyzer(config, paperless=paperless)
 
-    result = await analyzer._fetch_entity_context()
+    result, *_ = await analyzer._fetch_entity_context()
 
     # Extract the tags line
     for line in result.split("\n"):
@@ -329,7 +329,7 @@ async def test_property_11_correspondents_section_contains_all_names(
     config = _make_config()
     analyzer = _make_analyzer(config, paperless=paperless)
 
-    result = await analyzer._fetch_entity_context()
+    result, *_ = await analyzer._fetch_entity_context()
 
     for line in result.split("\n"):
         if line.startswith("Available correspondents:"):
@@ -364,7 +364,7 @@ async def test_property_11_custom_fields_section_contains_all_defs(
     config = _make_config()
     analyzer = _make_analyzer(config, paperless=paperless)
 
-    result = await analyzer._fetch_entity_context()
+    result, *_ = await analyzer._fetch_entity_context()
 
     for line in result.split("\n"):
         if line.startswith("Available custom fields:"):

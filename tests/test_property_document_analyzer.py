@@ -101,7 +101,9 @@ def _make_mock_paperless(ocr_text: str = "ocr content", doc_bytes: bytes = b"pdf
     client = AsyncMock(spec=PaperlessNGXClient)
     client.get_document_ocr_text = AsyncMock(return_value=ocr_text)
     client.get_document_bytes = AsyncMock(return_value=doc_bytes)
-    client.get_document_metadata = AsyncMock(return_value={"document_type": None})
+    # OCR text is embedded in the metadata response so analyze() does not need a
+    # second API call in OCR mode.
+    client.get_document_metadata = AsyncMock(return_value={"document_type": None, "content": ocr_text})
     return client
 
 
@@ -137,8 +139,10 @@ async def test_property_1_llm_input_mode_selection(
     config = _config_strategy(default_mode=default_mode)
     provider = _make_mock_provider()
     paperless = _make_mock_paperless(ocr_text=ocr_text, doc_bytes=doc_bytes)
+    # Metadata response includes the content field so analyze() can avoid a
+    # second API call in OCR mode.
     paperless.get_document_metadata = AsyncMock(
-        return_value={"document_type": doctype_id}
+        return_value={"document_type": doctype_id, "content": ocr_text}
     )
 
     analyzer = DocumentAnalyzer(
@@ -155,13 +159,16 @@ async def test_property_1_llm_input_mode_selection(
 
     if expected_mode == "full_document":
         paperless.get_document_bytes.assert_called_once_with(document_id)
+        # get_document_ocr_text must NOT be called — bytes mode fetches the file directly
         paperless.get_document_ocr_text.assert_not_called()
         # The prompt passed to the LLM must contain the decoded bytes content
         call_args = provider.complete.call_args
         prompt_sent = call_args[0][0]
         assert doc_bytes.decode("utf-8", errors="replace") in prompt_sent or len(doc_bytes) == 0
     else:
-        paperless.get_document_ocr_text.assert_called_once_with(document_id)
+        # OCR mode: content comes from get_document_metadata(), NOT a separate
+        # get_document_ocr_text() call.
+        paperless.get_document_ocr_text.assert_not_called()
         paperless.get_document_bytes.assert_not_called()
         # The prompt must contain the OCR text
         call_args = provider.complete.call_args
@@ -200,7 +207,7 @@ async def test_property_1_per_doctype_mode_overrides_default(
     provider = _make_mock_provider()
     paperless = _make_mock_paperless()
     paperless.get_document_metadata = AsyncMock(
-        return_value={"document_type": doctype_id}
+        return_value={"document_type": doctype_id, "content": "sample ocr text"}
     )
 
     analyzer = DocumentAnalyzer(
@@ -216,7 +223,8 @@ async def test_property_1_per_doctype_mode_overrides_default(
         paperless.get_document_bytes.assert_called_once()
         paperless.get_document_ocr_text.assert_not_called()
     else:
-        paperless.get_document_ocr_text.assert_called_once()
+        # OCR mode: content comes from the metadata response, no separate ocr call
+        paperless.get_document_ocr_text.assert_not_called()
         paperless.get_document_bytes.assert_not_called()
 
 
@@ -602,29 +610,28 @@ def test_property_5_global_template_fallback(global_prompt: str) -> None:
 @settings(max_examples=100, suppress_health_check=[HealthCheck.too_slow])
 @given(
     doctype_id=_doctype_id_strategy,
+    global_prompt=st.text(min_size=0, max_size=200),
 )
 def test_property_5_builtin_default_when_nothing_configured(
     doctype_id: int | None,
+    global_prompt: str,
 ) -> None:
     """
-    # Feature: paperless-iq, Property 5: Prompt template resolution (built-in default)
+    # Feature: paperless-iq, Property 5: Prompt template resolution (global fallback)
 
-    When no templates are configured at any level, the built-in default prompt
-    must be returned (non-empty string).
+    When no per-doctype or per-field template is configured, the global template
+    must be returned unchanged.
 
     Validates: Requirements 2.4
     """
-    from backend.analyzer import _DEFAULT_PROMPT
-
     config = _config_strategy(
-        global_prompt="",
+        global_prompt=global_prompt,
         per_field_prompts={},
         per_doctype_prompts={},
     )
 
     result = resolve_prompt_template(config, document_type_id=doctype_id, field=None)
-    assert result == _DEFAULT_PROMPT
-    assert len(result) > 0
+    assert result == config.global_prompt_template
 
 
 @settings(max_examples=100, suppress_health_check=[HealthCheck.too_slow])

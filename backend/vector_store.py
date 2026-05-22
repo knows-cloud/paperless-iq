@@ -99,7 +99,7 @@ class ChromaVectorStore:
             "document_type": metadata.get("document_type") or "",
         }
         total = len(chunks)
-        loop = asyncio.get_event_loop()
+        loop = asyncio.get_running_loop()
         succeeded = 0
 
         async def _embed_and_store(i: int, chunk: str) -> None:
@@ -125,7 +125,7 @@ class ChromaVectorStore:
 
     async def delete(self, doc_id: int) -> None:
         """Remove all chunks for a document."""
-        loop = asyncio.get_event_loop()
+        loop = asyncio.get_running_loop()
         try:
             existing = await loop.run_in_executor(
                 None,
@@ -154,7 +154,7 @@ class ChromaVectorStore:
         Returns up to top_n documents, each with the best matching passage.
         """
         embedding = await self._embed(text)
-        loop = asyncio.get_event_loop()
+        loop = asyncio.get_running_loop()
         count = self._collection.count()
         if count == 0:
             return []
@@ -228,7 +228,7 @@ class ChromaVectorStore:
         unique documents.
         """
         embedding = await self._embed(text)
-        loop = asyncio.get_event_loop()
+        loop = asyncio.get_running_loop()
         count = self._collection.count()
         if count == 0:
             return {"tags": set(), "correspondents": set(), "document_types": set()}
@@ -289,7 +289,7 @@ class ChromaVectorStore:
         Multiple chunks from the same document may appear.
         """
         embedding = await self._embed(text)
-        loop = asyncio.get_event_loop()
+        loop = asyncio.get_running_loop()
         count = self._collection.count()
         if count == 0:
             return []
@@ -340,7 +340,7 @@ class ChromaVectorStore:
         Call this before switching embedding models or to recover from a
         dimension-mismatch error.  All documents will need to be re-indexed.
         """
-        loop = asyncio.get_event_loop()
+        loop = asyncio.get_running_loop()
         collection_name = self._collection.name
         await loop.run_in_executor(
             None,
@@ -377,7 +377,7 @@ class BedrockKnowledgeBaseStore:
         logger.warning("BedrockKnowledgeBaseStore.delete() is a no-op; use data source sync for document %d.", doc_id)
 
     async def query(self, text: str, top_n: int) -> list[SearchResult]:
-        loop = asyncio.get_event_loop()
+        loop = asyncio.get_running_loop()
         def _retrieve() -> dict:
             return self._client.retrieve(
                 knowledgeBaseId=self._kb_id,
@@ -405,7 +405,7 @@ class BedrockKnowledgeBaseStore:
         return results[:top_n]
 
     async def reindex_all(self, documents: list[dict[str, Any]]) -> None:
-        loop = asyncio.get_event_loop()
+        loop = asyncio.get_running_loop()
         def _start_sync() -> None:
             ds_response = self._agent_client.list_data_sources(knowledgeBaseId=self._kb_id)
             for ds in ds_response.get("dataSourceSummaries", []):

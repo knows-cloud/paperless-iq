@@ -6,14 +6,23 @@ import ollama
 
 
 class OllamaProvider:
-    """LLMProvider implementation backed by a local Ollama instance."""
+    """LLMProvider implementation backed by a local Ollama instance.
+
+    A single ``ollama.AsyncClient`` is created on first use and reused for
+    all subsequent calls — this keeps the underlying connection pool alive
+    across requests instead of rebuilding it on every call.
+    """
 
     def __init__(self, base_url: str, model: str) -> None:
         self._base_url = base_url
         self._model = model
+        self._client_instance: ollama.AsyncClient | None = None
 
     def _client(self) -> ollama.AsyncClient:
-        return ollama.AsyncClient(host=self._base_url)
+        """Return the shared AsyncClient, creating it on first call."""
+        if self._client_instance is None:
+            self._client_instance = ollama.AsyncClient(host=self._base_url)
+        return self._client_instance
 
     async def chat(self, messages: list[dict], max_tokens: int) -> str:
         """Send a multi-turn chat request to Ollama.

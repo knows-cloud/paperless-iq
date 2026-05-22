@@ -15,7 +15,7 @@ import pytest
 from hypothesis import HealthCheck, given, settings
 from hypothesis import strategies as st
 
-from backend.manual_analysis import ManualAnalysisService, list_documents_by_tag
+from backend.manual_analysis import ManualAnalysisService
 from backend.models import PaperlessIQConfig
 
 # ---------------------------------------------------------------------------

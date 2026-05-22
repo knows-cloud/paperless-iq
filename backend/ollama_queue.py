@@ -67,7 +67,7 @@ class OllamaQueue:
 
     async def submit(self, priority: Priority, fn: Callable[[], Awaitable[T]], label: str = "") -> T:
         """Submit a request to the queue and wait for the result."""
-        future: asyncio.Future[T] = asyncio.get_event_loop().create_future()
+        future: asyncio.Future[T] = asyncio.get_running_loop().create_future()
         if label:
             self._pending_labels.append(label)
         await self._queue.put((priority.value, time.monotonic(), future, fn, label))

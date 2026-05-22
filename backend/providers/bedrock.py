@@ -5,8 +5,10 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+from typing import Any
 
 import boto3
+import botocore.exceptions
 from botocore.config import Config
 
 from backend.providers.encryption import decrypt_credential
@@ -42,6 +44,7 @@ class BedrockProvider:
         self._model = model
         self._session_token_enc = session_token_enc
         self._embed_model = embed_model
+        self._cached_runtime: Any = None  # lazily created; invalidated on token expiry
 
     def _boto_kwargs(self) -> dict:
         """Build the common keyword arguments for every boto3 client."""
@@ -55,10 +58,17 @@ class BedrockProvider:
             kwargs["aws_session_token"] = decrypt_credential(self._session_token_enc, self._secret_key)
         return kwargs
 
-    def _runtime_client(self):
-        return boto3.client("bedrock-runtime", **self._boto_kwargs())
+    def _runtime_client(self) -> Any:
+        """Return the cached bedrock-runtime client, creating it on first call."""
+        if self._cached_runtime is None:
+            self._cached_runtime = boto3.client("bedrock-runtime", **self._boto_kwargs())
+        return self._cached_runtime
 
-    def _bedrock_client(self):
+    def _invalidate_runtime_client(self) -> None:
+        """Drop the cached client so the next call builds a fresh one."""
+        self._cached_runtime = None
+
+    def _bedrock_client(self) -> Any:
         return boto3.client("bedrock", **self._boto_kwargs())
 
     async def chat(self, messages: list[dict], max_tokens: int) -> str:
@@ -67,8 +77,6 @@ class BedrockProvider:
         Bedrock's Claude API accepts a top-level ``system`` field rather than
         a system-role message, so we extract it from the messages list first.
         """
-        client = self._runtime_client()
-
         system: str | None = None
         filtered = []
         for m in messages:
@@ -95,12 +103,24 @@ class BedrockProvider:
             body_dict["system"] = system
         body = json.dumps(body_dict)
 
-        def _invoke() -> dict:
-            response = client.invoke_model(modelId=self._model, body=body)
-            return json.loads(response["body"].read())
+        loop = asyncio.get_running_loop()
 
-        loop = asyncio.get_event_loop()
-        result = await loop.run_in_executor(None, _invoke)
+        for attempt in range(2):
+            client = self._runtime_client()
+
+            def _invoke() -> dict:
+                response = client.invoke_model(modelId=self._model, body=body)
+                return json.loads(response["body"].read())
+
+            try:
+                result = await loop.run_in_executor(None, _invoke)
+                break
+            except botocore.exceptions.ClientError as exc:
+                if exc.response["Error"]["Code"] == "ExpiredTokenException" and attempt == 0:
+                    logger.info("Bedrock chat(): session token expired — refreshing client.")
+                    self._invalidate_runtime_client()
+                    continue
+                raise
 
         output_text = result["content"][0]["text"]
         usage = result.get("usage", {})
@@ -123,7 +143,6 @@ class BedrockProvider:
           - cohere.embed-english-v3      : texts[]   → embeddings[][] (1024-dim)
           - cohere.embed-multilingual-v3 : texts[]   → embeddings[][] (1024-dim)
         """
-        client = self._runtime_client()
         model = self._embed_model
 
         is_cohere = model.startswith("cohere.")
@@ -140,17 +159,29 @@ class BedrockProvider:
             # Titan v1 (and any unknown Titan variant)
             body = json.dumps({"inputText": text})
 
-        def _invoke() -> dict:
-            response = client.invoke_model(
-                modelId=model,
-                body=body,
-                contentType="application/json",
-                accept="application/json",
-            )
-            return json.loads(response["body"].read())
+        loop = asyncio.get_running_loop()
 
-        loop = asyncio.get_event_loop()
-        result = await loop.run_in_executor(None, _invoke)
+        for attempt in range(2):
+            client = self._runtime_client()
+
+            def _invoke() -> dict:
+                response = client.invoke_model(
+                    modelId=model,
+                    body=body,
+                    contentType="application/json",
+                    accept="application/json",
+                )
+                return json.loads(response["body"].read())
+
+            try:
+                result = await loop.run_in_executor(None, _invoke)
+                break
+            except botocore.exceptions.ClientError as exc:
+                if exc.response["Error"]["Code"] == "ExpiredTokenException" and attempt == 0:
+                    logger.info("Bedrock embed(): session token expired — refreshing client.")
+                    self._invalidate_runtime_client()
+                    continue
+                raise
 
         if is_cohere:
             return result["embeddings"][0]
