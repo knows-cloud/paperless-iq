@@ -11,11 +11,12 @@ services:
     volumes:
       - paperless-iq-data:/data
     environment:
-      OLLAMA_HOST: http://REDACTED_IP:11434
-      PAPERLESS_URL: http://webserver:8000
-      PAPERLESS_TOKEN: ${PAPERLESS_TOKEN:-REDACTED}
-      SECRET_KEY: ${SECRET_KEY:-change-me-in-production}
+      PAPERLESS_URL: ${PAPERLESS_URL:-http://webserver:8000}
+      PAPERLESS_TOKEN: ${PAPERLESS_TOKEN:?PAPERLESS_TOKEN must be set}
+      SECRET_KEY: ${SECRET_KEY:?SECRET_KEY must be set}
       DATABASE_URL: sqlite+aiosqlite:////data/paperless_iq.db
+      # Optional: override Ollama URL if not running on the same host
+      # OLLAMA_HOST: http://your-ollama-host:11434
     networks:
       - paperless_default
 
