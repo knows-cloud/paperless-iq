@@ -6,7 +6,7 @@ import uuid
 from datetime import datetime, timezone
 from typing import Any
 
-from sqlalchemy import JSON, DateTime, Integer, String, Text
+from sqlalchemy import JSON, Boolean, DateTime, Integer, String, Text
 from sqlalchemy.orm import Mapped, mapped_column
 
 from backend.database import Base
@@ -137,3 +137,26 @@ class UserMemoryORM(Base):
     source_session_id: Mapped[str | None] = mapped_column(String(36), nullable=True)
     # Whether this fact has been embedded into ChromaDB
     embedding_stored: Mapped[bool] = mapped_column(default=False)
+
+
+class UserPermissionsORM(Base):
+    """Per-user access-control record for Paperless IQ.
+
+    Created or updated at every login. ``ng_admin`` caches the Paperless NGX
+    superuser/staff status checked at login time.  When ``sync_ng_admins`` is
+    enabled in settings, ``ng_admin=True`` bypasses individual permission flags.
+    """
+
+    __tablename__ = "user_permissions"
+
+    username: Mapped[str] = mapped_column(String(150), primary_key=True)
+    ng_admin: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    can_access: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    can_view_queue: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    can_approve: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    can_analyze: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    can_discover: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    can_settings: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, default=_utcnow
+    )

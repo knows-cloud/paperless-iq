@@ -93,6 +93,18 @@ export interface AuthMeResponse {
   auth_required: boolean;
 }
 
+export interface UserPermissions {
+  username: string;
+  ng_admin: boolean;
+  can_access: boolean;
+  can_view_queue: boolean;
+  can_approve: boolean;
+  can_analyze: boolean;
+  can_discover: boolean;
+  can_settings: boolean;
+  updated_at?: string | null;
+}
+
 export const api = {
   // Auth
   getMe: () =>
@@ -189,6 +201,7 @@ export const api = {
   getDocumentPreview: (id: number) => requestBlob(`/documents/${id}/preview`),
   getDocumentThumb: (id: number) => requestBlob(`/documents/${id}/thumb`),
   triggerReindex: () => request<{ detail: string }>("/reindex", { method: "POST" }),
+  registerWebhook: () => request<{ detail: string; callback_url: string }>("/webhook/register", { method: "POST" }),
   getTrackingStats: () => request<{ tracked_documents: number; suggestions_pending: number; suggestions_approved: number; suggestions_rejected: number }>("/tracking/stats"),
   resetTracking: () => request<{ cleared: number }>("/tracking/reset", { method: "POST" }),
   resetRejected: () => request<{ deleted_suggestions: number; cleared_tracking: number }>("/tracking/reset-rejected", { method: "POST" }),
@@ -201,6 +214,17 @@ export const api = {
     request<{ deleted: string }>(`/memories/${id}`, { method: "DELETE" }),
   clearMemories: () =>
     request<{ cleared: boolean }>("/memories", { method: "DELETE" }),
+
+  // User permissions
+  getMyPermissions: () => request<UserPermissions>("/piq-users/me"),
+  listPiqUsers: () => request<UserPermissions[]>("/piq-users"),
+  updatePiqUser: (username: string, perms: Omit<UserPermissions, "username" | "ng_admin" | "updated_at">) =>
+    request<{ detail: string }>(`/piq-users/${encodeURIComponent(username)}`, {
+      method: "PUT",
+      body: JSON.stringify(perms),
+    }),
+  deletePiqUser: (username: string) =>
+    request<{ detail: string }>(`/piq-users/${encodeURIComponent(username)}`, { method: "DELETE" }),
 
   getDocuments: (params?: Record<string, string | string[]>) => {
     const qs = new URLSearchParams();

@@ -12,9 +12,7 @@ that keep the codebase consistent.
 |------|---------------|
 | `docs/ARCHITECTURE.md` | System diagram, all backend modules, frontend tree, three key data flows, async patterns, security |
 | `docs/DECISIONS.md` | 15 design decisions (D-01–D-15) — each has Decision, Rationale, and an explicit Rule |
-| `.kiro/specs/design-decisions.md` | UI/UX decisions (theme engine, citation style, preview approach) — gitignored, local only |
-| `.kiro/specs/frontend-patterns.md` | CSS variable taxonomy, React Query conventions, i18n patterns — gitignored, local only |
-| `.kiro/specs/theme-engine.md` | Full CSS custom property reference — gitignored, local only |
+
 
 **Always read `docs/DECISIONS.md` before starting a refactor.** The decisions there are not optional style preferences — they reflect real bugs that were fixed by establishing the rule.
 
@@ -69,7 +67,8 @@ frontend/src/
 ```
 
 ### Key invariants
-- `_fetch_entity_context()` returns `tuple[str, list[str], list[str], list[str]]` — the prompt string plus the three raw entity lists. Pass these to `_apply_creation_policy` to avoid double API calls.
+- `_fetch_entity_context(document_content="", doc_meta=None)` returns `tuple[str, list[str], list[str], list[str]]` — the prompt string plus the three raw entity lists. Always pass `doc_meta` so the LLM sees current state. Pass the raw lists to `_apply_creation_policy` to avoid double API calls.
+- `list_entities_with_map(entity_type)` returns `(list[str], dict[int, str])` — names plus `id→name` map for resolving document metadata integer IDs. Use this instead of `list_entities()` when you need ID resolution.
 - OCR text comes from `doc_meta["content"]` (already in the metadata response). Do not call `get_document_ocr_text()` from `analyze()`.
 - The Ollama `AsyncClient` is a singleton per `OllamaProvider` instance. Never create one per request.
 - The Bedrock boto3 runtime client is cached and auto-invalidated on `ExpiredTokenException` with one retry.
@@ -95,6 +94,6 @@ frontend/src/
 ## Before You Commit
 
 1. `npx tsc --noEmit` from `frontend/` — zero errors required
-2. `uv run pytest` — must not introduce new failures (15 pre-existing failures are known and acceptable)
+2. `uv run pytest` — must not introduce new failures 
 3. If you changed a design decision, update `docs/DECISIONS.md`
-4. If you changed the module structure, update `docs/ARCHITECTURE.md` and `.kiro/steering/structure.md`
+4. If you changed the module structure, update `docs/ARCHITECTURE.md` 

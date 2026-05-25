@@ -59,6 +59,20 @@ class SearchResult(BaseModel):
     deeplink_url: str     # URL to document in Paperless NGX
 
 
+class UserPermissions(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+    username: str
+    ng_admin: bool = False
+    can_access: bool = False
+    can_view_queue: bool = False
+    can_approve: bool = False
+    can_analyze: bool = False
+    can_discover: bool = False
+    can_settings: bool = False
+    updated_at: datetime | None = None
+
+
 class DocumentTrackingRecord(BaseModel):
     model_config = ConfigDict(from_attributes=True)
 
@@ -130,6 +144,9 @@ class PaperlessIQConfig(BaseModel):
     schedule_cron: str | None = None
     automation_enabled: bool = False
 
+    # Access control
+    sync_ng_admins: bool = True  # Paperless NGX superusers/staff auto-get full PIQ access
+
     # Long-term memory
     memory_enabled: bool = True
 
@@ -144,6 +161,10 @@ class PaperlessIQConfig(BaseModel):
     # uses the internal Docker hostname/network address)
     paperless_public_url: str = ""
 
+    # Internal URL of Paperless IQ as reachable from Paperless NGX (used for webhook registration).
+    # Leave empty to derive it from the incoming request's base URL.
+    paperless_iq_internal_url: str = ""
+
     # Theme
     theme_primary_color: str = "#1a7288"
     theme_sidebar_from: str = "#0a3344"
@@ -157,6 +178,8 @@ class PaperlessIQConfig(BaseModel):
     theme_card_alt_opacity: int = 12
     theme_chip_color: str = ""  # empty = derive from primary_color
     theme_logo: str = "iq_1.png"
+    mantine_color: str = "teal"
+    color_scheme: str = "dark"  # "light" | "dark" | "auto"
     theme_nav_icons: dict[str, str] = {
         "manual": "🔍",
         "queue": "📋",

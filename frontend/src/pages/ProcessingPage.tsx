@@ -1,187 +1,129 @@
-import { useState } from "react";
-import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
+import { useQuery } from "@tanstack/react-query";
+import {
+  Title, Paper, Text, Group, Stack, Badge, Progress,
+  Box,
+} from "@mantine/core";
 import { api } from "../api";
 import { t } from "../i18n";
 
 export default function ProcessingPage() {
-  const qc = useQueryClient();
   const status = useQuery({ queryKey: ["status"], queryFn: api.getStatus, refetchInterval: 3000, retry: false });
   const tracking = useQuery({ queryKey: ["tracking"], queryFn: api.getTrackingStats, refetchInterval: 10000, retry: false });
-  const [showResetConfirm, setShowResetConfirm] = useState<string | null>(null);
   const d = status.data;
   const proc = d?.processing as Record<string, unknown> | undefined;
   const tr = tracking.data;
 
-  const resetAll = useMutation({ mutationFn: api.resetTracking, onSuccess: () => { qc.invalidateQueries({ queryKey: ["tracking"] }); setShowResetConfirm(null); } });
-  const resetRejected = useMutation({ mutationFn: api.resetRejected, onSuccess: () => { qc.invalidateQueries({ queryKey: ["tracking"] }); setShowResetConfirm(null); } });
-  const reindex = useMutation({ mutationFn: api.triggerReindex });
-
-  const mutedText: React.CSSProperties = { color: "var(--text-on-card-muted)" };
-  const secondaryText: React.CSSProperties = { color: "var(--text-on-card-secondary)" };
-  const infoBox: React.CSSProperties = {
-    background: "var(--petrol-50)", border: "1px solid var(--petrol-200)",
-    borderRadius: "var(--radius-sm)", padding: "0.65rem 1rem",
-  };
+  const embeddingDone = (proc?.embedding_done as number) ?? 0;
+  const embeddingTotal = Math.max(1, (proc?.embedding_total as number) ?? 1);
+  const embeddingPct = Math.min(100, Math.round((embeddingDone / embeddingTotal) * 100));
 
   return (
-    <div>
-      <h2>{t("processing.title")}</h2>
+    <Stack gap="md">
+      <Title order={2}>{t("processing.title")}</Title>
 
-      {/* ── System Status ── */}
-      <div className="card">
-        <h3>{t("processing.systemStatus")}</h3>
-        <div style={{
-          display: "flex", gap: "2rem", flexWrap: "wrap", fontSize: "0.9rem",
-          background: "var(--petrol-50)", border: "1px solid var(--petrol-200)",
-          borderRadius: "var(--radius-sm)", padding: "0.65rem 1rem",
-        }}>
-          <div>
-            <span style={mutedText}>{t("processing.llm")}:</span>{" "}
-            <strong style={{ color: d?.llm_online ? "var(--success-on-card, var(--success))" : "var(--error-on-card, var(--error))" }}>
+      {/* System Status */}
+      <Paper withBorder p="md" radius="md">
+        <Text fw={600} size="sm" mb="sm">{t("processing.systemStatus")}</Text>
+        <Group gap="xl">
+          <Group gap="xs">
+            <Text size="sm" c="dimmed">{t("processing.llm")}:</Text>
+            <Badge color={d?.llm_online ? "teal" : "red"} variant="light">
               {d?.llm_online ? t("processing.online") : t("processing.offline")}
-            </strong>
-          </div>
-          <div>
-            <span style={mutedText}>{t("processing.embedding")}:</span>{" "}
-            <strong style={{ color: d?.embed_online ? "var(--success-on-card, var(--success))" : "var(--error-on-card, var(--error))" }}>
+            </Badge>
+          </Group>
+          <Group gap="xs">
+            <Text size="sm" c="dimmed">{t("processing.embedding")}:</Text>
+            <Badge color={d?.embed_online ? "teal" : "red"} variant="light">
               {d?.embed_online ? t("processing.online") : t("processing.offline")}
-            </strong>
-          </div>
-          <div>
-            <span style={mutedText}>{t("processing.approvalQueue")}:</span>{" "}
-            <strong>{d?.queue_pending ?? 0}</strong>{" "}
-            <span style={secondaryText}>{t("processing.pending")}</span>
-          </div>
-        </div>
-      </div>
+            </Badge>
+          </Group>
+          <Group gap="xs">
+            <Text size="sm" c="dimmed">{t("processing.approvalQueue")}:</Text>
+            <Text size="sm" fw={600}>{d?.queue_pending ?? 0} {t("processing.pending")}</Text>
+          </Group>
+        </Group>
+      </Paper>
 
-      {/* ── Processing Queue ── */}
-      <div className="card card-alt" style={{ marginTop: "1rem" }}>
-        <h3>{t("processing.queue")}</h3>
-        <div style={infoBox}>
-          {proc?.active_task ? (
-            <div style={{ fontSize: "0.9rem" }}>
-              <div style={{ display: "flex", alignItems: "center", gap: "0.5rem" }}>
-                <span style={{ display: "inline-block", width: "8px", height: "8px", borderRadius: "50%", background: "var(--petrol-500)", animation: "pulse 1.5s infinite" }} />
-                <strong>{String(proc.active_task)}</strong>
-                <span className="badge badge-pending">{String(proc.active_priority ?? "")}</span>
-              </div>
-            </div>
-          ) : (
-            <p style={{ ...mutedText, fontSize: "0.9rem", margin: 0 }}>{t("processing.idle")}</p>
-          )}
-          {((proc?.pending_tasks as string[]) ?? []).length > 0 && (
-            <div style={{ marginTop: "0.5rem" }}>
-              <p style={{ fontSize: "0.82rem", ...secondaryText, marginBottom: "0.3rem", fontWeight: 500 }}>{t("processing.waiting")}</p>
+      {/* Processing Queue */}
+      <Paper withBorder p="md" radius="md">
+        <Text fw={600} size="sm" mb="sm">{t("processing.queue")}</Text>
+        {proc?.active_task ? (
+          <Group gap="sm">
+            <Box
+              w={8} h={8}
+              style={{ borderRadius: "50%", background: "var(--mantine-color-teal-5)", animation: "pulse 1.5s infinite", flexShrink: 0 }}
+            />
+            <Text size="sm" fw={500}>{String(proc.active_task)}</Text>
+            {proc.active_priority != null && (
+              <Badge variant="light" size="sm">{String(proc.active_priority)}</Badge>
+            )}
+          </Group>
+        ) : (
+          <Text size="sm" c="dimmed">{t("processing.idle")}</Text>
+        )}
+        {((proc?.pending_tasks as string[]) ?? []).length > 0 && (
+          <Box mt="sm">
+            <Text size="xs" fw={500} c="dimmed" mb={4}>{t("processing.waiting")}</Text>
+            <Stack gap={2}>
               {((proc?.pending_tasks as string[]) ?? []).map((label, i) => (
-                <div key={i} style={{
-                  fontSize: "0.85rem", padding: "0.25rem 0.5rem", marginBottom: "2px",
-                  background: i % 2 === 0 ? "transparent" : "rgba(0,0,0,0.04)",
-                  borderRadius: "var(--radius-sm)",
-                }}>
+                <Text key={i} size="sm" px="xs" py={2} style={{ borderRadius: "var(--mantine-radius-sm)", background: i % 2 === 1 ? "var(--mantine-color-default-hover)" : "transparent" }}>
                   {label}
-                </div>
+                </Text>
               ))}
-            </div>
-          )}
-          {!proc?.active_task && ((proc?.pending_tasks as string[]) ?? []).length === 0 && null}
-        </div>
-      </div>
+            </Stack>
+          </Box>
+        )}
+      </Paper>
 
-      {/* ── Vector Store Indexing ── */}
-      <div className="card" style={{ marginTop: "1rem" }}>
-        <h3>{t("processing.vectorStore")}</h3>
-        <div style={infoBox}>
-          {proc?.embedding_active ? (
-            <div>
-              <div style={{ display: "flex", justifyContent: "space-between", fontSize: "0.9rem", marginBottom: "0.5rem" }}>
-                <span>{t("processing.indexingDocs")}</span>
-                <strong>{String(proc.embedding_done)} / {String(proc.embedding_total)}</strong>
-              </div>
-              <div style={{ background: "var(--gray-200)", borderRadius: "4px", height: "8px", overflow: "hidden" }}>
-                <div style={{
-                  background: "var(--petrol-500)", height: "100%", borderRadius: "4px",
-                  width: `${Math.min(100, ((proc.embedding_done as number) / Math.max(1, proc.embedding_total as number)) * 100)}%`,
-                  transition: "width 0.5s ease",
-                }} />
-              </div>
-            </div>
-          ) : (
-            <p style={{ ...mutedText, fontSize: "0.9rem", margin: 0 }}>
-              {d?.embedded_chunks
-                ? t("processing.chunksIndexed", { chunks: String(d.embedded_chunks), docs: String(d.total_documents) })
-                : t("processing.noDocsYet")}
-            </p>
-          )}
-        </div>
-      </div>
+      {/* Vector Store Indexing */}
+      <Paper withBorder p="md" radius="md">
+        <Text fw={600} size="sm" mb="sm">{t("processing.vectorStore")}</Text>
+        {proc?.embedding_active ? (
+          <Stack gap="xs">
+            <Group justify="space-between">
+              <Text size="sm">{t("processing.indexingDocs")}</Text>
+              <Text size="sm" fw={600}>{embeddingDone} / {embeddingTotal}</Text>
+            </Group>
+            <Progress value={embeddingPct} color="teal" animated />
+          </Stack>
+        ) : (
+          <Text size="sm" c="dimmed">
+            {d?.embedded_chunks
+              ? t("processing.chunksIndexed", { chunks: String(d.embedded_chunks), docs: String(d.total_documents) })
+              : t("processing.noDocsYet")}
+          </Text>
+        )}
+      </Paper>
 
-      {/* ── Document Tracking ── */}
-      <div className="card card-alt" style={{ marginTop: "1rem" }}>
-        <h3>{t("processing.tracking")}</h3>
+      {/* Document Tracking */}
+      <Paper withBorder p="md" radius="md">
+        <Text fw={600} size="sm" mb="sm">{t("processing.tracking")}</Text>
         {tr && (
-          <div style={infoBox}>
-            <div style={{ fontSize: "0.9rem" }}>
-              <div style={{ display: "flex", gap: "2rem", flexWrap: "wrap", marginBottom: "0.75rem" }}>
-                <div><span style={mutedText}>{t("processing.trackedLabel")}</span> <strong>{tr.tracked_documents}</strong></div>
-                <div>
-                  <span style={mutedText}>{t("processing.approvedLabel")}</span>{" "}
-                  <strong style={{ color: "var(--success-on-card, var(--success))" }}>{tr.suggestions_approved}</strong>
-                </div>
-                <div>
-                  <span style={mutedText}>{t("processing.rejectedLabel")}</span>{" "}
-                  <strong style={{ color: "var(--error-on-card, var(--error))" }}>{tr.suggestions_rejected}</strong>
-                </div>
-                <div><span style={mutedText}>{t("processing.pendingLabel")}</span> <strong>{tr.suggestions_pending}</strong></div>
-              </div>
-              <p style={{ fontSize: "0.82rem", ...mutedText, marginBottom: "0.75rem" }}>
-                {t("processing.trackingHint")}
-              </p>
-              <div style={{ display: "flex", gap: "0.5rem", flexWrap: "wrap" }}>
-                <button className="btn" onClick={() => setShowResetConfirm("rejected")}
-                  disabled={!tr.suggestions_rejected}>
-                  {t("processing.resetRejected", { count: String(tr.suggestions_rejected) })}
-                </button>
-                <button className="btn" onClick={() => setShowResetConfirm("all")}>
-                  {t("processing.resetAll")}
-                </button>
-                <button className="btn" onClick={() => reindex.mutate()} disabled={reindex.isPending}>
-                  {reindex.isPending ? t("processing.reindexing") : t("processing.reindex")}
-                </button>
-              </div>
-            </div>
-          </div>
+          <Stack gap="md">
+            <Group gap="xl">
+              <Group gap="xs">
+                <Text size="sm" c="dimmed">{t("processing.trackedLabel")}</Text>
+                <Text size="sm" fw={600}>{tr.tracked_documents}</Text>
+              </Group>
+              <Group gap="xs">
+                <Text size="sm" c="dimmed">{t("processing.approvedLabel")}</Text>
+                <Text size="sm" fw={600} c="teal">{tr.suggestions_approved}</Text>
+              </Group>
+              <Group gap="xs">
+                <Text size="sm" c="dimmed">{t("processing.rejectedLabel")}</Text>
+                <Text size="sm" fw={600} c="red">{tr.suggestions_rejected}</Text>
+              </Group>
+              <Group gap="xs">
+                <Text size="sm" c="dimmed">{t("processing.pendingLabel")}</Text>
+                <Text size="sm" fw={600}>{tr.suggestions_pending}</Text>
+              </Group>
+            </Group>
+            <Text size="xs" c="dimmed">{t("processing.trackingHint")}</Text>
+          </Stack>
         )}
-        {showResetConfirm && (
-          <div style={{
-            marginTop: "0.75rem", padding: "0.75rem",
-            background: "rgba(234, 88, 12, 0.12)",
-            borderRadius: "var(--radius-sm)",
-            border: "1px solid rgba(234, 88, 12, 0.3)",
-          }}>
-            <p style={{ fontWeight: 600, margin: "0 0 0.5rem" }}>
-              {showResetConfirm === "all"
-                ? t("processing.confirmResetAll")
-                : t("processing.confirmResetRejected", { count: String(tr?.suggestions_rejected ?? 0) })}
-            </p>
-            <div style={{ display: "flex", gap: "0.5rem" }}>
-              <button className="btn btn-danger"
-                onClick={() => showResetConfirm === "all" ? resetAll.mutate() : resetRejected.mutate()}
-                disabled={resetAll.isPending || resetRejected.isPending}>
-                {resetAll.isPending || resetRejected.isPending ? t("processing.resetting") : t("processing.confirmBtn")}
-              </button>
-              <button className="btn" onClick={() => setShowResetConfirm(null)}>{t("processing.cancel")}</button>
-            </div>
-          </div>
-        )}
-      </div>
+      </Paper>
 
-      <style>{`
-        @keyframes pulse {
-          0%, 100% { opacity: 1; }
-          50% { opacity: 0.3; }
-        }
-      `}</style>
-    </div>
+      <style>{`@keyframes pulse { 0%,100%{opacity:1} 50%{opacity:0.3} }`}</style>
+    </Stack>
   );
 }

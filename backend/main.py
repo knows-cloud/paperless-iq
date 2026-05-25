@@ -17,7 +17,7 @@ from contextlib import asynccontextmanager
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Annotated, Any, AsyncGenerator
-from uuid import UUID
+from uuid import UUID, uuid4
 
 import httpx
 from fastapi import Body, Depends, FastAPI, HTTPException, Query, Request, status
@@ -32,23 +32,28 @@ from backend.analyzer import PaperlessNGXClient
 from backend.approval_queue import ApprovalQueueService
 from backend.audit_log import AuditLogService
 from backend.auth import (
+    check_login_rate_limit,
+    check_webhook_secret,
     create_session,
     get_session_user,
     require_auth,
     revoke_session,
     validate_paperless_credentials,
 )
+from backend.auth import _is_auth_required
 from backend.database import AsyncSessionLocal, get_session
 from backend.keystore import get_machine_key
 from backend.inbox_monitor import InboxMonitor, Scheduler
 from backend.manual_analysis import ManualAnalysisService
 from backend.models import MetadataSuggestion
 from backend.ollama_queue import OllamaQueue, Priority
+from backend.models import UserPermissions
 from backend.orm_models import (
     ConversationSessionORM,
     DocumentTrackingORM,
     SuggestionORM,
     UserMemoryORM,
+    UserPermissionsORM,
 )
 from backend.provider_registry import build_providers
 from backend.rate_limiter import RateLimiter
@@ -214,13 +219,17 @@ async def _automation_loop(
                         queue_svc = ApprovalQueueService(session)
                         enqueued = await queue_svc.enqueue(suggestion)
                         if config.auto_apply:
+                            # LLM now outputs the complete desired tag set (current state
+                            # was passed to it), so merge_tags=False is correct.
+                            # creation policies filter unknown entities before enqueue;
+                            # allow_new policies leave them for creation at approve time.
                             create_missing = (
                                 config.tag_creation_policy == "allow_new"
                                 or config.correspondent_creation_policy == "allow_new"
                                 or config.doctype_creation_policy == "allow_new"
                             )
                             await queue_svc.approve(
-                                enqueued.id, merge_tags=True, create_missing=create_missing,
+                                enqueued.id, merge_tags=False, create_missing=create_missing,
                             )
                             logger.info("%s auto-approved suggestion for doc %d.", mode_label, doc_id)
                         else:
@@ -272,9 +281,15 @@ async def _background_index(
         tag_id_to_name: dict[int, str] = {}
         corr_id_to_name: dict[int, str] = {}
         dt_id_to_name: dict[int, str] = {}
+        cf_id_to_name: dict[int, str] = {}
 
         async with httpx.AsyncClient(headers=headers, timeout=30) as lookup_client:
-            for entity, lookup in [("tags", tag_id_to_name), ("correspondents", corr_id_to_name), ("document_types", dt_id_to_name)]:
+            for entity, lookup in [
+                ("tags", tag_id_to_name),
+                ("correspondents", corr_id_to_name),
+                ("document_types", dt_id_to_name),
+                ("custom_fields", cf_id_to_name),
+            ]:
                 eurl: str | None = f"{base}/api/{entity}/?page_size=100"
                 while eurl:
                     r = await lookup_client.get(eurl)
@@ -362,12 +377,21 @@ async def _background_index(
                     content = doc.get("content", "")
                     if not content:
                         continue
-                    # Resolve tag/correspondent/doctype names for metadata
+                    # Resolve tag/correspondent/doctype/custom-field names for metadata
+                    raw_cfs = doc.get("custom_fields") or []
+                    custom_fields: dict[str, Any] = {}
+                    for cf_entry in raw_cfs:
+                        fid = cf_entry.get("field")
+                        val = cf_entry.get("value")
+                        name = cf_id_to_name.get(fid, "") if fid is not None else ""
+                        if name and val is not None:
+                            custom_fields[name] = val
                     meta = {
                         "title": doc.get("title", ""),
                         "tags": [tag_id_to_name.get(tid, "") for tid in doc_tags if tag_id_to_name.get(tid)],
                         "correspondent": corr_id_to_name.get(doc.get("correspondent") or 0, ""),
                         "document_type": dt_id_to_name.get(doc.get("document_type") or 0, ""),
+                        "custom_fields": custom_fields,
                     }
                     try:
                         await vector_store.upsert(doc_id, content, meta)
@@ -560,28 +584,138 @@ app = FastAPI(
     lifespan=lifespan,
 )
 
-# CORS — allow all origins for development
+# CORS — restrict to configured origins in production.
+# Set CORS_ALLOWED_ORIGINS to a comma-separated list of origins
+# (e.g. "https://piq.example.com") for production deployments.
+# Defaults to "*" for local dev / first-run convenience.
+_cors_origins_raw = os.environ.get("CORS_ALLOWED_ORIGINS", "*")
+_cors_origins = [o.strip() for o in _cors_origins_raw.split(",") if o.strip()]
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
-    allow_credentials=True,
+    allow_origins=_cors_origins,
+    allow_credentials=_cors_origins != ["*"],  # credentials + wildcard is invalid
     allow_methods=["*"],
     allow_headers=["*"],
 )
 
 
+_AUTH_EXEMPT_PATHS = {"/api/auth/login", "/api/auth/me", "/api/webhook/paperless"}
+
+
+async def _check_can_access(username: str) -> bool:
+    """Return True if *username* has at least can_access permission.
+
+    NG admins bypass individual flags when sync_ng_admins is enabled.
+    Called from middleware — uses a fresh session, not Depends.
+    """
+    config = _settings_svc.config
+    async with AsyncSessionLocal() as session:
+        result = await session.execute(
+            select(UserPermissionsORM).where(UserPermissionsORM.username == username)
+        )
+        perms = result.scalar_one_or_none()
+        if perms is None:
+            return False
+        if perms.ng_admin and config.sync_ng_admins:
+            return True
+        return bool(perms.can_access)
+
+
+def require_perm(*perms: str):
+    """Return a FastAPI dependency that checks one or more permission flags.
+
+    The user is granted access if ANY of the listed permissions is True,
+    or if they are an NG admin with sync_ng_admins enabled.
+    """
+    async def _dep(
+        request: Request,
+        session: AsyncSession = Depends(get_session),
+    ) -> None:
+        if not _is_auth_required():
+            return
+        username = getattr(request.state, "user", None)
+        if not username:
+            raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Not authenticated")
+        result = await session.execute(
+            select(UserPermissionsORM).where(UserPermissionsORM.username == username)
+        )
+        perms_row = result.scalar_one_or_none()
+        config = _settings_svc.config
+        if perms_row and perms_row.ng_admin and config.sync_ng_admins:
+            return
+        if perms_row and any(getattr(perms_row, p, False) for p in perms):
+            return
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail=f"Requires permission: {' or '.join(perms)}",
+        )
+    return _dep
+
+
+async def _upsert_user_permissions(username: str, is_ng_admin: bool) -> None:
+    """Create or update the user_permissions row for *username* after login.
+
+    When sync_ng_admins is enabled and the user is an NG admin, they are
+    automatically granted all permissions.  Existing explicit grants are never
+    downgraded — only ng_admin cache is refreshed for non-admin users.
+    """
+    config = _settings_svc.config
+    async with AsyncSessionLocal() as session:
+        result = await session.execute(
+            select(UserPermissionsORM).where(UserPermissionsORM.username == username)
+        )
+        perms = result.scalar_one_or_none()
+        now = datetime.now(timezone.utc)
+
+        if perms is None:
+            if is_ng_admin and config.sync_ng_admins:
+                perms = UserPermissionsORM(
+                    username=username, ng_admin=True,
+                    can_access=True, can_view_queue=True, can_approve=True,
+                    can_analyze=True, can_discover=True, can_settings=True,
+                    updated_at=now,
+                )
+            else:
+                perms = UserPermissionsORM(
+                    username=username, ng_admin=is_ng_admin, updated_at=now
+                )
+            session.add(perms)
+        else:
+            perms.ng_admin = is_ng_admin
+            perms.updated_at = now
+            # Auto-upgrade when a user gains NG admin status and sync is on
+            if is_ng_admin and config.sync_ng_admins and not perms.can_access:
+                perms.can_access = True
+                perms.can_view_queue = True
+                perms.can_approve = True
+                perms.can_analyze = True
+                perms.can_discover = True
+                perms.can_settings = True
+
+        await session.commit()
+
+
 @app.middleware("http")
 async def auth_middleware(request: Request, call_next):
-    """Auth middleware stub: protect all /api/* routes."""
-    if request.url.path.startswith("/api/"):
+    """Authenticate and check base access for all /api/* routes."""
+    path = request.url.path
+    if path.startswith("/api/") and path not in _AUTH_EXEMPT_PATHS:
         try:
             await require_auth(request)
-        except Exception as exc:
+        except Exception:
             return JSONResponse(
                 status_code=status.HTTP_401_UNAUTHORIZED,
                 content={"detail": "Authentication required"},
                 headers={"WWW-Authenticate": "Bearer"},
             )
+        # After valid token: check can_access (only when auth is enforced)
+        if _is_auth_required():
+            username = getattr(request.state, "user", None)
+            if username and not await _check_can_access(username):
+                return JSONResponse(
+                    status_code=status.HTTP_403_FORBIDDEN,
+                    content={"detail": "Access to Paperless IQ has not been granted for your account. Contact an administrator."},
+                )
     return await call_next(request)
 
 
@@ -619,19 +753,29 @@ class LoginBody(BaseModel):
 
 
 @app.post("/api/auth/login", tags=["auth"])
-async def login(body: LoginBody) -> dict:
+async def login(body: LoginBody, request: Request) -> dict:
     """Validate credentials against Paperless NGX and issue a session token.
 
     Returns ``{"token": "...", "user": "..."}`` on success.
     Returns HTTP 401 on invalid credentials.
-    Returns HTTP 503 if Paperless NGX is unreachable.
+    Returns HTTP 429 when the per-IP login rate limit is exceeded.
     """
-    ok = await validate_paperless_credentials(body.username, body.password)
+    client_ip = request.client.host if request.client else "unknown"
+    if not check_login_rate_limit(client_ip):
+        raise HTTPException(
+            status_code=status.HTTP_429_TOO_MANY_REQUESTS,
+            detail="Too many login attempts. Please wait a few minutes and try again.",
+        )
+
+    ok, _ng_token, is_ng_admin = await validate_paperless_credentials(body.username, body.password)
     if not ok:
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="Invalid username or password",
         )
+
+    await _upsert_user_permissions(body.username, is_ng_admin)
+
     token = create_session(body.username)
     return {"token": token, "user": body.username}
 
@@ -668,8 +812,6 @@ async def auth_me(request: Request) -> dict:
 
 class ApproveBody(BaseModel):
     edits: dict[str, Any] | None = None
-    merge_tags: bool = False
-    create_missing: bool = False
 
 
 class BulkIdsBody(BaseModel):
@@ -684,7 +826,8 @@ def _audit_service(session: Annotated[AsyncSession, Depends(get_session)]) -> Au
     return AuditLogService(session)
 
 
-@app.post("/api/queue", tags=["queue"], response_model=MetadataSuggestion)
+@app.post("/api/queue", tags=["queue"], response_model=MetadataSuggestion,
+          dependencies=[Depends(require_perm("can_analyze"))])
 async def enqueue_suggestion(
     suggestion: MetadataSuggestion,
     svc: Annotated[ApprovalQueueService, Depends(_queue_service)],
@@ -693,7 +836,8 @@ async def enqueue_suggestion(
     return await svc.enqueue(suggestion)
 
 
-@app.get("/api/queue", tags=["queue"])
+@app.get("/api/queue", tags=["queue"],
+         dependencies=[Depends(require_perm("can_view_queue", "can_approve"))])
 async def list_queue(
     svc: Annotated[ApprovalQueueService, Depends(_queue_service)],
     status: str | None = Query(default=None),
@@ -710,7 +854,8 @@ async def list_queue(
     }
 
 
-@app.post("/api/queue/{suggestion_id}/approve", tags=["queue"], response_model=MetadataSuggestion)
+@app.post("/api/queue/{suggestion_id}/approve", tags=["queue"], response_model=MetadataSuggestion,
+          dependencies=[Depends(require_perm("can_approve"))])
 async def approve_suggestion(
     suggestion_id: UUID,
     request: Request,
@@ -722,8 +867,8 @@ async def approve_suggestion(
         result = await svc.approve(
             suggestion_id,
             edits=body.edits,
-            merge_tags=body.merge_tags,
-            create_missing=body.create_missing,
+            merge_tags=False,    # frontend computes the complete final tag set
+            create_missing=True, # user reviewed and approved — always create missing entities
         )
     except ValueError as exc:
         raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(exc))
@@ -741,6 +886,7 @@ async def approve_suggestion(
                         "tags": result.tags,
                         "correspondent": result.correspondent or "",
                         "document_type": result.document_type or "",
+                        "custom_fields": result.custom_fields or {},
                     }
                     await vs.upsert(result.document_id, content, meta)
             except Exception:
@@ -750,7 +896,8 @@ async def approve_suggestion(
     return result
 
 
-@app.post("/api/queue/{suggestion_id}/reject", tags=["queue"], response_model=MetadataSuggestion)
+@app.post("/api/queue/{suggestion_id}/reject", tags=["queue"], response_model=MetadataSuggestion,
+          dependencies=[Depends(require_perm("can_approve"))])
 async def reject_suggestion(
     suggestion_id: UUID,
     svc: Annotated[ApprovalQueueService, Depends(_queue_service)],
@@ -762,7 +909,8 @@ async def reject_suggestion(
         raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(exc))
 
 
-@app.post("/api/queue/bulk-approve", tags=["queue"])
+@app.post("/api/queue/bulk-approve", tags=["queue"],
+          dependencies=[Depends(require_perm("can_approve"))])
 async def bulk_approve(
     body: BulkIdsBody,
     svc: Annotated[ApprovalQueueService, Depends(_queue_service)],
@@ -775,7 +923,8 @@ async def bulk_approve(
         raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(exc))
 
 
-@app.post("/api/queue/bulk-reject", tags=["queue"])
+@app.post("/api/queue/bulk-reject", tags=["queue"],
+          dependencies=[Depends(require_perm("can_approve"))])
 async def bulk_reject(
     body: BulkIdsBody,
     svc: Annotated[ApprovalQueueService, Depends(_queue_service)],
@@ -788,7 +937,8 @@ async def bulk_reject(
         raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(exc))
 
 
-@app.post("/api/queue/empty", tags=["queue"])
+@app.post("/api/queue/empty", tags=["queue"],
+          dependencies=[Depends(require_perm("can_approve"))])
 async def empty_queue(
     svc: Annotated[ApprovalQueueService, Depends(_queue_service)],
 ) -> dict:
@@ -804,7 +954,8 @@ async def empty_queue(
     return {"rejected_count": rejected}
 
 
-@app.get("/api/tracking/stats", tags=["queue"])
+@app.get("/api/tracking/stats", tags=["queue"],
+         dependencies=[Depends(require_perm("can_view_queue", "can_approve"))])
 async def tracking_stats(
     session: Annotated[AsyncSession, Depends(get_session)],
 ) -> dict:
@@ -821,7 +972,8 @@ async def tracking_stats(
     }
 
 
-@app.post("/api/tracking/reset", tags=["queue"])
+@app.post("/api/tracking/reset", tags=["queue"],
+          dependencies=[Depends(require_perm("can_settings"))])
 async def reset_tracking(
     session: Annotated[AsyncSession, Depends(get_session)],
 ) -> dict:
@@ -837,7 +989,8 @@ async def reset_tracking(
     return {"cleared": cleared}
 
 
-@app.post("/api/tracking/reset-rejected", tags=["queue"])
+@app.post("/api/tracking/reset-rejected", tags=["queue"],
+          dependencies=[Depends(require_perm("can_settings"))])
 async def reset_rejected(
     session: Annotated[AsyncSession, Depends(get_session)],
 ) -> dict:
@@ -875,7 +1028,8 @@ class ReanalyzeBody(BaseModel):
     suggestion_id: UUID
 
 
-@app.post("/api/queue/reanalyze", tags=["queue"])
+@app.post("/api/queue/reanalyze", tags=["queue"],
+          dependencies=[Depends(require_perm("can_analyze"))])
 async def reanalyze_queue_item(
     body: ReanalyzeBody,
     request: Request,
@@ -916,7 +1070,8 @@ async def reanalyze_queue_item(
     return enqueued.model_dump(mode="json")
 
 
-@app.post("/api/queue/reanalyze-all", tags=["queue"])
+@app.post("/api/queue/reanalyze-all", tags=["queue"],
+          dependencies=[Depends(require_perm("can_analyze"))])
 async def reanalyze_all_queue(
     request: Request,
     svc: Annotated[ApprovalQueueService, Depends(_queue_service)],
@@ -1070,7 +1225,8 @@ async def query_audit_log(
 # ---------------------------------------------------------------------------
 
 
-@app.get("/api/search", tags=["search"])
+@app.get("/api/search", tags=["search"],
+         dependencies=[Depends(require_perm("can_discover"))])
 async def semantic_search(
     request: Request,
     q: str = Query(..., min_length=1, description="Natural language query"),
@@ -1197,7 +1353,8 @@ class DiscoverBody(BaseModel):
 # Discovery session management
 # ---------------------------------------------------------------------------
 
-@app.post("/api/discover/sessions", tags=["search"])
+@app.post("/api/discover/sessions", tags=["search"],
+          dependencies=[Depends(require_perm("can_discover"))])
 async def create_discover_session() -> dict:
     """Create a new Discovery conversation session and return its ID."""
     async with AsyncSessionLocal() as db:
@@ -1208,7 +1365,8 @@ async def create_discover_session() -> dict:
     return {"session_id": session.id}
 
 
-@app.delete("/api/discover/sessions/{session_id}", tags=["search"])
+@app.delete("/api/discover/sessions/{session_id}", tags=["search"],
+            dependencies=[Depends(require_perm("can_discover"))])
 async def delete_discover_session(session_id: str, request: Request) -> dict:
     """Close a Discovery session: extract long-term memories, then delete."""
     config = _settings_svc.config
@@ -1241,7 +1399,8 @@ class MemoryUpdateBody(BaseModel):
     text: str
 
 
-@app.get("/api/memories", tags=["memory"])
+@app.get("/api/memories", tags=["memory"],
+         dependencies=[Depends(require_perm("can_discover"))])
 async def list_memories(
     db: Annotated[AsyncSession, Depends(get_session)],
 ) -> list[dict]:
@@ -1259,7 +1418,8 @@ async def list_memories(
     ]
 
 
-@app.put("/api/memories/{memory_id}", tags=["memory"])
+@app.put("/api/memories/{memory_id}", tags=["memory"],
+         dependencies=[Depends(require_perm("can_discover"))])
 async def update_memory(
     memory_id: str,
     body: MemoryUpdateBody,
@@ -1285,7 +1445,8 @@ async def update_memory(
     return {"id": memory_id, "text": body.text.strip()}
 
 
-@app.delete("/api/memories/{memory_id}", tags=["memory"])
+@app.delete("/api/memories/{memory_id}", tags=["memory"],
+            dependencies=[Depends(require_perm("can_discover"))])
 async def delete_memory(
     memory_id: str,
     request: Request,
@@ -1303,7 +1464,8 @@ async def delete_memory(
     return {"deleted": memory_id}
 
 
-@app.delete("/api/memories", tags=["memory"])
+@app.delete("/api/memories", tags=["memory"],
+            dependencies=[Depends(require_perm("can_discover"))])
 async def clear_all_memories(
     request: Request,
     db: Annotated[AsyncSession, Depends(get_session)],
@@ -1324,7 +1486,8 @@ async def clear_all_memories(
 # Document discovery (RAG)
 # ---------------------------------------------------------------------------
 
-@app.post("/api/discover", tags=["search"])
+@app.post("/api/discover", tags=["search"],
+          dependencies=[Depends(require_perm("can_discover"))])
 async def discover(body: DiscoverBody, request: Request) -> dict:
     """RAG-powered document discovery: find relevant docs and answer the question.
 
@@ -1409,6 +1572,8 @@ async def discover(body: DiscoverBody, request: Request) -> dict:
                 "Search query:"
             )
             reformulated = (await provider.complete(rewrite_prompt, 60)).strip()
+            # Strip markdown formatting that some models add (**, *, ", #, etc.)
+            reformulated = reformulated.strip('*"`#_ \t\n').strip("'")
             if reformulated and len(reformulated) <= 300:
                 search_question = reformulated
                 logger.info("Discovery: reformulated query %r → %r", body.question, search_question)
@@ -1416,12 +1581,26 @@ async def discover(body: DiscoverBody, request: Request) -> dict:
             logger.warning("Discovery: query reformulation failed, using original", exc_info=True)
 
     try:
-        # Get raw chunks for richer context (multiple chunks per document possible)
-        chunks = await vs.query_chunks(search_question, body.top_n * 3)
-        # Also get grouped results for the source list
-        results = await vs.query(search_question, body.top_n)
+        # Fetch more candidates than needed — score filtering will reduce them.
+        chunks = await vs.query_chunks(search_question, body.top_n * 4)
+        results = await vs.query(search_question, body.top_n * 2)
     except Exception as exc:
         raise HTTPException(status_code=500, detail=f"Vector search failed: {exc}")
+
+    # ── Relevance threshold ──────────────────────────────────────────────────
+    # ChromaDB cosine distance ∈ [0, 1] for text → score = 1 - distance/2 ∈ [0.5, 1.0].
+    # 0.60 ≈ cosine_similarity 0.2 — the minimum topical overlap worth sending to the LLM.
+    _MIN_SCORE = 0.60
+    chunks = [c for c in chunks if c["score"] >= _MIN_SCORE]
+    results = [r for r in results if r.score >= _MIN_SCORE]
+    # Deduplicate results to top_n after filtering (query fetched 2× as many)
+    results = results[:body.top_n]
+    logger.info(
+        "Discovery: score filter %.2f → %d chunks, %d source docs",
+        _MIN_SCORE, len(chunks), len(results),
+    )
+    for r in results:
+        logger.info("  source doc: id=%d score=%.3f title=%r", r.document_id, r.score, r.document_title)
 
     if not results:
         lang = (config.target_language or "").strip()
@@ -1448,9 +1627,12 @@ async def discover(body: DiscoverBody, request: Request) -> dict:
             return public_base + url[len(internal_base):]
         return url
 
-    # Build numbered context from the best chunks (may include multiple from same doc)
+    # Build numbered context from the best chunks (may include multiple from same doc).
+    # seen_doc_ids tracks insertion order — citation [N] always refers to seen_doc_ids[N-1].
     context_parts: list[str] = []
-    seen_doc_ids: list[int] = []  # track order for source numbering
+    seen_doc_ids: list[int] = []
+    # Best chunk per document (for snippet and score in the sources panel)
+    best_chunk_per_doc: dict[int, dict] = {}
     for chunk in chunks[:body.top_n * 2]:
         doc_id = chunk["document_id"]
         passage = chunk["passage"] or ""
@@ -1458,18 +1640,23 @@ async def discover(body: DiscoverBody, request: Request) -> dict:
             continue
         if doc_id not in seen_doc_ids:
             seen_doc_ids.append(doc_id)
+        # Keep the highest-scoring chunk per doc for the sources panel
+        if doc_id not in best_chunk_per_doc or chunk["score"] > best_chunk_per_doc[doc_id]["score"]:
+            best_chunk_per_doc[doc_id] = chunk
         cite_n = seen_doc_ids.index(doc_id) + 1
         context_parts.append(f"[{cite_n}] {chunk['title']} (ID {doc_id})\n{passage}")
 
-    # Build source list (grouped by document, with longer passages for UI display)
+    # Build source list in citation order so [1] → sources[0], [2] → sources[1], etc.
+    # This guarantees the panel always has exactly as many entries as the highest citation number.
     sources: list[dict] = []
-    for r in results:
+    for doc_id in seen_doc_ids:
+        info = best_chunk_per_doc[doc_id]
         sources.append({
-            "document_id": r.document_id,
-            "title": r.document_title,
-            "score": round(r.score, 3),
-            "deeplink_url": _public_deeplink(r.deeplink_url),
-            "snippet": (r.passage or "")[:1500],
+            "document_id": doc_id,
+            "title": info.get("title", ""),
+            "score": round(info.get("score", 0.0), 3),
+            "deeplink_url": _public_deeplink(info.get("deeplink_url", "")),
+            "snippet": (info.get("passage", ""))[:1500],
         })
 
     context = "\n\n".join(context_parts)
@@ -1521,6 +1708,11 @@ async def discover(body: DiscoverBody, request: Request) -> dict:
         raise HTTPException(status_code=500, detail=f"LLM call failed: {exc}")
 
     # ── Persist session ──────────────────────────────────────────────────────
+    # Auto-create a session ID on the first turn so memory extraction works
+    # even when the frontend didn't explicitly create a session upfront.
+    if session_id is None:
+        session_id = str(uuid4())
+
     if session_id is not None:
         new_turns: list[dict[str, str]] = [
             *stored_turns,
@@ -1598,7 +1790,8 @@ class AnalyzeBody(BaseModel):
     mode: str | None = None
 
 
-@app.post("/api/analyze", tags=["analyze"])
+@app.post("/api/analyze", tags=["analyze"],
+          dependencies=[Depends(require_perm("can_analyze"))])
 async def manual_analyze(body: AnalyzeBody, request: Request) -> dict:
     """Trigger manual analysis for a single document with optional overrides.
 
@@ -1790,11 +1983,14 @@ async def test_paperless_connection() -> JSONResponse:
         ) as client:
             resp = await client.get(f"{paperless_url.rstrip('/')}/api/")
             resp.raise_for_status()
-            data = resp.json()
-            version = data.get("version") or data.get("paperless_version")
             result: dict[str, str] = {"status": "ok"}
-            if version:
-                result["version"] = str(version)
+            try:
+                data = resp.json()
+                version = data.get("version") or data.get("paperless_version")
+                if version:
+                    result["version"] = str(version)
+            except Exception:
+                pass  # 200 OK but non-JSON body — connection is fine, version unknown
             return JSONResponse(content=result)
     except httpx.HTTPStatusError as exc:
         detail = f"Paperless NGX returned HTTP {exc.response.status_code}"
@@ -1812,13 +2008,15 @@ async def test_paperless_connection() -> JSONResponse:
 # ---------------------------------------------------------------------------
 
 
-@app.get("/api/settings", tags=["settings"])
+@app.get("/api/settings", tags=["settings"],
+         dependencies=[Depends(require_perm("can_settings"))])
 async def get_settings() -> dict:
     """Return current settings with credentials masked."""
     return _settings_svc.get_masked()
 
 
-@app.put("/api/settings", tags=["settings"])
+@app.put("/api/settings", tags=["settings"],
+         dependencies=[Depends(require_perm("can_settings"))])
 async def update_settings(request: Request, body: dict[str, Any] = Body(...)) -> dict:
     """Update settings with validation.
 
@@ -1939,13 +2137,15 @@ async def update_settings(request: Request, body: dict[str, Any] = Body(...)) ->
 # ---------------------------------------------------------------------------
 
 
-@app.get("/api/config/export", tags=["config"])
+@app.get("/api/config/export", tags=["config"],
+         dependencies=[Depends(require_perm("can_settings"))])
 async def export_config() -> dict:
     """Export configuration as JSON with credentials redacted."""
     return _settings_svc.export_config()
 
 
-@app.post("/api/config/import", tags=["config"])
+@app.post("/api/config/import", tags=["config"],
+          dependencies=[Depends(require_perm("can_settings"))])
 async def import_config(body: dict[str, Any] = Body(...)) -> dict:
     """Import configuration, skipping unknown/invalid fields."""
     summary = _settings_svc.import_config(body)
@@ -1958,7 +2158,8 @@ class TranslatePromptBody(BaseModel):
     target_language: str
 
 
-@app.post("/api/translate-prompt", tags=["config"])
+@app.post("/api/translate-prompt", tags=["config"],
+          dependencies=[Depends(require_perm("can_settings"))])
 async def translate_prompt(body: TranslatePromptBody, request: Request) -> dict:
     """Translate a prompt template to the target language using the configured LLM."""
     providers = getattr(request.app.state, "providers", None)
@@ -2065,20 +2266,29 @@ async def get_status(request: Request) -> dict:
         except Exception:
             pass
 
-    return {
+    is_authed = bool(getattr(request.state, "user", None)) or not _is_auth_required()
+
+    base: dict[str, Any] = {
         "llm_online": llm_online,
         "embed_online": embed_online,
-        "queue_pending": pending_count,
-        "queue_processing": processing_count,
-        "embedded_chunks": embedded_count,
-        "total_documents": total_eligible,
-        "processing": queue.processing_status if queue else {},
-        "paperless_url": os.getenv("PAPERLESS_URL", ""),
-        "paperless_public_url": _settings_svc.config.paperless_public_url or os.getenv("PAPERLESS_URL", ""),
     }
 
+    if is_authed:
+        base.update({
+            "queue_pending": pending_count,
+            "queue_processing": processing_count,
+            "embedded_chunks": embedded_count,
+            "total_documents": total_eligible,
+            "processing": queue.processing_status if queue else {},
+            "paperless_url": os.getenv("PAPERLESS_URL", ""),
+            "paperless_public_url": _settings_svc.config.paperless_public_url or os.getenv("PAPERLESS_URL", ""),
+        })
 
-@app.post("/api/reindex", tags=["system"])
+    return base
+
+
+@app.post("/api/reindex", tags=["system"],
+          dependencies=[Depends(require_perm("can_settings"))])
 async def trigger_reindex(request: Request) -> dict:
     """Wipe the vector store and re-embed all documents from scratch.
 
@@ -2097,6 +2307,331 @@ async def trigger_reindex(request: Request) -> dict:
     oq = getattr(request.app.state, "ollama_queue", None)
     asyncio.create_task(_background_index(pc, vs, config, oq))
     return {"detail": "Vector store cleared. Full reindex started in the background."}
+
+
+# ---------------------------------------------------------------------------
+# Webhook: Paperless NGX live re-index on document update
+# ---------------------------------------------------------------------------
+
+_PAPERLESS_IQ_WORKFLOW_NAME = "Paperless IQ — Live Reindex"
+
+
+async def _reindex_document(doc_id: int, vs: ChromaVectorStore, pc: PaperlessNGXClient) -> None:
+    """Fetch current document metadata from Paperless NGX and upsert into the vector store."""
+    base = pc._base_url
+    headers = pc._headers
+
+    async with httpx.AsyncClient(headers=headers, timeout=30) as client:
+        # Fetch entity name lookups
+        tag_id_to_name: dict[int, str] = {}
+        corr_id_to_name: dict[int, str] = {}
+        dt_id_to_name: dict[int, str] = {}
+        cf_id_to_name: dict[int, str] = {}
+        for entity, lookup in [
+            ("tags", tag_id_to_name),
+            ("correspondents", corr_id_to_name),
+            ("document_types", dt_id_to_name),
+            ("custom_fields", cf_id_to_name),
+        ]:
+            url: str | None = f"{base}/api/{entity}/?page_size=200"
+            while url:
+                r = await client.get(url)
+                if r.status_code != 200:
+                    break
+                d = r.json()
+                for item in d.get("results", []):
+                    lookup[item["id"]] = item.get("name", "")
+                url = d.get("next")
+
+        # Fetch document metadata
+        r = await client.get(f"{base}/api/documents/{doc_id}/")
+        if r.status_code != 200:
+            logger.warning("Webhook reindex: document %d not found (HTTP %d).", doc_id, r.status_code)
+            return
+        doc = r.json()
+
+    content = doc.get("content", "")
+    if not content:
+        logger.info("Webhook reindex: document %d has no OCR content, skipping.", doc_id)
+        return
+
+    doc_tags = doc.get("tags", [])
+    raw_cfs = doc.get("custom_fields") or []
+    custom_fields: dict[str, Any] = {}
+    for cf_entry in raw_cfs:
+        fid = cf_entry.get("field")
+        val = cf_entry.get("value")
+        name = cf_id_to_name.get(fid, "") if fid is not None else ""
+        if name and val is not None:
+            custom_fields[name] = val
+    meta = {
+        "title": doc.get("title", ""),
+        "tags": [tag_id_to_name.get(tid, "") for tid in doc_tags if tag_id_to_name.get(tid)],
+        "correspondent": corr_id_to_name.get(doc.get("correspondent") or 0, ""),
+        "document_type": dt_id_to_name.get(doc.get("document_type") or 0, ""),
+        "custom_fields": custom_fields,
+    }
+    await vs.upsert(doc_id, content, meta)
+    logger.info("Webhook reindex: document %d re-indexed.", doc_id)
+
+
+@app.post("/api/webhook/register", tags=["system"],
+          dependencies=[Depends(require_perm("can_settings"))])
+async def register_webhook(request: Request) -> dict:
+    """Create or update the 'Paperless IQ — Live Reindex' workflow in Paperless NGX.
+
+    Idempotent: if a workflow with that exact name already exists it is updated
+    with the current callback URL; otherwise a new one is created.
+    """
+    pc: PaperlessNGXClient | None = getattr(request.app.state, "paperless_client", None)
+    if not pc:
+        raise HTTPException(status_code=503, detail="Paperless NGX client not available.")
+
+    config = _settings_svc.config
+    base_url = (
+        config.paperless_iq_internal_url.rstrip("/")
+        if config.paperless_iq_internal_url
+        else str(request.base_url).rstrip("/")
+    )
+    callback_url = f"{base_url}/api/webhook/paperless"
+
+    paperless_base = pc._base_url
+    headers = {**pc._headers, "Content-Type": "application/json"}
+
+    async with httpx.AsyncClient(headers=headers, timeout=15) as client:
+        # Fetch existing workflows to check for duplicates
+        r = await client.get(f"{paperless_base}/api/workflows/?page_size=100")
+        if r.status_code != 200:
+            raise HTTPException(
+                status_code=502,
+                detail=f"Could not list Paperless NGX workflows: HTTP {r.status_code}",
+            )
+        existing = r.json().get("results", [])
+        existing_wf: dict | None = next(
+            (w for w in existing if w.get("name") == _PAPERLESS_IQ_WORKFLOW_NAME),
+            None,
+        )
+        existing_id: int | None = existing_wf["id"] if existing_wf else None
+
+        # When updating, preserve existing trigger/action IDs so Paperless NGX
+        # patches in place rather than deleting and recreating them.
+        triggers: list[dict] = [
+            {"type": 2, "sources": [1, 2, 3]},  # document_added
+            {"type": 3, "sources": [1, 2, 3]},  # document_updated
+        ]
+        actions: list[dict] = [
+            {
+                "type": 4,
+                "webhook": {
+                    "url": callback_url,
+                    "include_document": False,
+                    "use_params": False,
+                    "as_json": True,
+                },
+            }
+        ]
+        if existing_wf:
+            # Thread existing IDs back in so Paperless updates rather than recreates
+            for i, t in enumerate(existing_wf.get("triggers", [])):
+                if i < len(triggers) and t.get("id"):
+                    triggers[i]["id"] = t["id"]
+            for i, a in enumerate(existing_wf.get("actions", [])):
+                if i < len(actions) and a.get("id"):
+                    actions[i]["id"] = a["id"]
+                    # Also preserve the existing webhook sub-object ID
+                    existing_webhook = a.get("webhook") or {}
+                    if existing_webhook.get("id"):
+                        actions[i]["webhook"]["id"] = existing_webhook["id"]
+
+        payload = {
+            "name": _PAPERLESS_IQ_WORKFLOW_NAME,
+            "order": 100,
+            "enabled": True,
+            "triggers": triggers,
+            "actions": actions,
+        }
+
+        if existing_id is not None:
+            r = await client.put(
+                f"{paperless_base}/api/workflows/{existing_id}/",
+                json=payload,
+            )
+            verb = "updated"
+        else:
+            r = await client.post(f"{paperless_base}/api/workflows/", json=payload)
+            verb = "created"
+
+        if r.status_code not in (200, 201):
+            raise HTTPException(
+                status_code=502,
+                detail=f"Paperless NGX workflow {verb} failed: HTTP {r.status_code} — {r.text[:300]}",
+            )
+
+    logger.info(
+        "Webhook workflow %s (callback: %s).", verb, callback_url
+    )
+    return {"detail": f"Workflow '{_PAPERLESS_IQ_WORKFLOW_NAME}' {verb}.", "callback_url": callback_url}
+
+
+@app.post("/api/webhook/paperless", tags=["system"])
+async def paperless_webhook(request: Request) -> dict:
+    """Receive a Paperless NGX webhook and re-index the affected document.
+
+    This endpoint is intentionally unauthenticated so Paperless NGX can call it
+    without a Paperless IQ session token.  Set WEBHOOK_SECRET in the environment
+    and configure Paperless NGX to send it as X-Webhook-Secret to secure this
+    endpoint.
+    """
+    if not check_webhook_secret(request):
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Invalid or missing webhook secret.",
+        )
+
+    vs: ChromaVectorStore | None = getattr(request.app.state, "vector_store", None)
+    pc: PaperlessNGXClient | None = getattr(request.app.state, "paperless_client", None)
+    if not vs or not pc:
+        # Respond 200 so Paperless NGX doesn't keep retrying
+        return {"detail": "Vector store not available; skipped."}
+
+    try:
+        body = await request.json()
+    except Exception:
+        return {"detail": "Invalid JSON; skipped."}
+
+    doc_id = body.get("document_id") or body.get("id")
+    if not doc_id:
+        logger.warning("Webhook received but no document_id in payload: %s", body)
+        return {"detail": "No document_id; skipped."}
+
+    asyncio.create_task(_reindex_document(int(doc_id), vs, pc))
+    return {"detail": f"Reindex of document {doc_id} queued."}
+
+
+# ---------------------------------------------------------------------------
+# User permissions management (/api/piq-users)
+# ---------------------------------------------------------------------------
+
+@app.get("/api/piq-users/me", tags=["users"])
+async def get_my_permissions(request: Request) -> dict:
+    """Return the effective permissions for the currently authenticated user.
+
+    When auth is not required (no PAPERLESS_URL), returns a fully-permissive
+    response so unauthenticated dev mode works without front-end guards.
+    """
+    if not _is_auth_required():
+        return {
+            "username": "anonymous",
+            "ng_admin": True,
+            "can_access": True,
+            "can_view_queue": True,
+            "can_approve": True,
+            "can_analyze": True,
+            "can_discover": True,
+            "can_settings": True,
+        }
+
+    username = getattr(request.state, "user", None)
+    if not username:
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Not authenticated")
+
+    async with AsyncSessionLocal() as db:
+        row = await db.get(UserPermissionsORM, username)
+        if row is None:
+            return {
+                "username": username,
+                "ng_admin": False,
+                "can_access": False,
+                "can_view_queue": False,
+                "can_approve": False,
+                "can_analyze": False,
+                "can_discover": False,
+                "can_settings": False,
+            }
+        config = _settings_svc.config
+        effective_all = row.ng_admin and config.sync_ng_admins
+        return {
+            "username": row.username,
+            "ng_admin": row.ng_admin,
+            "can_access": effective_all or row.can_access,
+            "can_view_queue": effective_all or row.can_view_queue,
+            "can_approve": effective_all or row.can_approve,
+            "can_analyze": effective_all or row.can_analyze,
+            "can_discover": effective_all or row.can_discover,
+            "can_settings": effective_all or row.can_settings,
+        }
+
+
+@app.get("/api/piq-users", tags=["users"],
+         dependencies=[Depends(require_perm("can_settings"))])
+async def list_piq_users(
+    session: AsyncSession = Depends(get_session),
+) -> list[dict]:
+    """List all user permission records."""
+    result = await session.execute(select(UserPermissionsORM))
+    rows = result.scalars().all()
+    config = _settings_svc.config
+    out = []
+    for row in rows:
+        effective_all = row.ng_admin and config.sync_ng_admins
+        out.append({
+            "username": row.username,
+            "ng_admin": row.ng_admin,
+            "can_access": effective_all or row.can_access,
+            "can_view_queue": effective_all or row.can_view_queue,
+            "can_approve": effective_all or row.can_approve,
+            "can_analyze": effective_all or row.can_analyze,
+            "can_discover": effective_all or row.can_discover,
+            "can_settings": effective_all or row.can_settings,
+            "updated_at": row.updated_at.isoformat() if row.updated_at else None,
+        })
+    return out
+
+
+class PiqUserUpdate(BaseModel):
+    can_access: bool = False
+    can_view_queue: bool = False
+    can_approve: bool = False
+    can_analyze: bool = False
+    can_discover: bool = False
+    can_settings: bool = False
+
+
+@app.put("/api/piq-users/{username}", tags=["users"],
+         dependencies=[Depends(require_perm("can_settings"))])
+async def update_piq_user(
+    username: str,
+    body: PiqUserUpdate,
+    session: AsyncSession = Depends(get_session),
+) -> dict:
+    """Update permission flags for an existing user."""
+    row = await session.get(UserPermissionsORM, username)
+    if row is None:
+        raise HTTPException(status_code=404, detail=f"User '{username}' not found.")
+    row.can_access = body.can_access
+    row.can_view_queue = body.can_view_queue
+    row.can_approve = body.can_approve
+    row.can_analyze = body.can_analyze
+    row.can_discover = body.can_discover
+    row.can_settings = body.can_settings
+    row.updated_at = datetime.now(timezone.utc)
+    await session.commit()
+    return {"detail": f"Permissions updated for '{username}'."}
+
+
+@app.delete("/api/piq-users/{username}", tags=["users"],
+            dependencies=[Depends(require_perm("can_settings"))])
+async def delete_piq_user(
+    username: str,
+    session: AsyncSession = Depends(get_session),
+) -> dict:
+    """Delete a user's permission record (they will be denied all access on next login)."""
+    row = await session.get(UserPermissionsORM, username)
+    if row is None:
+        raise HTTPException(status_code=404, detail=f"User '{username}' not found.")
+    await session.delete(row)
+    await session.commit()
+    return {"detail": f"Permission record for '{username}' deleted."}
 
 
 # ---------------------------------------------------------------------------
@@ -2134,6 +2669,8 @@ async def get_theme() -> dict:
         "nav_icons": config.theme_nav_icons,
         "ui_language": config.ui_language,
         "chip_color": config.theme_chip_color,
+        "mantine_color": config.mantine_color,
+        "color_scheme": config.color_scheme,
     }
 
 

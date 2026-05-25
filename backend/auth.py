@@ -1,11 +1,14 @@
-"""Authentication for Paperless IQ.
+"""Authentication and access-control helpers for Paperless IQ.
 
 Session tokens are HMAC-SHA256 signed and self-contained — they survive
 restarts because validity is verified by recomputing the signature, not by
 looking up server-side state.
 
 Auth flow:
-  POST /api/auth/login  → validate creds against Paperless NGX /api/token/
+  POST /api/auth/login  → rate-limit check
+                          → validate creds against Paperless NGX /api/token/
+                          → check NG admin status via user's token
+                          → upsert user_permissions row
                           → issue a signed 7-day session token
   GET  /api/auth/me     → return {user, auth_required}
   POST /api/auth/logout → revoke the current token (in-memory; clears on restart)
@@ -36,6 +39,11 @@ TOKEN_TTL_SECONDS = 7 * 24 * 3600  # 7 days
 # In-memory revocation set (JTIs only).  Cleared on restart — acceptable
 # because tokens expire after 7 days anyway.
 _REVOKED: set[str] = set()
+
+# Login rate limiter: max 10 attempts per IP within a 5-minute window.
+_LOGIN_WINDOW = 300  # seconds
+_LOGIN_MAX = 10
+_LOGIN_ATTEMPTS: dict[str, tuple[int, float]] = {}  # ip → (count, window_start)
 
 
 # ---------------------------------------------------------------------------
@@ -104,32 +112,103 @@ def revoke_session(token: str) -> None:
 
 
 # ---------------------------------------------------------------------------
-# Paperless NGX credential validation
+# Login rate limiting
 # ---------------------------------------------------------------------------
 
-async def validate_paperless_credentials(username: str, password: str) -> bool:
-    """Return True if (username, password) are valid Paperless NGX credentials.
+def check_login_rate_limit(ip: str) -> bool:
+    """Return True if *ip* is allowed to attempt login.
 
-    Calls POST {PAPERLESS_URL}/api/token/ — the standard DRF token endpoint.
-    Returns False if PAPERLESS_URL is not configured.
+    Allows up to _LOGIN_MAX attempts per _LOGIN_WINDOW seconds per IP.
+    Old entries are lazily evicted when the window expires.
+    """
+    now = time.time()
+    count, window_start = _LOGIN_ATTEMPTS.get(ip, (0, now))
+    if now - window_start > _LOGIN_WINDOW:
+        # Window expired — reset
+        _LOGIN_ATTEMPTS[ip] = (1, now)
+        return True
+    if count >= _LOGIN_MAX:
+        return False
+    _LOGIN_ATTEMPTS[ip] = (count + 1, window_start)
+    return True
+
+
+# ---------------------------------------------------------------------------
+# Webhook secret
+# ---------------------------------------------------------------------------
+
+def check_webhook_secret(request: Request) -> bool:
+    """Return True if the webhook secret header matches WEBHOOK_SECRET.
+
+    When WEBHOOK_SECRET is not set, all requests are accepted (backwards compat).
+    """
+    expected = os.environ.get("WEBHOOK_SECRET", "")
+    if not expected:
+        return True
+    provided = request.headers.get("X-Webhook-Secret", "")
+    return hmac.compare_digest(expected, provided)
+
+
+# ---------------------------------------------------------------------------
+# Paperless NGX credential validation + admin check
+# ---------------------------------------------------------------------------
+
+async def check_ng_admin_status(paperless_url: str, user_token: str, username: str) -> bool:
+    """Return True if *username* is a Paperless NGX superuser or staff member.
+
+    Uses the user's own token to call GET /api/users/ — this endpoint returns
+    403 for non-admin accounts, so a 200 response with matching user data
+    confirms admin status without requiring the service token.
+    """
+    try:
+        async with httpx.AsyncClient(timeout=5) as client:
+            resp = await client.get(
+                f"{paperless_url.rstrip('/')}/api/users/",
+                params={"username": username},
+                headers={"Authorization": f"Token {user_token}"},
+            )
+            if resp.status_code != 200:
+                return False
+            data = resp.json()
+            for u in data.get("results", []):
+                if u.get("username") == username:
+                    return bool(u.get("is_staff") or u.get("is_superuser"))
+            return False
+    except Exception:
+        logger.warning("Could not check NG admin status for %s", username, exc_info=True)
+        return False
+
+
+async def validate_paperless_credentials(
+    username: str, password: str
+) -> tuple[bool, str, bool]:
+    """Validate credentials against Paperless NGX.
+
+    Returns ``(valid, paperless_token, is_ng_admin)``.
+    ``paperless_token`` is the short-lived token issued by Paperless — it is
+    used only for the admin check and is never stored.
     """
     paperless_url = os.environ.get("PAPERLESS_URL", "").rstrip("/")
     if not paperless_url:
-        return False
+        return False, "", False
     try:
         async with httpx.AsyncClient(timeout=10) as client:
             resp = await client.post(
                 f"{paperless_url}/api/token/",
                 json={"username": username, "password": password},
             )
-            return resp.status_code == 200
+            if resp.status_code != 200:
+                return False, "", False
+            ng_token = resp.json().get("token", "")
+            is_admin = await check_ng_admin_status(paperless_url, ng_token, username)
+            return True, ng_token, is_admin
     except Exception:
         logger.warning(
             "Could not reach Paperless NGX at %s to validate credentials.",
             paperless_url,
             exc_info=True,
         )
-        return False
+        return False, "", False
 
 
 # ---------------------------------------------------------------------------

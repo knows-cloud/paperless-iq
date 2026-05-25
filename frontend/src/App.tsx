@@ -1,4 +1,9 @@
 import { useState, useEffect } from "react";
+import {
+  AppShell, Burger, NavLink, Text, Group, Box, Button,
+  useMantineColorScheme,
+} from "@mantine/core";
+import { useDisclosure } from "@mantine/hooks";
 import { useTheme } from "./ThemeProvider";
 import StatusPanel from "./StatusPanel";
 import { t } from "./i18n";
@@ -10,18 +15,20 @@ import DiscoveryPage from "./pages/DiscoveryPage";
 import ProcessingPage from "./pages/ProcessingPage";
 import LoginPage from "./pages/LoginPage";
 import { api, clearStoredToken } from "./api";
+import type { UserPermissions } from "./api";
+import { PermissionsContext } from "./PermissionsContext";
 
 type Page = "manual" | "queue" | "discovery" | "processing" | "audit" | "settings";
 
 const VALID_PAGES: Set<string> = new Set(["manual", "queue", "discovery", "processing", "audit", "settings"]);
 
 const NAV_ITEMS: Array<{ id: Page; labelKey: string; defaultIcon: string }> = [
-  { id: "manual",     labelKey: "nav.analysis",       defaultIcon: "🔍" },
-  { id: "queue",      labelKey: "nav.queue",           defaultIcon: "📋" },
-  { id: "discovery",  labelKey: "nav.discovery",       defaultIcon: "💬" },
-  { id: "processing", labelKey: "nav.processing",      defaultIcon: "⚡" },
-  { id: "audit",      labelKey: "nav.audit",           defaultIcon: "📜" },
-  { id: "settings",   labelKey: "nav.settings",        defaultIcon: "⚙️" },
+  { id: "manual",     labelKey: "nav.analysis",   defaultIcon: "🔍" },
+  { id: "queue",      labelKey: "nav.queue",       defaultIcon: "📋" },
+  { id: "discovery",  labelKey: "nav.discovery",   defaultIcon: "💬" },
+  { id: "processing", labelKey: "nav.processing",  defaultIcon: "⚡" },
+  { id: "audit",      labelKey: "nav.audit",       defaultIcon: "📜" },
+  { id: "settings",   labelKey: "nav.settings",    defaultIcon: "⚙️" },
 ];
 
 function getPageFromHash(): Page {
@@ -31,18 +38,24 @@ function getPageFromHash(): Page {
 
 export default function App() {
   const [page, setPage] = useState<Page>(getPageFromHash);
-  const [sidebarOpen, setSidebarOpen] = useState(false);
+  const [mobileOpened, { toggle: toggleMobile, close: closeMobile }] = useDisclosure();
   const theme = useTheme();
+  const { colorScheme } = useMantineColorScheme();
 
-  // Auth state
   const [authChecked, setAuthChecked] = useState(false);
   const [authRequired, setAuthRequired] = useState(false);
   const [authUser, setAuthUser] = useState<string | null>(null);
+  const [permissions, setPermissions] = useState<UserPermissions | null>(null);
 
-  // Check auth on mount; retry until the backend responds.
-  // A failed getMe() (e.g. backend still starting) must NOT open the app —
-  // that would cause StatusPanel to poll /api/status without a token, filling
-  // the container log with 401s forever.
+  async function loadPermissions() {
+    try {
+      const p = await api.getMyPermissions();
+      setPermissions(p);
+    } catch {
+      setPermissions(null);
+    }
+  }
+
   useEffect(() => {
     let cancelled = false;
 
@@ -54,10 +67,12 @@ export default function App() {
           setAuthRequired(me.auth_required);
           setAuthUser(me.user);
           setAuthChecked(true);
-          return; // success — stop retrying
+          if (me.user || !me.auth_required) {
+            await loadPermissions();
+          }
+          return;
         } catch {
           if (cancelled) return;
-          // Backend not ready yet — wait 2 s then retry
           await new Promise(r => setTimeout(r, 2000));
         }
       }
@@ -65,10 +80,9 @@ export default function App() {
 
     checkAuth();
 
-    // On logout (401 from any API call), re-run the auth check so the
-    // login page appears without requiring a full page reload.
     const handleLogout = () => {
       setAuthUser(null);
+      setPermissions(null);
       setAuthChecked(false);
       checkAuth();
     };
@@ -88,12 +102,8 @@ export default function App() {
   const navigate = (p: Page) => {
     window.location.hash = p;
     setPage(p);
-    setSidebarOpen(false);
+    closeMobile();
   };
-
-  function handleLogin(user: string) {
-    setAuthUser(user);
-  }
 
   async function handleLogout() {
     try { await api.logout(); } catch { /* ignore */ }
@@ -101,92 +111,132 @@ export default function App() {
     setAuthUser(null);
   }
 
-  // Wait for the initial auth check before rendering anything
-  if (!authChecked) {
-    return null;
+  if (!authChecked) return null;
+
+  if (authRequired && !authUser) {
+    return (
+      <LoginPage
+        onLogin={async user => {
+          setAuthUser(user);
+          await loadPermissions();
+        }}
+      />
+    );
   }
 
-  // Show login page when auth is required and the user is not logged in
-  if (authRequired && !authUser) {
-    return <LoginPage onLogin={handleLogin} />;
+  const perms: UserPermissions = permissions ?? {
+    username: authUser ?? "",
+    ng_admin: false,
+    can_access: true,
+    can_view_queue: true,
+    can_approve: true,
+    can_analyze: true,
+    can_discover: true,
+    can_settings: true,
+  };
+
+  function canViewPage(id: Page): boolean {
+    if (!authRequired) return true;
+    switch (id) {
+      case "manual":     return perms.can_analyze;
+      case "queue":      return perms.can_view_queue || perms.can_approve;
+      case "discovery":  return perms.can_discover;
+      case "processing": return perms.can_analyze || perms.can_settings;
+      case "audit":      return perms.can_access;
+      case "settings":   return perms.can_settings;
+      default:           return false;
+    }
   }
+
+  const navbarBg = colorScheme === "dark" ? "dark.8" : "gray.0";
 
   return (
-    <div className="app-layout">
-      {/* Hamburger — fixed top-left, visible on mobile only */}
-      <button
-        className="sidebar-toggle"
-        onClick={() => setSidebarOpen(o => !o)}
-        aria-label="Toggle navigation"
-      >
-        {sidebarOpen ? "✕" : "☰"}
-      </button>
+    <AppShell
+      header={{ height: { base: 50, sm: 0 } }}
+      navbar={{ width: 240, breakpoint: "sm", collapsed: { mobile: !mobileOpened } }}
+      padding={0}
+    >
+      {/* Mobile burger — only visible below sm breakpoint */}
+      <AppShell.Header hiddenFrom="sm" h={50} px="md" style={{ display: "flex", alignItems: "center" }}>
+        <Group>
+          <Burger opened={mobileOpened} onClick={toggleMobile} size="sm" />
+          <Text fw={700} size="sm">Paperless IQ</Text>
+        </Group>
+      </AppShell.Header>
 
-      {/* Semi-transparent backdrop — tapping it closes the drawer */}
-      <div
-        className={`sidebar-overlay${sidebarOpen ? " sidebar--open" : ""}`}
-        onClick={() => setSidebarOpen(false)}
-      />
-
-      <aside className={`sidebar${sidebarOpen ? " sidebar--open" : ""}`}>
-        <div className="sidebar-header">
-          {theme.logo && (
-            <img src={`/logos/${theme.logo}`} alt="Paperless IQ"
-              style={{ width: "40px", height: "40px", borderRadius: "8px", marginBottom: "0.5rem", objectFit: "contain" }} />
-          )}
-          <h1>{t("app.title")}</h1>
-          <div className="subtitle">{t("app.subtitle")}</div>
-        </div>
-        <StatusPanel />
-        <nav className="sidebar-nav">
-          {NAV_ITEMS.map(item => (
-            <a key={item.id} href={`#${item.id}`}
-              className={page === item.id ? "active" : ""}
-              onClick={e => { e.preventDefault(); navigate(item.id); }}>
-              <span className="nav-icon">{theme.nav_icons[item.id] ?? item.defaultIcon}</span>
-              {t(item.labelKey)}
-            </a>
-          ))}
-        </nav>
-
-        {/* Logout button — only shown when auth is active */}
-        {authRequired && authUser && (
-          <div style={{ marginTop: "auto", padding: "1rem 0.75rem 0.5rem" }}>
-            <div style={{
-              fontSize: "0.75rem",
-              color: "var(--text-on-sidebar-muted)",
-              marginBottom: "0.4rem",
-              paddingLeft: "0.25rem",
-            }}>
-              {t("app.signedInAs")} <strong style={{ color: "var(--text-on-sidebar)" }}>{authUser}</strong>
+      <AppShell.Navbar bg={navbarBg} withBorder>
+        {/* Brand */}
+        <Box p="md" pb="xs">
+          <Group gap="sm" wrap="nowrap">
+            {theme.logo && (
+              <img
+                src={`/logos/${theme.logo}`}
+                alt="Paperless IQ"
+                style={{ width: 36, height: 36, borderRadius: 8, objectFit: "contain", flexShrink: 0 }}
+              />
+            )}
+            <div>
+              <Text fw={700} size="sm" lh={1.2}>{t("app.title")}</Text>
+              <Text size="xs" c="dimmed" lh={1.2}>{t("app.subtitle")}</Text>
             </div>
-            <button
+          </Group>
+        </Box>
+
+        <StatusPanel />
+
+        {/* Nav items */}
+        <Box p="xs" style={{ flex: 1 }}>
+          {NAV_ITEMS.filter(item => canViewPage(item.id)).map(item => (
+            <NavLink
+              key={item.id}
+              href={`#${item.id}`}
+              label={t(item.labelKey)}
+              leftSection={
+                <span style={{ fontSize: "1rem", lineHeight: 1 }}>
+                  {theme.nav_icons[item.id] ?? item.defaultIcon}
+                </span>
+              }
+              active={page === item.id}
+              variant="light"
+              color="teal"
+              styles={{ root: { borderRadius: "var(--mantine-radius-sm)", marginBottom: 2 } }}
+              onClick={e => { e.preventDefault(); navigate(item.id); }}
+            />
+          ))}
+        </Box>
+
+        {/* Signed-in user + logout */}
+        {authRequired && authUser && (
+          <Box p="md" pt="xs" style={{ borderTop: "1px solid var(--mantine-color-default-border)" }}>
+            <Text size="xs" c="dimmed" mb={6}>
+              {t("app.signedInAs")} <Text span fw={600} c="var(--mantine-color-text)">{authUser}</Text>
+            </Text>
+            <Button
+              variant="subtle"
+              color="red"
+              size="xs"
+              fullWidth
+              justify="left"
               onClick={handleLogout}
-              style={{
-                width: "100%",
-                padding: "0.5rem 0.75rem",
-                borderRadius: "8px",
-                border: "1px solid var(--sidebar-divider)",
-                background: "transparent",
-                color: "var(--text-on-sidebar-muted)",
-                fontSize: "0.85rem",
-                cursor: "pointer",
-                textAlign: "left",
-              }}
             >
               🚪 {t("app.signOut")}
-            </button>
-          </div>
+            </Button>
+          </Box>
         )}
-      </aside>
-      <main className="main-content">
-        {page === "manual" && <ManualPage />}
-        {page === "queue" && <QueuePage />}
-        {page === "discovery" && <DiscoveryPage />}
-        {page === "processing" && <ProcessingPage />}
-        {page === "audit" && <AuditPage />}
-        {page === "settings" && <SettingsPage />}
-      </main>
-    </div>
+      </AppShell.Navbar>
+
+      <AppShell.Main>
+        <Box p="xl" maw={1100}>
+          <PermissionsContext.Provider value={perms}>
+            {page === "manual"     && canViewPage("manual")     && <ManualPage />}
+            {page === "queue"      && canViewPage("queue")      && <QueuePage />}
+            {page === "discovery"  && canViewPage("discovery")  && <DiscoveryPage />}
+            {page === "processing" && canViewPage("processing") && <ProcessingPage />}
+            {page === "audit"      && canViewPage("audit")      && <AuditPage />}
+            {page === "settings"   && canViewPage("settings")   && <SettingsPage />}
+          </PermissionsContext.Provider>
+        </Box>
+      </AppShell.Main>
+    </AppShell>
   );
 }

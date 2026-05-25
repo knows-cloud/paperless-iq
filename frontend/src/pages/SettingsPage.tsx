@@ -1,5 +1,6 @@
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
-import { useState, useEffect, useRef } from "react";
+import { useState, useEffect } from "react";
+import { Title, Stack, Group, Button, Text, Tabs, Center, Loader, Alert } from "@mantine/core";
 import { api, type PaperlessEntity, type PaperlessCustomField, type ConnectionTestResult } from "../api";
 import { t } from "../i18n";
 import { ConnectionTab } from "./settings/ConnectionTab";
@@ -9,9 +10,10 @@ import { MetadataRulesTab } from "./settings/MetadataRulesTab";
 import { AutomationTab } from "./settings/AutomationTab";
 import { AppearanceTab } from "./settings/AppearanceTab";
 import { MemoriesTab, type MemoryItem } from "./settings/MemoriesTab";
+import { AccessControlTab } from "./settings/AccessControlTab";
 import { METADATA_FIELDS, LLM_MODEL_DEFAULTS, EMBED_MODEL_DEFAULTS } from "./settings/constants";
 
-type SettingsTab = "connection" | "aiProvider" | "promptsFields" | "metadataRules" | "automation" | "appearance" | "memories";
+type SettingsTab = "connection" | "aiProvider" | "promptsFields" | "metadataRules" | "automation" | "appearance" | "memories" | "accessControl";
 
 const SETTINGS_TABS: Array<{ id: SettingsTab; label: string }> = [
   { id: "connection",    label: "Connection" },
@@ -20,7 +22,8 @@ const SETTINGS_TABS: Array<{ id: SettingsTab; label: string }> = [
   { id: "metadataRules", label: "Metadata Rules" },
   { id: "automation",    label: "Automation" },
   { id: "appearance",    label: "Appearance" },
-  { id: "memories",      label: "💡 Memories" },
+  { id: "memories",      label: "Memories" },
+  { id: "accessControl", label: "Access Control" },
 ];
 
 export default function SettingsPage() {
@@ -35,12 +38,12 @@ export default function SettingsPage() {
 
   // Connection tab
   const [paperlessPublicUrl, setPaperlessPublicUrl] = useState("");
+  const [paperlessIqInternalUrl, setPaperlessIqInternalUrl] = useState("");
   const [inboxTagId, setInboxTagId] = useState("");
-  const [tagSearch, setTagSearch] = useState("");
-  const [showTagDropdown, setShowTagDropdown] = useState(false);
   const [connectionTestResult, setConnectionTestResult] = useState<ConnectionTestResult | null>(null);
   const [testingConnection, setTestingConnection] = useState(false);
-  const tagDropdownRef = useRef<HTMLDivElement>(null);
+  const [webhookResult, setWebhookResult] = useState<{ ok: boolean; detail: string } | null>(null);
+  const [registeringWebhook, setRegisteringWebhook] = useState(false);
 
   // AI Provider tab
   const [selectedProvider, setSelectedProvider] = useState("");
@@ -60,20 +63,19 @@ export default function SettingsPage() {
   const [fieldDescs, setFieldDescs] = useState<Record<string, string>>({});
   const [selectedCustomFields, setSelectedCustomFields] = useState<number[]>([]);
 
-  // Appearance tab
-  const [themePrimary, setThemePrimary] = useState("#1a7288");
-  const [themeSidebarFrom, setThemeSidebarFrom] = useState("#0a3344");
-  const [themeSidebarTo, setThemeSidebarTo] = useState("#0e4458");
+  // Appearance tab (Mantine-based)
+  const [mantineColor, setMantineColor] = useState("teal");
+  const [colorScheme, setColorScheme] = useState("dark");
   const [themeFont, setThemeFont] = useState("Roboto");
   const [themeFontSize, setThemeFontSize] = useState("14px");
-  const [themeTextColor, setThemeTextColor] = useState("#2d3239");
-  const [themeBgColor, setThemeBgColor] = useState("#f8f9fb");
-  const [themeCardColor, setThemeCardColor] = useState("#ffffff");
-  const [themeCardAltHex, setThemeCardAltHex] = useState("#1a7288");
-  const [themeCardAltOpacity, setThemeCardAltOpacity] = useState(12);
-  const [themeChipColor, setThemeChipColor] = useState("");
   const [themeLogo, setThemeLogo] = useState("iq_1.png");
   const [themeNavIcons, setThemeNavIcons] = useState<Record<string, string>>({});
+
+  // Access control / maintenance tab
+  const [reindexing, setReindexing] = useState(false);
+  const [resettingTracking, setResettingTracking] = useState(false);
+  const [resettingRejected, setResettingRejected] = useState(false);
+  const [maintenanceMsg, setMaintenanceMsg] = useState<string | null>(null);
 
   // Memories tab
   const [memoryEnabled, setMemoryEnabled] = useState(true);
@@ -83,7 +85,6 @@ export default function SettingsPage() {
   const [editMemoryText, setEditMemoryText] = useState("");
   const [clearMemoriesConfirm, setClearMemoriesConfirm] = useState(false);
 
-  // Unused-by-form-but-kept state (per-field / per-doctype prompt templates)
   const [perFieldPrompts, setPerFieldPrompts] = useState<Record<string, string>>({});
   const [perDoctypePrompts, setPerDoctypePrompts] = useState<Record<string, string>>({});
 
@@ -108,7 +109,7 @@ export default function SettingsPage() {
     setSelectedEmbedProvider(embedProv);
     setOllamaUrl(String(s.ollama_url ?? "http://localhost:11434"));
     if (prov === "bedrock") {
-      if (s.bedrock_region)       setBedrockRegion(String(s.bedrock_region));
+      if (s.bedrock_region)        setBedrockRegion(String(s.bedrock_region));
       if (s.bedrock_access_key_id) setBedrockAccessKeyId(String(s.bedrock_access_key_id));
     }
 
@@ -122,6 +123,7 @@ export default function SettingsPage() {
 
     setPromptText(String(s.global_prompt_template ?? ""));
     setPaperlessPublicUrl(String(s.paperless_public_url ?? ""));
+    setPaperlessIqInternalUrl(String(s.paperless_iq_internal_url ?? ""));
     setPerFieldPrompts((s.per_field_prompt_templates as Record<string, string>) ?? {});
     setPerDoctypePrompts(
       Object.fromEntries(
@@ -129,17 +131,10 @@ export default function SettingsPage() {
       )
     );
 
-    setThemePrimary(String(s.theme_primary_color ?? "#1a7288"));
-    setThemeSidebarFrom(String(s.theme_sidebar_from ?? "#0a3344"));
-    setThemeSidebarTo(String(s.theme_sidebar_to ?? "#0e4458"));
+    setMantineColor(String(s.mantine_color ?? "teal"));
+    setColorScheme(String(s.color_scheme ?? "dark"));
     setThemeFont(String(s.theme_font ?? "Roboto"));
     setThemeFontSize(String(s.theme_font_size ?? "14px"));
-    setThemeTextColor(String(s.theme_text_color ?? "#2d3239"));
-    setThemeBgColor(String(s.theme_bg_color ?? "#f8f9fb"));
-    setThemeCardColor(String(s.theme_card_color ?? "#ffffff"));
-    setThemeCardAltHex(String(s.theme_card_alt_hex ?? "#1a7288"));
-    setThemeCardAltOpacity(Number(s.theme_card_alt_opacity ?? 12));
-    setThemeChipColor(String(s.theme_chip_color ?? ""));
     setThemeLogo(String(s.theme_logo ?? "iq_1.png"));
     setThemeNavIcons((s.theme_nav_icons as Record<string, string>) ?? {});
     setMemoryEnabled(s.memory_enabled !== false);
@@ -154,17 +149,6 @@ export default function SettingsPage() {
       .catch(() => {})
       .finally(() => setMemoriesLoading(false));
   }, [settingsTab]);
-
-  // ── Close tag dropdown on outside click ───────────────────────────────────
-  useEffect(() => {
-    const handler = (e: MouseEvent) => {
-      if (tagDropdownRef.current && !tagDropdownRef.current.contains(e.target as Node)) {
-        setShowTagDropdown(false);
-      }
-    };
-    document.addEventListener("mousedown", handler);
-    return () => document.removeEventListener("mousedown", handler);
-  }, []);
 
   // ── Mutations ──────────────────────────────────────────────────────────────
   const mutation = useMutation({
@@ -184,6 +168,52 @@ export default function SettingsPage() {
     onError:   (e: Error) => { setConnectionTestResult({ status: "error", detail: e.message }); setTestingConnection(false); },
   });
 
+  const registerWebhookMutation = useMutation({
+    mutationFn: api.registerWebhook,
+    onMutate:  () => { setRegisteringWebhook(true); setWebhookResult(null); },
+    onSuccess: (data) => { setWebhookResult({ ok: true, detail: data.detail }); setRegisteringWebhook(false); },
+    onError:   (e: Error) => { setWebhookResult({ ok: false, detail: e.message }); setRegisteringWebhook(false); },
+  });
+
+  async function handleReindex() {
+    setReindexing(true);
+    setMaintenanceMsg(null);
+    try {
+      const r = await api.triggerReindex();
+      setMaintenanceMsg(r.detail);
+    } catch (e: unknown) {
+      setMaintenanceMsg((e as Error).message);
+    } finally {
+      setReindexing(false);
+    }
+  }
+
+  async function handleResetTracking() {
+    setResettingTracking(true);
+    setMaintenanceMsg(null);
+    try {
+      const r = await api.resetTracking();
+      setMaintenanceMsg(`Tracking reset — ${r.cleared} records cleared.`);
+    } catch (e: unknown) {
+      setMaintenanceMsg((e as Error).message);
+    } finally {
+      setResettingTracking(false);
+    }
+  }
+
+  async function handleResetRejected() {
+    setResettingRejected(true);
+    setMaintenanceMsg(null);
+    try {
+      const r = await api.resetRejected();
+      setMaintenanceMsg(`Reset complete — ${r.deleted_suggestions} suggestions deleted, ${r.cleared_tracking} tracking records cleared.`);
+    } catch (e: unknown) {
+      setMaintenanceMsg((e as Error).message);
+    } finally {
+      setResettingRejected(false);
+    }
+  }
+
   // ── Form submit ────────────────────────────────────────────────────────────
   const handleSubmit = (e: React.FormEvent<HTMLFormElement>) => {
     e.preventDefault();
@@ -201,14 +231,17 @@ export default function SettingsPage() {
     if (fd.has("frequency_fallback_count")) values.frequency_fallback_count = Number(values.frequency_fallback_count);
 
     if (settingsTab === "automation") {
-      values.auto_apply          = fd.get("auto_apply") === "on";
-      values.automation_enabled  = fd.get("automation_enabled") === "on";
+      values.auto_apply         = fd.get("auto_apply") === "on";
+      values.automation_enabled = fd.get("automation_enabled") === "on";
     }
     if (settingsTab === "metadataRules") {
       values.smart_entity_selection = fd.get("smart_entity_selection") === "on";
     }
     if (settingsTab === "memories") {
       values.memory_enabled = memoryEnabled;
+    }
+    if (settingsTab === "accessControl") {
+      values.sync_ng_admins = fd.get("sync_ng_admins") === "on";
     }
 
     for (const key of ["schedule_cron", "bedrock_kb_id", "target_language"]) {
@@ -236,8 +269,8 @@ export default function SettingsPage() {
       delete values.llm_credentials;
     }
 
-    values.ollama_url      = ollamaUrl.trim() || "http://localhost:11434";
-    values.embed_provider  = selectedEmbedProvider;
+    values.ollama_url     = ollamaUrl.trim() || "http://localhost:11434";
+    values.embed_provider = selectedEmbedProvider;
 
     // Field descriptions — always from React state
     const allDescs: Record<string, string> = {};
@@ -265,23 +298,18 @@ export default function SettingsPage() {
     }
     values.per_doctype_prompt_templates = pdtTemplates;
 
-    values.global_prompt_template = promptText;
-    values.paperless_public_url   = paperlessPublicUrl.trim() || null;
-    values.inbox_tag_id           = inboxTagId ? Number(inboxTagId) : null;
+    values.global_prompt_template     = promptText;
+    values.paperless_public_url       = paperlessPublicUrl.trim() || null;
+    values.paperless_iq_internal_url  = paperlessIqInternalUrl.trim();
+    values.inbox_tag_id               = inboxTagId ? Number(inboxTagId) : null;
 
-    values.theme_primary_color   = themePrimary;
-    values.theme_sidebar_from    = themeSidebarFrom;
-    values.theme_sidebar_to      = themeSidebarTo;
-    values.theme_font            = themeFont;
-    values.theme_font_size       = themeFontSize;
-    values.theme_text_color      = themeTextColor;
-    values.theme_bg_color        = themeBgColor;
-    values.theme_card_color      = themeCardColor;
-    values.theme_card_alt_hex    = themeCardAltHex;
-    values.theme_card_alt_opacity = themeCardAltOpacity;
-    values.theme_chip_color      = themeChipColor;
-    values.theme_logo            = themeLogo;
-    values.theme_nav_icons       = themeNavIcons;
+    // Mantine-based theme — always from React state
+    values.mantine_color  = mantineColor;
+    values.color_scheme   = colorScheme;
+    values.theme_font     = themeFont;
+    values.theme_font_size = themeFontSize;
+    values.theme_logo     = themeLogo;
+    values.theme_nav_icons = themeNavIcons;
 
     setMsg("");
     mutation.mutate(values);
@@ -293,66 +321,52 @@ export default function SettingsPage() {
     );
   };
 
-  if (isLoading) return <p>Loading settings…</p>;
-  if (error)     return <p className="error">Failed to load settings.</p>;
+  if (isLoading) return <Center h={200}><Loader /></Center>;
+  if (error)     return <Alert color="red" variant="light">Failed to load settings.</Alert>;
   if (!s)        return null;
 
-  const cfList   = (customFields.data ?? []) as PaperlessCustomField[];
-  const tagList  = (tags.data ?? []) as PaperlessEntity[];
+  const cfList    = (customFields.data ?? []) as PaperlessCustomField[];
+  const tagList   = (tags.data ?? []) as PaperlessEntity[];
   const logoNames = (logos.data ?? []) as string[];
 
-  const tabBtnStyle = (id: string): React.CSSProperties => ({
-    display: "block", width: "100%", textAlign: "left",
-    padding: "0.5rem 0.75rem", marginBottom: "2px",
-    background: settingsTab === id ? "var(--sidebar-hover-bg, rgba(0,0,0,0.06))" : "transparent",
-    border: "none",
-    borderLeft: settingsTab === id ? "3px solid var(--petrol-600)" : "3px solid transparent",
-    color: settingsTab === id ? "var(--text-on-body)" : "var(--text-on-body-secondary, var(--gray-600))",
-    fontWeight: settingsTab === id ? 600 : 400,
-    fontSize: "0.85rem", cursor: "pointer",
-    borderRadius: "0 var(--radius-sm) var(--radius-sm) 0",
-  });
-
   return (
-    <div>
-      <h2>{t("nav.settings")}</h2>
-      <form onSubmit={handleSubmit} style={{ display: "flex", gap: "1.5rem" }}>
+    <form onSubmit={handleSubmit}>
+      <Stack gap="md">
+        <Group justify="space-between" align="center">
+          <Title order={2}>{t("nav.settings")}</Title>
+          <Group gap="sm" align="center">
+            <Button type="submit" loading={mutation.isPending}>{t("settings.save")}</Button>
+            {msg && <Text size="sm" c={mutation.isError ? "red" : "teal"}>{msg}</Text>}
+          </Group>
+        </Group>
 
-        {/* ── Tab sidebar ── */}
-        <div style={{ minWidth: "160px", flexShrink: 0 }}>
-          {SETTINGS_TABS.map(tab => (
-            <button key={tab.id} type="button" onClick={() => setSettingsTab(tab.id)} style={tabBtnStyle(tab.id)}>
-              {tab.label}
-            </button>
-          ))}
-          <div style={{ marginTop: "1rem" }}>
-            <button type="submit" className="btn btn-primary" style={{ width: "100%" }}>{t("settings.save")}</button>
-            {msg && <p className={mutation.isError ? "error" : "success"} style={{ marginTop: "0.5rem", fontSize: "0.8rem" }}>{msg}</p>}
-          </div>
-        </div>
+        <Tabs variant="pills" value={settingsTab} onChange={v => setSettingsTab(v as SettingsTab)}>
+          <Tabs.List mb="md">
+            {SETTINGS_TABS.map(tab => (
+              <Tabs.Tab key={tab.id} value={tab.id}>{tab.label}</Tabs.Tab>
+            ))}
+          </Tabs.List>
 
-        {/* ── Tab content ── */}
-        <div style={{ flex: 1, minWidth: 0 }}>
-          {settingsTab === "connection" && (
+          <Tabs.Panel value="connection" keepMounted={false}>
             <ConnectionTab
               paperlessPublicUrl={paperlessPublicUrl}
               setPaperlessPublicUrl={setPaperlessPublicUrl}
+              paperlessIqInternalUrl={paperlessIqInternalUrl}
+              setPaperlessIqInternalUrl={setPaperlessIqInternalUrl}
               inboxTagId={inboxTagId}
               setInboxTagId={setInboxTagId}
-              tagSearch={tagSearch}
-              setTagSearch={setTagSearch}
-              showTagDropdown={showTagDropdown}
-              setShowTagDropdown={setShowTagDropdown}
-              tagDropdownRef={tagDropdownRef}
               tagList={tagList}
               tagsError={tags.isError}
               connectionTestResult={connectionTestResult}
               testingConnection={testingConnection}
               onTestConnection={() => connectionTestMutation.mutate()}
+              webhookResult={webhookResult}
+              registeringWebhook={registeringWebhook}
+              onRegisterWebhook={() => registerWebhookMutation.mutate()}
             />
-          )}
+          </Tabs.Panel>
 
-          {settingsTab === "aiProvider" && (
+          <Tabs.Panel value="aiProvider" keepMounted={false}>
             <AIProviderTab
               s={s}
               selectedProvider={selectedProvider}
@@ -374,9 +388,9 @@ export default function SettingsPage() {
               bedrockSessionToken={bedrockSessionToken}
               setBedrockSessionToken={setBedrockSessionToken}
             />
-          )}
+          </Tabs.Panel>
 
-          {settingsTab === "promptsFields" && (
+          <Tabs.Panel value="promptsFields" keepMounted={false}>
             <PromptsFieldsTab
               s={s}
               promptText={promptText}
@@ -392,37 +406,23 @@ export default function SettingsPage() {
               cfList={cfList}
               customFieldsIsError={customFields.isError}
             />
-          )}
+          </Tabs.Panel>
 
-          {settingsTab === "metadataRules" && (
+          <Tabs.Panel value="metadataRules" keepMounted={false}>
             <MetadataRulesTab s={s} />
-          )}
+          </Tabs.Panel>
 
-          {settingsTab === "automation" && (
+          <Tabs.Panel value="automation" keepMounted={false}>
             <AutomationTab s={s} />
-          )}
+          </Tabs.Panel>
 
-          {settingsTab === "appearance" && (
+          <Tabs.Panel value="appearance" keepMounted={false}>
             <AppearanceTab
               s={s}
-              themePrimary={themePrimary}
-              setThemePrimary={setThemePrimary}
-              themeTextColor={themeTextColor}
-              setThemeTextColor={setThemeTextColor}
-              themeChipColor={themeChipColor}
-              setThemeChipColor={setThemeChipColor}
-              themeSidebarFrom={themeSidebarFrom}
-              setThemeSidebarFrom={setThemeSidebarFrom}
-              themeSidebarTo={themeSidebarTo}
-              setThemeSidebarTo={setThemeSidebarTo}
-              themeBgColor={themeBgColor}
-              setThemeBgColor={setThemeBgColor}
-              themeCardColor={themeCardColor}
-              setThemeCardColor={setThemeCardColor}
-              themeCardAltHex={themeCardAltHex}
-              setThemeCardAltHex={setThemeCardAltHex}
-              themeCardAltOpacity={themeCardAltOpacity}
-              setThemeCardAltOpacity={setThemeCardAltOpacity}
+              mantineColor={mantineColor}
+              setMantineColor={setMantineColor}
+              colorScheme={colorScheme}
+              setColorScheme={setColorScheme}
               themeFont={themeFont}
               setThemeFont={setThemeFont}
               themeFontSize={themeFontSize}
@@ -433,9 +433,9 @@ export default function SettingsPage() {
               setThemeNavIcons={setThemeNavIcons}
               logoNames={logoNames}
             />
-          )}
+          </Tabs.Panel>
 
-          {settingsTab === "memories" && (
+          <Tabs.Panel value="memories" keepMounted={false}>
             <MemoriesTab
               memoryEnabled={memoryEnabled}
               setMemoryEnabled={setMemoryEnabled}
@@ -449,9 +449,22 @@ export default function SettingsPage() {
               clearMemoriesConfirm={clearMemoriesConfirm}
               setClearMemoriesConfirm={setClearMemoriesConfirm}
             />
-          )}
-        </div>
-      </form>
-    </div>
+          </Tabs.Panel>
+
+          <Tabs.Panel value="accessControl" keepMounted={false}>
+            <AccessControlTab
+              s={s}
+              onReindex={handleReindex}
+              reindexing={reindexing}
+              onResetTracking={handleResetTracking}
+              resettingTracking={resettingTracking}
+              onResetRejected={handleResetRejected}
+              resettingRejected={resettingRejected}
+              maintenanceMsg={maintenanceMsg}
+            />
+          </Tabs.Panel>
+        </Tabs>
+      </Stack>
+    </form>
   );
 }
