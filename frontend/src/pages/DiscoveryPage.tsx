@@ -1,5 +1,10 @@
 import { useState, useRef, useEffect, useCallback } from "react";
 import { useQuery } from "@tanstack/react-query";
+import {
+  Title, Text, Group, Box, Button, Paper, Badge, ActionIcon,
+  Anchor, Textarea, Loader, Stack, Drawer,
+} from "@mantine/core";
+import { useDisclosure, useMediaQuery } from "@mantine/hooks";
 import { api } from "../api";
 import { t } from "../i18n";
 import { MarkdownText, Source } from "../components/MarkdownText";
@@ -11,10 +16,6 @@ interface Message {
   loading?: boolean;
   error?: string;
 }
-
-// ---------------------------------------------------------------------------
-// Suggested queries
-// ---------------------------------------------------------------------------
 
 const SUGGESTED_QUERIES = [
   "What contracts are currently active and when do they expire?",
@@ -29,138 +30,87 @@ const SUGGESTED_QUERIES = [
 // Source card (right panel)
 // ---------------------------------------------------------------------------
 
-function SourceCard({
-  src,
-  index,
-  highlighted,
-}: {
-  src: Source;
-  index: number;
-  highlighted: boolean;
-}) {
+function SourceCard({ src, index, highlighted }: { src: Source; index: number; highlighted: boolean }) {
   const [expanded, setExpanded] = useState(false);
   const PREVIEW = 220;
   const needsTruncation = src.snippet.length > PREVIEW;
   const displayText = expanded || !needsTruncation ? src.snippet : src.snippet.slice(0, PREVIEW) + "…";
-  const scoreVar = src.score > 0.75 ? "high" : src.score > 0.5 ? "med" : "low";
+  const scoreColor = src.score > 0.75 ? "teal" : src.score > 0.5 ? "yellow" : "gray";
 
   return (
-    <div
+    <Paper
       id={`source-${index + 1}`}
+      withBorder
+      p="sm"
+      radius="md"
+      mb="sm"
       style={{
-        background: highlighted ? "var(--chat-accent-bg)" : "var(--chat-source-bg)",
-        border: `1px solid ${highlighted ? "var(--chat-accent-border)" : "var(--chat-source-border)"}`,
-        borderRadius: "12px",
-        padding: "0.75rem",
-        marginBottom: "0.5rem",
         transition: "background 0.3s, border-color 0.3s",
+        ...(highlighted ? {
+          background: "var(--mantine-color-teal-light)",
+          borderColor: "var(--mantine-color-teal-3)",
+        } : {}),
       }}
     >
-      {/* Header */}
-      <div style={{ display: "flex", gap: "0.5rem", alignItems: "flex-start", marginBottom: "0.4rem" }}>
-        {/* Number badge */}
-        <span style={{
-          background: "var(--chat-number-bg)",
-          color: "var(--chat-number-text)",
-          borderRadius: "50%",
-          width: "20px", height: "20px", minWidth: "20px",
-          display: "flex", alignItems: "center", justifyContent: "center",
-          fontSize: "0.65rem", fontWeight: 700, marginTop: "2px",
-        }}>
+      <Group gap="xs" align="flex-start" wrap="nowrap">
+        <Box
+          style={{
+            background: "var(--mantine-color-teal-6)",
+            color: "white",
+            borderRadius: "50%",
+            width: 20, height: 20, minWidth: 20,
+            display: "flex", alignItems: "center", justifyContent: "center",
+            fontSize: "0.65rem", fontWeight: 700, flexShrink: 0, marginTop: 2,
+          }}
+        >
           {index + 1}
-        </span>
+        </Box>
 
-        <div style={{ flex: 1, minWidth: 0 }}>
-          {/* Title */}
-          <p style={{
-            margin: 0,
-            fontWeight: 600,
-            fontSize: "0.83rem",
-            color: "var(--text-on-body)",
-            lineHeight: 1.35,
-            wordBreak: "break-word",
-          }}>
+        <Box style={{ flex: 1, minWidth: 0 }}>
+          <Text size="sm" fw={600} mb={4} style={{ wordBreak: "break-word", lineHeight: 1.35 }}>
             {src.title || `Document #${src.document_id}`}
-          </p>
-          {/* ID chip + score + open */}
-          <div style={{ display: "flex", alignItems: "center", gap: "0.35rem", marginTop: "0.3rem", flexWrap: "wrap" }}>
-            <span style={{
-              fontSize: "0.68rem",
-              color: "var(--text-on-body-secondary)",
-              background: "var(--chat-passage-bg)",
-              border: "1px solid var(--chat-divider)",
-              borderRadius: "4px",
-              padding: "1px 5px",
-              fontFamily: "monospace",
-              flexShrink: 0,
-            }}>
-              #{src.document_id}
-            </span>
-            <span style={{
-              fontSize: "0.68rem",
-              color: `var(--score-${scoreVar}-text)`,
-              background: `var(--score-${scoreVar}-bg)`,
-              border: `1px solid var(--score-${scoreVar}-border)`,
-              borderRadius: "10px",
-              padding: "1px 6px",
-              fontWeight: 600,
-              flexShrink: 0,
-            }}>
-              {Math.round(src.score * 100)}%
-            </span>
-            <a
-              href={src.deeplink_url}
-              target="_blank"
-              rel="noopener noreferrer"
-              style={{
-                fontSize: "0.68rem",
-                color: "var(--chat-accent-text)",
-                textDecoration: "none",
-                fontWeight: 500,
-                flexShrink: 0,
-                marginLeft: "auto",
-              }}
-            >
-              Open ↗
-            </a>
-          </div>
-        </div>
-      </div>
+          </Text>
 
-      {/* Passage */}
-      {src.snippet && (
-        <div style={{
-          marginTop: "0.35rem",
-          padding: "0.45rem 0.6rem",
-          background: "var(--chat-passage-bg)",
-          borderRadius: "6px",
-          borderLeft: "2px solid var(--chat-passage-border)",
-        }}>
-          <p style={{
-            margin: 0,
-            fontSize: "0.76rem",
-            color: "var(--text-on-body-secondary)",
-            lineHeight: 1.55,
-            whiteSpace: "pre-wrap",
-          }}>
-            {displayText}
-          </p>
-          {needsTruncation && (
-            <button
-              onClick={() => setExpanded(e => !e)}
+          <Group gap={6} wrap="wrap">
+            <Badge size="xs" variant="outline" color="gray" style={{ fontFamily: "monospace" }}>
+              #{src.document_id}
+            </Badge>
+            <Badge size="xs" color={scoreColor} variant="light">
+              {Math.round(src.score * 100)}%
+            </Badge>
+            <Anchor href={src.deeplink_url} target="_blank" rel="noopener noreferrer" size="xs" ml="auto">
+              Open ↗
+            </Anchor>
+          </Group>
+
+          {src.snippet && (
+            <Box
+              mt="xs"
+              p="xs"
               style={{
-                marginTop: "0.3rem",
-                background: "none", border: "none",
-                color: "var(--chat-accent-text)",
-                fontSize: "0.72rem", cursor: "pointer", padding: 0, fontWeight: 500,
+                background: "var(--mantine-color-default-hover)",
+                borderRadius: "var(--mantine-radius-sm)",
+                borderLeft: "2px solid var(--mantine-color-teal-4)",
               }}
             >
-              {expanded ? "▲ Less" : `▼ +${src.snippet.length - PREVIEW} chars`}
-            </button>
+              <Text size="xs" c="dimmed" style={{ whiteSpace: "pre-wrap", lineHeight: 1.55 }}>
+                {displayText}
+              </Text>
+              {needsTruncation && (
+                <Anchor
+                  component="button"
+                  size="xs"
+                  mt={4}
+                  onClick={() => setExpanded(e => !e)}
+                >
+                  {expanded ? "▲ Less" : `▼ +${src.snippet.length - PREVIEW} chars`}
+                </Anchor>
+              )}
+            </Box>
           )}
-        </div>
-      )}
-    </div>
+        </Box>
+      </Group>
+    </Paper>
   );
 }
 
@@ -175,45 +125,35 @@ export default function DiscoveryPage() {
   const [latestSources, setLatestSources] = useState<Source[]>([]);
   const [highlightedSource, setHighlightedSource] = useState<number | null>(null);
 
-  // Session ID is kept in a ref — it doesn't drive rendering, just needs to
-  // survive between submits.  Null = no session yet (first question creates one).
-  const sessionIdRef = useRef<string | null>(null);
+  const [sourcesOpen, { open: openSources, close: closeSources }] = useDisclosure(false);
+  const isMobile = useMediaQuery("(max-width: 48em)");
 
+  const sessionIdRef = useRef<string | null>(null);
   const bottomRef = useRef<HTMLDivElement>(null);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
-  const sourcesPanelRef = useRef<HTMLDivElement>(null);
-  const inputContainerRef = useRef<HTMLDivElement>(null);
 
-  // Status query for paperless URL
   const statusQ = useQuery({ queryKey: ["status"], queryFn: api.getStatus, retry: false, staleTime: 60000 });
 
   useEffect(() => {
     bottomRef.current?.scrollIntoView({ behavior: "smooth" });
   }, [messages]);
 
-  // Auto-resize textarea
-  const autoResize = useCallback((el: HTMLTextAreaElement) => {
-    el.style.height = "auto";
-    el.style.height = Math.min(el.scrollHeight, 120) + "px";
-  }, []);
-
-  // Scroll sources panel to a specific source and briefly highlight it
   const scrollToSource = useCallback((n: number) => {
-    const el = sourcesPanelRef.current?.querySelector(`#source-${n}`);
-    if (el) {
-      el.scrollIntoView({ behavior: "smooth", block: "nearest" });
-      setHighlightedSource(n);
-      setTimeout(() => setHighlightedSource(null), 1800);
-    }
-  }, []);
+    if (isMobile) openSources();
+    setTimeout(() => {
+      const el = document.getElementById(`source-${n}`);
+      if (el) {
+        el.scrollIntoView({ behavior: "smooth", block: "nearest" });
+        setHighlightedSource(n);
+        setTimeout(() => setHighlightedSource(null), 1800);
+      }
+    }, isMobile ? 220 : 0);
+  }, [isMobile, openSources]);
 
   const handleSubmit = async (question?: string) => {
     const q = (question ?? input).trim();
     if (!q || loading) return;
     setInput("");
-    if (textareaRef.current) {
-      textareaRef.current.style.height = "auto";
-    }
     setMessages(prev => [
       ...prev,
       { role: "user", content: q },
@@ -229,7 +169,6 @@ export default function DiscoveryPage() {
         { role: "assistant", content: result.answer, sources: result.sources },
       ]);
       setLatestSources(result.sources as Source[]);
-      // Store the session ID returned by the backend (set on first response)
       if (result.session_id) sessionIdRef.current = result.session_id;
     } catch (err: unknown) {
       setMessages(prev => [
@@ -249,7 +188,6 @@ export default function DiscoveryPage() {
     setMessages([]);
     setLatestSources([]);
     setInput("");
-    if (textareaRef.current) textareaRef.current.style.height = "auto";
   }, []);
 
   const handleKeyDown = (e: React.KeyboardEvent) => {
@@ -264,240 +202,151 @@ export default function DiscoveryPage() {
 
   return (
     <>
-      {/* Responsive layout styles */}
       <style>{`
-        .discovery-layout {
-          display: flex;
-          gap: 1rem;
-          min-height: 0;
-          overflow: hidden;
-        }
-        .discovery-chat {
-          flex: 1;
-          min-width: 0;
-          display: flex;
-          flex-direction: column;
-          overflow: hidden;
-        }
-        .discovery-sources {
-          width: 300px;
-          flex-shrink: 0;
-          overflow-y: auto;
-          border-left: 1px solid var(--chat-divider);
-          padding-left: 1rem;
-        }
-        @media (max-width: 820px) {
-          .discovery-layout { flex-direction: column; }
-          .discovery-sources {
-            width: 100% !important;
-            border-left: none;
-            border-top: 1px solid var(--chat-divider);
-            padding-left: 0;
-            padding-top: 0.75rem;
-            max-height: 280px;
-          }
-        }
-        .discovery-input-wrap {
-          display: flex;
-          align-items: flex-end;
-          gap: 0.6rem;
-          background: var(--bg-input);
-          border-radius: 24px;
-          padding: 0.45rem 0.45rem 0.45rem 1.1rem;
-          border: 1px solid var(--gray-300);
-          box-shadow: var(--shadow-sm);
-          transition: border-color 0.15s, box-shadow 0.15s;
-        }
-        .discovery-input-wrap:focus-within {
-          border-color: var(--petrol-400);
-          box-shadow: 0 0 0 3px rgba(33, 153, 153, 0.12);
-        }
-        .discovery-send-btn {
-          width: 34px; height: 34px;
-          border-radius: 50%;
-          border: none;
-          display: flex; align-items: center; justify-content: center;
-          font-size: 1rem;
-          flex-shrink: 0;
-          transition: background 0.2s, color 0.2s, transform 0.1s;
-          cursor: pointer;
-        }
-        .discovery-send-btn:hover:not(:disabled) { transform: scale(1.08); }
-        .discovery-send-btn:active:not(:disabled) { transform: scale(0.95); }
-        .discovery-msg-enter {
-          animation: discoveryMsgIn 0.2s ease-out;
-        }
         @keyframes discoveryMsgIn {
           from { opacity: 0; transform: translateY(6px); }
           to   { opacity: 1; transform: translateY(0); }
         }
-        .discovery-chip {
-          transition: background 0.15s, border-color 0.15s;
-        }
-        .discovery-chip:hover {
-          background: var(--chat-suggestion-bg-hover) !important;
-          border-color: var(--chat-suggestion-border-hover) !important;
-        }
-        /* Markdown content wrapper — removes top/bottom bleed on first/last child */
-        .discovery-answer > *:first-child { margin-top: 0 !important; }
-        .discovery-answer > *:last-child  { margin-bottom: 0 !important; }
-        /* Animated loading dots */
+        .discovery-msg-enter { animation: discoveryMsgIn 0.2s ease-out; }
         @keyframes discoveryDot {
           0%, 60%, 100% { transform: translateY(0);    opacity: 0.35; }
           30%            { transform: translateY(-4px); opacity: 1;    }
         }
+        .discovery-answer > *:first-child { margin-top: 0 !important; }
+        .discovery-answer > *:last-child  { margin-bottom: 0 !important; }
+        .discovery-send-btn:hover:not(:disabled) { transform: scale(1.06); }
+        .discovery-send-btn:active:not(:disabled) { transform: scale(0.95); }
+        /* On mobile the AppShell header is 50px; subtract it from the page height */
+        @media (max-width: 48em) {
+          .discovery-root { height: calc(100dvh - 50px - 8rem) !important; }
+        }
       `}</style>
 
-      <div style={{ display: "flex", flexDirection: "column", height: "calc(100vh - 7rem)" }}>
+      <Box className="discovery-root" style={{ display: "flex", flexDirection: "column", height: "calc(100dvh - 8rem)" }}>
 
         {/* Header */}
-        <div style={{ flexShrink: 0, marginBottom: "0.6rem", display: "flex", alignItems: "flex-start", justifyContent: "space-between", gap: "1rem" }}>
+        <Group justify="space-between" align="flex-start" mb="sm" style={{ flexShrink: 0 }}>
           <div>
-            <h2 style={{ margin: "0 0 0.2rem" }}>{t("discovery.title")}</h2>
-            <p style={{ fontSize: "0.82rem", color: "var(--text-on-body-secondary)", margin: 0 }}>
-              {t("discovery.subtitle")}
-            </p>
+            <Title order={2} mb={4}>{t("discovery.title")}</Title>
+            <Text size="sm" c="dimmed">{t("discovery.subtitle")}</Text>
           </div>
           {messages.length > 0 && (
-            <button
+            <Button
+              variant="outline"
+              color="teal"
+              size="sm"
               onClick={handleNewConversation}
               disabled={loading}
-              style={{
-                flexShrink: 0,
-                padding: "0.35rem 0.85rem",
-                borderRadius: "var(--radius-sm)",
-                border: "1px solid var(--petrol-300)",
-                background: "var(--petrol-50)",
-                color: "var(--petrol-700)",
-                fontSize: "0.8rem",
-                fontWeight: 500,
-                cursor: "pointer",
-                whiteSpace: "nowrap",
-              }}
+              style={{ flexShrink: 0 }}
             >
               ✦ New conversation
-            </button>
+            </Button>
           )}
-        </div>
+        </Group>
 
         {/* Two-column body */}
-        <div className="discovery-layout" style={{ flex: 1 }}>
-
-          {/* ── Left: chat column ── */}
-          <div className="discovery-chat">
+        <Box
+          style={{
+            display: "flex",
+            gap: "1rem",
+            flex: 1,
+            minHeight: 0,
+            overflow: "hidden",
+          }}
+        >
+          {/* ── Chat column ── */}
+          <Box style={{ flex: 1, minWidth: 0, display: "flex", flexDirection: "column", overflow: "hidden" }}>
 
             {/* Messages scroll area */}
-            <div style={{ flex: 1, overflowY: "auto", paddingRight: "2px", paddingBottom: "0.5rem" }}>
+            <Box style={{ flex: 1, overflowY: "auto", paddingRight: 2, paddingBottom: 8 }}>
 
               {/* Empty state */}
               {messages.length === 0 && (
-                <div style={{ paddingTop: "2rem", maxWidth: "520px" }}>
-                  <p style={{ fontSize: "1.05rem", fontWeight: 600, color: "var(--text-on-body)", marginBottom: "0.3rem" }}>
-                    {t("discovery.emptyTitle")}
-                  </p>
-                  <p style={{ fontSize: "0.82rem", color: "var(--text-on-body-secondary)", margin: "0 0 1.25rem" }}>
-                    {t("discovery.emptyHint")}
-                  </p>
-                  <div style={{ display: "flex", flexWrap: "wrap", gap: "0.45rem" }}>
+                <Stack gap="xs" pt="xl" style={{ maxWidth: 520 }}>
+                  <Text size="lg" fw={600}>{t("discovery.emptyTitle")}</Text>
+                  <Text size="sm" c="dimmed" mb="md">{t("discovery.emptyHint")}</Text>
+                  <Group gap={6} wrap="wrap">
                     {SUGGESTED_QUERIES.map((q, i) => (
-                      <button
+                      <Button
                         key={i}
-                        className="discovery-chip"
+                        variant="outline"
+                        color="gray"
+                        size="xs"
+                        style={{ borderRadius: 20, fontWeight: 400, textAlign: "left", height: "auto", lineHeight: 1.4 }}
                         onClick={() => handleSubmit(q)}
-                        style={{
-                          padding: "0.4rem 0.9rem",
-                          borderRadius: "20px",
-                          border: "1px solid var(--chat-suggestion-border)",
-                          background: "var(--chat-suggestion-bg)",
-                          color: "var(--chat-suggestion-text)",
-                          fontSize: "0.79rem",
-                          cursor: "pointer",
-                          textAlign: "left",
-                          lineHeight: 1.4,
-                        }}
                       >
                         {q}
-                      </button>
+                      </Button>
                     ))}
-                  </div>
-                </div>
+                  </Group>
+                </Stack>
               )}
 
               {/* Messages */}
               {messages.map((msg, i) => (
-                <div key={i} className="discovery-msg-enter" style={{ marginBottom: "1rem" }}>
+                <Box key={i} className="discovery-msg-enter" mb="md">
                   {msg.role === "user" ? (
-                    /* ── User bubble (right-aligned, filled) ── */
-                    <div style={{ display: "flex", justifyContent: "flex-end" }}>
-                      <div style={{
-                        padding: "0.65rem 1.1rem",
-                        borderRadius: "20px 20px 4px 20px",
-                        background: "var(--petrol-600)",
-                        maxWidth: "78%",
-                        fontSize: "0.9rem",
-                        lineHeight: 1.55,
-                        color: "#fff",
-                        boxShadow: "var(--shadow-sm)",
-                        wordBreak: "break-word",
-                      }}>
+                    /* User bubble — right-aligned, teal filled */
+                    <Group justify="flex-end">
+                      <Box
+                        style={{
+                          padding: "0.65rem 1.1rem",
+                          borderRadius: "20px 20px 4px 20px",
+                          background: "var(--mantine-color-teal-filled)",
+                          maxWidth: "78%",
+                          fontSize: "0.9rem",
+                          lineHeight: 1.55,
+                          color: "var(--mantine-color-white)",
+                          boxShadow: "var(--mantine-shadow-sm)",
+                          wordBreak: "break-word",
+                        }}
+                      >
                         {msg.content}
-                      </div>
-                    </div>
+                      </Box>
+                    </Group>
                   ) : (
-                    /* ── Assistant bubble (left-aligned, card surface) ── */
-                    <div style={{ maxWidth: "100%" }}>
-                      {/* AI label */}
-                      <div style={{
-                        fontSize: "0.69rem",
-                        color: "var(--chat-ai-label)",
-                        marginBottom: "0.3rem",
-                        display: "flex",
-                        alignItems: "center",
-                        gap: "0.35rem",
-                        paddingLeft: "0.1rem",
-                      }}>
-                        <span style={{
-                          width: "18px", height: "18px",
-                          background: "var(--chat-ai-icon-bg)",
-                          borderRadius: "50%",
-                          display: "inline-flex", alignItems: "center", justifyContent: "center",
-                          fontSize: "0.65rem",
-                          color: "var(--chat-accent-text)",
-                          fontWeight: 700,
-                        }}>✦</span>
-                        Paperless IQ
-                      </div>
+                    /* Assistant bubble — left-aligned */
+                    <Box style={{ maxWidth: "100%" }}>
+                      <Group gap={6} mb={4} pl={2}>
+                        <Box
+                          style={{
+                            width: 18, height: 18,
+                            background: "var(--mantine-color-teal-light)",
+                            borderRadius: "50%",
+                            display: "inline-flex", alignItems: "center", justifyContent: "center",
+                            fontSize: "0.65rem", fontWeight: 700,
+                            color: "var(--mantine-color-teal-6)",
+                          }}
+                        >✦</Box>
+                        <Text size="xs" c="dimmed">Paperless IQ</Text>
+                      </Group>
 
-                      {/* Content bubble */}
-                      <div style={{
-                        padding: "1rem 1.2rem",
-                        borderRadius: "4px 20px 20px 20px",
-                        background: "var(--chat-assistant-bg)",
-                        border: "1px solid var(--chat-assistant-border)",
-                        fontSize: "0.875rem",
-                        lineHeight: 1.72,
-                        color: "var(--text-on-body)",
-                        boxShadow: "var(--shadow-sm)",
-                        wordBreak: "break-word",
-                      }}>
+                      <Paper
+                        withBorder
+                        p="md"
+                        style={{
+                          borderRadius: "4px 20px 20px 20px",
+                          fontSize: "0.875rem",
+                          lineHeight: 1.72,
+                          wordBreak: "break-word",
+                        }}
+                      >
                         {msg.loading ? (
-                          <span style={{ display: "inline-flex", alignItems: "center", gap: "0.5rem" }}>
-                            <span style={{ display: "inline-flex", gap: "4px", alignItems: "center" }}>
-                              {[0, 1, 2].map(i => (
-                                <span key={i} style={{
-                                  width: "6px", height: "6px", borderRadius: "50%",
-                                  background: "var(--chat-loading)",
+                          <Group gap="sm">
+                            <Group gap={4} align="center">
+                              {[0, 1, 2].map(k => (
+                                <Box key={k} style={{
+                                  width: 6, height: 6, borderRadius: "50%",
+                                  background: "var(--mantine-color-teal-5)",
                                   display: "inline-block",
-                                  animation: `discoveryDot 1.3s ease-in-out ${i * 0.18}s infinite`,
+                                  animation: `discoveryDot 1.3s ease-in-out ${k * 0.18}s infinite`,
                                 }} />
                               ))}
-                            </span>
-                            <span style={{ color: "var(--chat-loading)", fontSize: "0.82rem" }}>
-                              {t("discovery.searching")}
-                            </span>
-                          </span>
+                            </Group>
+                            <Text size="sm" c="dimmed">{t("discovery.searching")}</Text>
+                          </Group>
                         ) : msg.error ? (
-                          <span style={{ color: "var(--error-text, var(--error))" }}>⚠ {msg.error}</span>
+                          <Text size="sm" c="red">⚠ {msg.error}</Text>
                         ) : (
                           <div className="discovery-answer">
                             <MarkdownText
@@ -507,121 +356,147 @@ export default function DiscoveryPage() {
                             />
                           </div>
                         )}
-                      </div>
+                      </Paper>
 
-                      {/* Mini source count below bubble (when sources exist) */}
+                      {/* Source reference pills below the bubble */}
                       {msg.sources && msg.sources.length > 0 && (
-                        <div style={{ marginTop: "0.35rem", paddingLeft: "0.1rem" }}>
-                          <span style={{ fontSize: "0.72rem", color: "var(--text-on-body-secondary)" }}>
+                        <Group gap={4} mt={4} pl={2}>
+                          <Text size="xs" c="dimmed">
                             {msg.sources.length} {msg.sources.length === 1 ? "source" : "sources"} →
-                          </span>
+                          </Text>
                           {msg.sources.map((src, j) => (
-                            <button
+                            <Box
                               key={j}
+                              component="button"
                               type="button"
                               title={`${src.title || `#${src.document_id}`} (ID ${src.document_id})`}
                               onClick={() => scrollToSource(j + 1)}
                               style={{
                                 display: "inline-flex", alignItems: "center", justifyContent: "center",
-                                width: "18px", height: "18px", borderRadius: "50%",
-                                background: "var(--chat-number-bg)",
-                                color: "var(--chat-number-text)",
+                                width: 18, height: 18, borderRadius: "50%",
+                                background: "var(--mantine-color-teal-6)",
+                                color: "white",
                                 fontSize: "0.6rem", fontWeight: 700,
                                 border: "none", cursor: "pointer",
-                                margin: "0 2px", lineHeight: 1,
+                                lineHeight: 1,
                               }}
                             >
                               {j + 1}
-                            </button>
+                            </Box>
                           ))}
-                        </div>
+                        </Group>
                       )}
-                    </div>
+                    </Box>
                   )}
-                </div>
+                </Box>
               ))}
               <div ref={bottomRef} />
-            </div>
+            </Box>
 
-            {/* ── Input area (MD3-style) ── */}
-            <div style={{ flexShrink: 0, paddingTop: "0.6rem", borderTop: "1px solid var(--chat-divider)" }}>
-              <div ref={inputContainerRef} className="discovery-input-wrap">
-                <textarea
+            {/* Mobile: sources drawer trigger — only when sources exist */}
+            {hasSources && (
+              <Group hiddenFrom="sm" justify="flex-end" py={6} style={{ flexShrink: 0 }}>
+                <Button
+                  variant="light"
+                  color="teal"
+                  size="xs"
+                  onClick={openSources}
+                  style={{ borderRadius: 20 }}
+                >
+                  📄 Sources ({latestSources.length})
+                </Button>
+              </Group>
+            )}
+
+            {/* Input area */}
+            <Box
+              style={{
+                flexShrink: 0,
+                paddingTop: "0.6rem",
+                borderTop: "1px solid var(--mantine-color-default-border)",
+              }}
+            >
+              <Box
+                style={{
+                  display: "flex",
+                  alignItems: "flex-end",
+                  gap: "0.5rem",
+                  background: "var(--mantine-color-default)",
+                  borderRadius: 24,
+                  padding: "0.45rem 0.45rem 0.45rem 1rem",
+                  border: "1px solid var(--mantine-color-default-border)",
+                  transition: "border-color 0.15s",
+                }}
+              >
+                <Textarea
                   ref={textareaRef}
                   value={input}
-                  onChange={e => { setInput(e.target.value); autoResize(e.target); }}
+                  onChange={e => setInput(e.target.value)}
                   onKeyDown={handleKeyDown}
                   placeholder={t("discovery.placeholder")}
-                  rows={1}
                   disabled={loading}
-                  style={{
-                    flex: 1,
-                    border: "none",
-                    background: "transparent",
-                    resize: "none",
-                    fontSize: "0.9rem",
-                    lineHeight: 1.55,
-                    outline: "none",
-                    color: "var(--text-on-body)",
-                    maxHeight: "120px",
-                    overflowY: "auto",
-                    padding: "0.3rem 0",
-                    fontFamily: "inherit",
+                  autosize
+                  minRows={1}
+                  maxRows={5}
+                  style={{ flex: 1 }}
+                  styles={{
+                    input: {
+                      border: "none",
+                      background: "transparent",
+                      padding: "0.3rem 0",
+                      fontSize: "0.9rem",
+                      lineHeight: 1.55,
+                    },
+                    wrapper: { background: "transparent" },
                   }}
                 />
-                <button
+                <ActionIcon
                   className="discovery-send-btn"
-                  onClick={() => handleSubmit()}
+                  radius="xl"
+                  size="lg"
+                  variant={hasInput && !loading ? "filled" : "subtle"}
+                  color={hasInput && !loading ? "teal" : "gray"}
                   disabled={loading || !hasInput}
-                  style={{
-                    background: hasInput && !loading ? "var(--petrol-600)" : "var(--gray-200)",
-                    color: hasInput && !loading ? "#fff" : "var(--gray-500)",
-                  }}
+                  onClick={() => handleSubmit()}
                   title="Send (Enter)"
+                  style={{ flexShrink: 0, transition: "transform 0.1s" }}
                 >
-                  {loading ? (
-                    <span style={{ fontSize: "0.8rem", animation: "spin 1s linear infinite" }}>⟳</span>
-                  ) : "↑"}
-                </button>
-              </div>
-              <p style={{ margin: "0.3rem 0 0 0.25rem", fontSize: "0.68rem", color: "var(--chat-enter-hint)" }}>
+                  {loading ? <Loader size="xs" /> : <span style={{ fontSize: "1rem" }}>↑</span>}
+                </ActionIcon>
+              </Box>
+              <Text size="xs" c="dimmed" mt={4} ml={4}>
                 Enter · Shift+Enter for newline
-              </p>
-            </div>
-          </div>
+              </Text>
+            </Box>
+          </Box>
 
-          {/* ── Right: Sources panel ── */}
+          {/* ── Sources panel (desktop only) ── */}
           {hasSources && (
-            <div
-              ref={sourcesPanelRef}
-              className="discovery-sources"
+            <Box
+              visibleFrom="sm"
+              style={{
+                width: 300,
+                flexShrink: 0,
+                overflowY: "auto",
+                borderLeft: "1px solid var(--mantine-color-default-border)",
+                paddingLeft: "1rem",
+              }}
             >
-              <div style={{ flexShrink: 0, marginBottom: "0.65rem", display: "flex", alignItems: "baseline", justifyContent: "space-between" }}>
-                <p style={{
-                  margin: 0,
-                  fontSize: "0.72rem",
-                  fontWeight: 700,
-                  color: "var(--text-on-body-secondary)",
-                  textTransform: "uppercase",
-                  letterSpacing: "0.07em",
-                }}>
+              <Group justify="space-between" align="baseline" mb="sm">
+                <Text size="xs" fw={700} tt="uppercase" c="dimmed" style={{ letterSpacing: "0.07em" }}>
                   {t("discovery.sources")} {latestSources.length}
-                </p>
+                </Text>
                 {statusQ.data?.paperless_public_url && (
-                  <a
-                    href={statusQ.data.paperless_public_url}
+                  <Anchor
+                    href={statusQ.data.paperless_public_url as string}
                     target="_blank"
                     rel="noopener noreferrer"
-                    style={{
-                      fontSize: "0.68rem",
-                      color: "var(--chat-accent-text)",
-                      textDecoration: "none",
-                    }}
+                    size="xs"
                   >
                     Open Paperless ↗
-                  </a>
+                  </Anchor>
                 )}
-              </div>
+              </Group>
               {latestSources.map((src, j) => (
                 <SourceCard
                   key={j}
@@ -630,11 +505,42 @@ export default function DiscoveryPage() {
                   highlighted={highlightedSource === j + 1}
                 />
               ))}
-            </div>
+            </Box>
           )}
+        </Box>
+      </Box>
 
-        </div>
-      </div>
+      {/* ── Sources drawer (mobile only) ── */}
+      <Drawer
+        opened={sourcesOpen}
+        onClose={closeSources}
+        position="right"
+        size={320}
+        title={
+          <Group gap="xs">
+            <Text fw={700} size="sm">{t("discovery.sources")} {latestSources.length}</Text>
+            {statusQ.data?.paperless_public_url && (
+              <Anchor
+                href={statusQ.data.paperless_public_url as string}
+                target="_blank"
+                rel="noopener noreferrer"
+                size="xs"
+              >
+                Open Paperless ↗
+              </Anchor>
+            )}
+          </Group>
+        }
+      >
+        {latestSources.map((src, j) => (
+          <SourceCard
+            key={j}
+            src={src}
+            index={j}
+            highlighted={highlightedSource === j + 1}
+          />
+        ))}
+      </Drawer>
     </>
   );
 }

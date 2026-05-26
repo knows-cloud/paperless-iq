@@ -44,8 +44,8 @@ function renderInline(
     } else if (m[3]) {
       parts.push(
         <code key={m.index} style={{
-          background: "var(--chat-code-bg)",
-          border: "1px solid var(--chat-divider)",
+          background: "var(--mantine-color-default-hover)",
+          border: "1px solid var(--mantine-color-default-border)",
           padding: "2px 6px", borderRadius: "4px",
           fontSize: "0.84em", fontFamily: "monospace",
           letterSpacing: "0.01em",
@@ -69,8 +69,8 @@ function renderInline(
           style={{
             display: "inline-flex", alignItems: "center", justifyContent: "center",
             width: "18px", height: "18px", borderRadius: "50%",
-            background: "var(--chat-number-bg)",
-            color: "var(--chat-number-text)",
+            background: "var(--mantine-color-teal-6)",
+            color: "white",
             fontSize: "0.62rem", fontWeight: 700,
             border: "none", cursor: onCiteClick ? "pointer" : "default",
             verticalAlign: "middle", margin: "0 1px",
@@ -131,11 +131,11 @@ export function MarkdownText({
       <blockquote key={key++} style={{
         margin: "0.75rem 0",
         padding: "0.65rem 1rem",
-        borderLeft: "3px solid var(--chat-blockquote-border)",
-        background: "var(--chat-blockquote-bg)",
+        borderLeft: "3px solid var(--mantine-color-teal-4)",
+        background: "var(--mantine-color-default-hover)",
         borderRadius: "0 8px 8px 0",
         fontStyle: "italic",
-        color: "var(--chat-blockquote-text)",
+        color: "var(--mantine-color-dimmed)",
         fontSize: "0.85rem",
         lineHeight: 1.65,
       }}>
@@ -165,18 +165,18 @@ export function MarkdownText({
         margin: "1.1rem 0 0.45rem",
         fontWeight: 700,
         fontSize: "0.72rem",
-        color: "var(--chat-accent-text)",
+        color: "var(--mantine-color-teal-6)",
         textTransform: "uppercase",
         letterSpacing: "0.09em",
         paddingBottom: "0.28rem",
-        borderBottom: "1px solid var(--chat-divider)",
+        borderBottom: "1px solid var(--mantine-color-default-border)",
       }}>{renderInline(line.slice(4), onCiteClick, sources)}</p>);
     } else if (line.startsWith("## ")) {
       out.push(<p key={key++} style={{
         margin: "1rem 0 0.35rem",
         fontWeight: 700,
         fontSize: "1rem",
-        color: "var(--text-on-body)",
+        color: "inherit",
         letterSpacing: "-0.01em",
       }}>{renderInline(line.slice(3), onCiteClick, sources)}</p>);
     } else if (line.startsWith("# ")) {
@@ -184,11 +184,11 @@ export function MarkdownText({
         margin: "1rem 0 0.4rem",
         fontWeight: 700,
         fontSize: "1.1rem",
-        color: "var(--text-on-body)",
+        color: "inherit",
         letterSpacing: "-0.015em",
       }}>{renderInline(line.slice(2), onCiteClick, sources)}</p>);
     } else {
-      out.push(<p key={key++} style={{ margin: "0.5rem 0", lineHeight: 1.72, color: "var(--text-on-body)" }}>{renderInline(line, onCiteClick, sources)}</p>);
+      out.push(<p key={key++} style={{ margin: "0.5rem 0", lineHeight: 1.72 }}>{renderInline(line, onCiteClick, sources)}</p>);
     }
   }
   flushList();

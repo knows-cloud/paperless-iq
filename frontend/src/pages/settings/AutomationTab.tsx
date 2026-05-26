@@ -1,43 +1,103 @@
+import { Switch, NumberInput, TextInput, Select, Paper, Text, Divider, Stack, Alert } from "@mantine/core";
+
 interface Props {
   s: Record<string, unknown>;
 }
 
 export function AutomationTab({ s }: Props) {
-  const sectionHead: React.CSSProperties = {
-    marginTop: "1rem", borderBottom: "1px solid var(--gray-200)", paddingBottom: "0.3rem",
-  };
-
   return (
-    <div className="card">
-      <h3>Automation</h3>
-      <div className="form-group">
-        <label><input type="checkbox" name="automation_enabled" defaultChecked={Boolean(s.automation_enabled)} />{" "}Enable automation</label>
-        <small>Automatically poll for new documents with the inbox tag and analyze them in the background.</small>
-      </div>
-      <div className="form-group">
-        <label><input type="checkbox" name="auto_apply" defaultChecked={Boolean(s.auto_apply)} />{" "}Auto-apply suggestions (skip approval queue)</label>
-        <small style={{ color: "var(--warning)" }}>
-          ⚠️ AI suggestions are applied immediately without human review. Combined with "Allow new" creation policies,
-          this will create new tags, correspondents, and types automatically.
-        </small>
-      </div>
-      <h4 style={sectionHead}>Schedule</h4>
-      <div style={{ display: "flex", gap: "1rem", flexWrap: "wrap", marginTop: "0.75rem" }}>
-        <div className="form-group" style={{ flex: 1, minWidth: "160px" }}>
-          <label htmlFor="poll_interval_seconds">Poll Interval (seconds)</label>
-          <input id="poll_interval_seconds" name="poll_interval_seconds" type="number" min="1" defaultValue={String(s.poll_interval_seconds)} />
-        </div>
-        <div className="form-group" style={{ flex: 1, minWidth: "160px" }}>
-          <label htmlFor="batch_size">Batch Size</label>
-          <input id="batch_size" name="batch_size" type="number" min="1" defaultValue={String(s.batch_size)} />
-          <small>Documents processed per polling cycle.</small>
-        </div>
-        <div className="form-group" style={{ flex: 2, minWidth: "200px" }}>
-          <label htmlFor="schedule_cron">Cron Schedule</label>
-          <input id="schedule_cron" name="schedule_cron" defaultValue={String(s.schedule_cron ?? "")} placeholder="e.g. 0 */6 * * *  (every 6 hours)" />
-          <small>Optional cron expression to trigger processing on a fixed schedule.</small>
-        </div>
-      </div>
-    </div>
+    <Stack gap="md">
+      <Paper withBorder p="md" radius="md">
+        <Text fw={600} mb="md">Automation</Text>
+        <Stack gap="md">
+          <Switch
+            name="automation_enabled"
+            label="Enable automation"
+            defaultChecked={Boolean(s.automation_enabled)}
+            description="Automatically poll for new documents with the inbox tag and analyze them in the background."
+          />
+          <Switch
+            name="auto_apply"
+            label="Auto-apply suggestions (skip approval queue)"
+            defaultChecked={Boolean(s.auto_apply)}
+            description={
+              <Text size="xs" c="orange">
+                AI suggestions are applied immediately without human review. Combined with "Allow new" creation policies,
+                this will create new tags, correspondents, and types automatically.
+              </Text>
+            }
+          />
+
+          <Divider label="Schedule" labelPosition="left" />
+
+          <div style={{ display: "flex", gap: "1rem", flexWrap: "wrap" }}>
+            <NumberInput
+              label="Poll Interval (seconds)"
+              name="poll_interval_seconds"
+              min={1}
+              defaultValue={Number(s.poll_interval_seconds ?? 30)}
+              style={{ flex: 1, minWidth: "160px" }}
+            />
+            <NumberInput
+              label="Batch Size"
+              name="batch_size"
+              min={1}
+              defaultValue={Number(s.batch_size ?? 10)}
+              description="Documents processed per polling cycle."
+              style={{ flex: 1, minWidth: "160px" }}
+            />
+            <TextInput
+              label="Cron Schedule"
+              name="schedule_cron"
+              defaultValue={String(s.schedule_cron ?? "")}
+              placeholder="e.g. 0 */6 * * *  (every 6 hours)"
+              description="Optional cron expression to trigger processing on a fixed schedule."
+              style={{ flex: 2, minWidth: "200px" }}
+            />
+          </div>
+        </Stack>
+      </Paper>
+
+      <Paper withBorder p="md" radius="md">
+        <Text fw={600} mb="xs">Creation Policies</Text>
+        <Text size="sm" c="dimmed" mb="sm">
+          Controls whether the LLM can suggest values that don't yet exist in Paperless NGX.
+          "Existing only" filters them out; "Allow new" keeps them and creates the entity when the suggestion is applied.
+        </Text>
+        <Alert color="orange" variant="light" mb="md">
+          Only relevant when auto-apply is enabled. For manual review, new values are always created when you approve.
+          With auto-apply and "Allow new", entities are created automatically without review.
+        </Alert>
+        <Stack gap="md">
+          <Select
+            label="Tags"
+            name="tag_creation_policy"
+            defaultValue={String(s.tag_creation_policy ?? "existing_only")}
+            data={[
+              { value: "existing_only", label: "Existing only — remove unknown tags from suggestions" },
+              { value: "allow_new", label: "Allow new — keep unknown tags, create automatically" },
+            ]}
+          />
+          <Select
+            label="Correspondents"
+            name="correspondent_creation_policy"
+            defaultValue={String(s.correspondent_creation_policy ?? "existing_only")}
+            data={[
+              { value: "existing_only", label: "Existing only — remove unknown correspondents" },
+              { value: "allow_new", label: "Allow new — keep unknown correspondents, create automatically" },
+            ]}
+          />
+          <Select
+            label="Document Types"
+            name="doctype_creation_policy"
+            defaultValue={String(s.doctype_creation_policy ?? "existing_only")}
+            data={[
+              { value: "existing_only", label: "Existing only — remove unknown document types" },
+              { value: "allow_new", label: "Allow new — keep unknown types, create automatically" },
+            ]}
+          />
+        </Stack>
+      </Paper>
+    </Stack>
   );
 }

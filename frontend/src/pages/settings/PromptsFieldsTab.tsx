@@ -1,3 +1,4 @@
+import { Textarea, TextInput, Select, Button, Checkbox, Paper, Text, Stack, Group } from "@mantine/core";
 import { api, type PaperlessCustomField } from "../../api";
 import { METADATA_FIELDS } from "./constants";
 
@@ -26,81 +27,109 @@ export function PromptsFieldsTab({
   selectedCustomFields, toggleCustomField,
   cfList, customFieldsIsError,
 }: Props) {
-  return (<>
-    <div className="card">
-      <h3>System Prompt</h3>
-      <div className="form-group">
-        <label htmlFor="global_prompt_template">Global prompt — system instruction sent to the LLM with every document</label>
-        <textarea id="global_prompt_template" name="global_prompt_template" rows={10}
-          value={promptText}
-          onChange={e => setPromptText(e.target.value)}
-          style={{ fontFamily: "monospace", fontSize: "0.85rem" }} />
-        <div style={{ display: "flex", gap: "0.5rem", alignItems: "center", marginTop: "0.35rem" }}>
-          <small style={{ flex: 1 }}>Use {"{{content}}"} as placeholder for document text.</small>
-          <select value={translateLang} onChange={e => setTranslateLang(e.target.value)}
-            style={{ fontSize: "0.8rem", padding: "0.2rem 0.4rem", width: "auto" }}>
-            <option value="de">Deutsch</option>
-            <option value="fr">Français</option>
-            <option value="es">Español</option>
-            <option value="it">Italiano</option>
-            <option value="en">English</option>
-          </select>
-          <button type="button" className="btn" style={{ fontSize: "0.78rem", padding: "0.25rem 0.6rem" }}
-            disabled={translating || !promptText.trim()}
-            onClick={async () => {
-              setTranslating(true);
-              try {
-                const r = await api.translatePrompt(promptText, translateLang);
-                setPromptText(r.translated);
-              } catch (e) { alert((e as Error).message); }
-              setTranslating(false);
-            }}>
-            {translating ? "Translating…" : "Translate"}
-          </button>
-        </div>
-      </div>
-      <div className="form-group">
-        <label htmlFor="target_language">LLM Output Language</label>
-        <input id="target_language" name="target_language" defaultValue={String(s.target_language ?? "")} placeholder="e.g. de, fr, es (leave empty for English)" />
-        <small>Language the LLM should use for metadata values (title, tags, etc.). Leave empty for English.</small>
-      </div>
-    </div>
+  return (
+    <Stack gap="md">
+      <Paper withBorder p="md" radius="md">
+        <Text fw={600} mb="md">System Prompt</Text>
+        <Stack gap="md">
+          <Textarea
+            label="Global prompt — system instruction sent to the LLM with every document"
+            name="global_prompt_template"
+            rows={10}
+            value={promptText}
+            onChange={e => setPromptText(e.target.value)}
+            styles={{ input: { fontFamily: "monospace", fontSize: "0.85rem" } }}
+          />
+          <Group gap="xs" align="flex-end">
+            <Text size="xs" c="dimmed" style={{ flex: 1 }}>Use {"{{content}}"} as placeholder for document text.</Text>
+            <Select
+              size="xs"
+              style={{ width: "auto" }}
+              value={translateLang}
+              onChange={v => setTranslateLang(v ?? "de")}
+              data={[
+                { value: "de", label: "Deutsch" },
+                { value: "fr", label: "Français" },
+                { value: "es", label: "Español" },
+                { value: "it", label: "Italiano" },
+                { value: "en", label: "English" },
+              ]}
+            />
+            <Button
+              size="xs"
+              variant="default"
+              loading={translating}
+              disabled={!promptText.trim()}
+              onClick={async () => {
+                setTranslating(true);
+                try {
+                  const r = await api.translatePrompt(promptText, translateLang);
+                  setPromptText(r.translated);
+                } catch (e) { alert((e as Error).message); }
+                setTranslating(false);
+              }}
+            >
+              Translate
+            </Button>
+          </Group>
+          <TextInput
+            label="LLM Output Language"
+            name="target_language"
+            defaultValue={String(s.target_language ?? "")}
+            placeholder="e.g. de, fr, es (leave empty for English)"
+            description="Language the LLM should use for metadata values (title, tags, etc.). Leave empty for English."
+          />
+        </Stack>
+      </Paper>
 
-    <div className="card">
-      <h3>Field Instructions</h3>
-      <p style={{ fontSize: "0.85rem", color: "var(--text-on-card-secondary)", marginBottom: "1rem" }}>
-        Give the LLM specific instructions for each metadata field. Leave blank to let it decide based on the system prompt alone.
-      </p>
-      {METADATA_FIELDS.map(f => (
-        <div className="form-group" key={f.key}>
-          <label htmlFor={`field_desc_${f.key}`}>{f.label}</label>
-          <textarea id={`field_desc_${f.key}`} name={`field_desc_${f.key}`} rows={2}
-            value={fieldDescs[f.key] ?? ""} onChange={e => setFieldDescs(prev => ({ ...prev, [f.key]: e.target.value }))}
-            placeholder={f.description} />
-        </div>
-      ))}
-      <h4 style={{ marginTop: "1rem" }}>Custom Fields</h4>
-      {cfList.length === 0 && (
-        <p style={{ fontSize: "0.85rem", color: "var(--text-on-card-secondary)" }}>
-          {customFieldsIsError ? "Cannot load custom fields from Paperless NGX." : "No custom fields found."}
-        </p>
-      )}
-      {cfList.map(cf => {
-        const isSelected = selectedCustomFields.includes(cf.id);
-        return (
-          <div key={cf.id} style={{ marginBottom: "0.75rem" }}>
-            <label style={{ display: "flex", alignItems: "center", gap: "0.5rem", cursor: "pointer" }}>
-              <input type="checkbox" checked={isSelected} onChange={() => toggleCustomField(cf.id)} />
-              {cf.name} <small style={{ color: "var(--text-on-card-muted)" }}>({cf.data_type})</small>
-            </label>
-            {isSelected && (
-              <textarea name={`field_desc_cf:${cf.id}`} rows={2} style={{ marginTop: "0.25rem", width: "100%" }}
-                value={fieldDescs[`cf:${cf.id}`] ?? ""} onChange={e => setFieldDescs(prev => ({ ...prev, [`cf:${cf.id}`]: e.target.value }))}
-                placeholder={`Instructions for custom field "${cf.name}"`} />
-            )}
-          </div>
-        );
-      })}
-    </div>
-  </>);
+      <Paper withBorder p="md" radius="md">
+        <Text fw={600} mb="xs">Field Instructions</Text>
+        <Text size="sm" c="dimmed" mb="md">
+          Give the LLM specific instructions for each metadata field. Leave blank to let it decide based on the system prompt alone.
+        </Text>
+        <Stack gap="sm">
+          {METADATA_FIELDS.map(f => (
+            <Textarea
+              key={f.key}
+              label={f.label}
+              name={`field_desc_${f.key}`}
+              rows={2}
+              value={fieldDescs[f.key] ?? ""}
+              onChange={e => setFieldDescs(prev => ({ ...prev, [f.key]: e.target.value }))}
+              placeholder={f.description}
+            />
+          ))}
+
+          <Text fw={500} size="sm" mt="sm">Custom Fields</Text>
+          {cfList.length === 0 && (
+            <Text size="sm" c="dimmed">
+              {customFieldsIsError ? "Cannot load custom fields from Paperless NGX." : "No custom fields found."}
+            </Text>
+          )}
+          {cfList.map(cf => {
+            const isSelected = selectedCustomFields.includes(cf.id);
+            return (
+              <div key={cf.id}>
+                <Checkbox
+                  label={<>{cf.name} <Text span size="xs" c="dimmed">({cf.data_type})</Text></>}
+                  checked={isSelected}
+                  onChange={() => toggleCustomField(cf.id)}
+                  mb={isSelected ? "xs" : 0}
+                />
+                {isSelected && (
+                  <Textarea
+                    name={`field_desc_cf:${cf.id}`}
+                    rows={2}
+                    value={fieldDescs[`cf:${cf.id}`] ?? ""}
+                    onChange={e => setFieldDescs(prev => ({ ...prev, [`cf:${cf.id}`]: e.target.value }))}
+                    placeholder={`Instructions for custom field "${cf.name}"`}
+                  />
+                )}
+              </div>
+            );
+          })}
+        </Stack>
+      </Paper>
+    </Stack>
+  );
 }

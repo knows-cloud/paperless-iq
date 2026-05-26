@@ -1,5 +1,9 @@
 import { useState } from "react";
 import { useQuery } from "@tanstack/react-query";
+import {
+  Title, Paper, Text, Group, Stack, Badge, Button,
+  TextInput, Select, Table, Box,
+} from "@mantine/core";
 import { api } from "../api";
 import { t } from "../i18n";
 
@@ -22,8 +26,8 @@ export default function AuditPage() {
     if (!file) return;
     const text = await file.text();
     try {
-      const data = JSON.parse(text);
-      const result = await api.importConfig(data);
+      const parsed = JSON.parse(text);
+      const result = await api.importConfig(parsed);
       setImportMsg(t("audit.importSuccess", { applied: String(result.applied.length), skipped: String(result.skipped.length) }));
     } catch (err) { setImportMsg(`${t("audit.importFailed")} ${(err as Error).message}`); }
   };
@@ -31,68 +35,87 @@ export default function AuditPage() {
   const items = (data?.items ?? []) as Array<Record<string, unknown>>;
 
   return (
-    <div>
-      <h2>{t("nav.audit")}</h2>
-      <div className="card">
-        <div style={{ display: "flex", gap: "0.5rem", marginBottom: "1rem", flexWrap: "wrap" }}>
-          <input placeholder={t("audit.colDoc") + " ID"} style={{ maxWidth: "140px" }}
-            onChange={e => setFilters(f => ({ ...f, document_id: e.target.value }))} />
-          <select onChange={e => setFilters(f => ({ ...f, change_source: e.target.value }))}>
-            <option value="">{t("audit.allSources")}</option>
-            <option value="ai">{t("audit.aiSource")}</option>
-            <option value="human">{t("audit.humanSource")}</option>
-          </select>
-        </div>
-        {isLoading ? <p>{t("audit.loading")}</p> : (
-          <div style={{ overflowX: "auto" }}>
-            <table style={{ width: "100%", borderCollapse: "collapse", fontSize: "0.85rem" }}>
-              <thead>
-                <tr style={{
-                  textAlign: "left",
-                  borderBottom: "2px solid var(--card-border, var(--gray-200))",
-                  color: "var(--text-on-card-secondary)",
-                }}>
-                  <th style={{ padding: "0.4rem 0.5rem", whiteSpace: "nowrap", fontWeight: 600 }}>{t("audit.colDoc")}</th>
-                  <th style={{ padding: "0.4rem 0.5rem", whiteSpace: "nowrap", fontWeight: 600 }}>{t("audit.colField")}</th>
-                  <th style={{ padding: "0.4rem 0.5rem", maxWidth: "200px", fontWeight: 600 }}>{t("audit.colPrevious")}</th>
-                  <th style={{ padding: "0.4rem 0.5rem", maxWidth: "200px", fontWeight: 600 }}>{t("audit.colNew")}</th>
-                  <th style={{ padding: "0.4rem 0.5rem", whiteSpace: "nowrap", fontWeight: 600 }}>{t("audit.colSource")}</th>
-                  <th style={{ padding: "0.4rem 0.5rem", whiteSpace: "nowrap", fontWeight: 600 }}>{t("audit.colTime")}</th>
-                </tr>
-              </thead>
-              <tbody>
-                {items.map((e, i) => (
-                  <tr key={i} className={i % 2 === 1 ? "card-alt" : ""}>
-                    <td style={{ padding: "0.4rem 0.5rem", whiteSpace: "nowrap" }}>{String(e.document_id)}</td>
-                    <td style={{ padding: "0.4rem 0.5rem", whiteSpace: "nowrap" }}>{String(e.field_name)}</td>
-                    <td style={{ padding: "0.4rem 0.5rem", maxWidth: "200px", overflow: "hidden", textOverflow: "ellipsis", wordBreak: "break-word" }}>{String(e.previous_value ?? "—")}</td>
-                    <td style={{ padding: "0.4rem 0.5rem", maxWidth: "200px", overflow: "hidden", textOverflow: "ellipsis", wordBreak: "break-word" }}>{String(e.new_value ?? "—")}</td>
-                    <td style={{ padding: "0.4rem 0.5rem" }}>
-                      <span className={`badge badge-${e.change_source === "ai" ? "pending" : "approved"}`}>{String(e.change_source)}</span>
-                    </td>
-                    <td style={{ padding: "0.4rem 0.5rem", whiteSpace: "nowrap", fontSize: "0.8rem", color: "var(--text-on-card-muted)" }}>
-                      {new Date(String(e.changed_at)).toLocaleString()}
-                    </td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-          </div>
-        )}
-        {items.length === 0 && !isLoading && (
-          <p style={{ color: "var(--text-on-card-muted)", marginTop: "0.5rem" }}>{t("audit.empty")}</p>
-        )}
-      </div>
+    <Stack gap="md">
+      <Title order={2}>{t("nav.audit")}</Title>
 
-      <h3 style={{ marginTop: "1.5rem" }}>{t("audit.importExport")}</h3>
-      <div className="card">
-        <button className="btn btn-primary" onClick={handleExport} style={{ marginRight: "0.5rem" }}>{t("audit.export")}</button>
-        <label className="btn" style={{ cursor: "pointer" }}>
-          {t("audit.import")}
-          <input type="file" accept=".json" onChange={handleImport} style={{ display: "none" }} />
-        </label>
-        {importMsg && <p className="success" style={{ marginTop: "0.5rem" }}>{importMsg}</p>}
-      </div>
-    </div>
+      <Paper withBorder p="md" radius="md">
+        <Group mb="md" gap="sm">
+          <TextInput
+            placeholder={`${t("audit.colDoc")} ID`}
+            size="sm"
+            style={{ maxWidth: 160 }}
+            onChange={e => setFilters(f => ({ ...f, document_id: e.target.value }))}
+          />
+          <Select
+            size="sm"
+            style={{ maxWidth: 180 }}
+            defaultValue=""
+            data={[
+              { value: "", label: t("audit.allSources") },
+              { value: "ai", label: t("audit.aiSource") },
+              { value: "human", label: t("audit.humanSource") },
+            ]}
+            onChange={v => setFilters(f => ({ ...f, change_source: v ?? "" }))}
+          />
+        </Group>
+
+        {isLoading ? (
+          <Text size="sm" c="dimmed">{t("audit.loading")}</Text>
+        ) : items.length === 0 ? (
+          <Text size="sm" c="dimmed">{t("audit.empty")}</Text>
+        ) : (
+          <Box style={{ overflowX: "auto" }}>
+            <Table striped highlightOnHover withTableBorder withColumnBorders fz="sm">
+              <Table.Thead>
+                <Table.Tr>
+                  <Table.Th>{t("audit.colDoc")}</Table.Th>
+                  <Table.Th>{t("audit.colField")}</Table.Th>
+                  <Table.Th maw={200}>{t("audit.colPrevious")}</Table.Th>
+                  <Table.Th maw={200}>{t("audit.colNew")}</Table.Th>
+                  <Table.Th>{t("audit.colSource")}</Table.Th>
+                  <Table.Th>{t("audit.colTime")}</Table.Th>
+                </Table.Tr>
+              </Table.Thead>
+              <Table.Tbody>
+                {items.map((e, i) => (
+                  <Table.Tr key={i}>
+                    <Table.Td style={{ whiteSpace: "nowrap" }}>{String(e.document_id)}</Table.Td>
+                    <Table.Td style={{ whiteSpace: "nowrap" }}>{String(e.field_name)}</Table.Td>
+                    <Table.Td maw={200} style={{ overflow: "hidden", textOverflow: "ellipsis", wordBreak: "break-word" }}>
+                      {String(e.previous_value ?? "—")}
+                    </Table.Td>
+                    <Table.Td maw={200} style={{ overflow: "hidden", textOverflow: "ellipsis", wordBreak: "break-word" }}>
+                      {String(e.new_value ?? "—")}
+                    </Table.Td>
+                    <Table.Td>
+                      <Badge color={e.change_source === "ai" ? "yellow" : "teal"} variant="light" size="sm">
+                        {String(e.change_source)}
+                      </Badge>
+                    </Table.Td>
+                    <Table.Td style={{ whiteSpace: "nowrap" }} c="dimmed">
+                      {new Date(String(e.changed_at)).toLocaleString()}
+                    </Table.Td>
+                  </Table.Tr>
+                ))}
+              </Table.Tbody>
+            </Table>
+          </Box>
+        )}
+      </Paper>
+
+      <Title order={3}>{t("audit.importExport")}</Title>
+      <Paper withBorder p="md" radius="md">
+        <Group gap="sm" align="center">
+          <Button onClick={handleExport}>{t("audit.export")}</Button>
+          <Button variant="default" component="label">
+            {t("audit.import")}
+            <input type="file" accept=".json" onChange={handleImport} style={{ display: "none" }} />
+          </Button>
+        </Group>
+        {importMsg && (
+          <Text size="sm" c="teal" mt="sm">{importMsg}</Text>
+        )}
+      </Paper>
+    </Stack>
   );
 }

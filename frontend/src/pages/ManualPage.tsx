@@ -1,11 +1,12 @@
 import { useState, useCallback, useMemo } from "react";
 import { useQuery } from "@tanstack/react-query";
+import {
+  Title, Paper, Text, Group, Stack, Badge, Button, TextInput,
+  MultiSelect, Select, Checkbox, Box, Loader, Alert, Pagination, SimpleGrid,
+  NumberInput, ActionIcon,
+} from "@mantine/core";
 import { api, type PaperlessEntity, type PaperlessCustomField, type DocumentItem, type MetadataSuggestionResponse } from "../api";
 import { t } from "../i18n";
-
-// ---------------------------------------------------------------------------
-// Persistent filter state (survives navigation)
-// ---------------------------------------------------------------------------
 
 const FILTERS_KEY = "piq_analysis_filters";
 
@@ -14,94 +15,22 @@ interface AnalysisFilters {
   tagIds: string[];
   corrIds: string[];
   dtIds: string[];
-  cfValues: Record<string, string>;   // fieldId → value
-  cfAdded: string[];                  // fieldIds explicitly added by the user
+  cfValues: Record<string, string>;
+  cfAdded: string[];
 }
 
-const DEFAULT_FILTERS: AnalysisFilters = {
-  titleQuery: "", tagIds: [], corrIds: [], dtIds: [],
-  cfValues: {}, cfAdded: [],
-};
+const DEFAULT_FILTERS: AnalysisFilters = { titleQuery: "", tagIds: [], corrIds: [], dtIds: [], cfValues: {}, cfAdded: [] };
 
 function loadFilters(): AnalysisFilters {
-  try {
-    const s = localStorage.getItem(FILTERS_KEY);
-    return s ? { ...DEFAULT_FILTERS, ...JSON.parse(s) } : DEFAULT_FILTERS;
-  } catch { return DEFAULT_FILTERS; }
+  try { const s = localStorage.getItem(FILTERS_KEY); return s ? { ...DEFAULT_FILTERS, ...JSON.parse(s) } : DEFAULT_FILTERS; }
+  catch { return DEFAULT_FILTERS; }
 }
-
-function saveFilters(f: AnalysisFilters) {
-  try { localStorage.setItem(FILTERS_KEY, JSON.stringify(f)); } catch {}
-}
-
-// ---------------------------------------------------------------------------
-// MultiEntityFilter — chip-based multi-select for tags / correspondents / etc.
-// ---------------------------------------------------------------------------
-
-const CHIP_BASE: React.CSSProperties = {
-  display: "inline-flex", alignItems: "center", gap: "4px",
-  padding: "2px 8px", borderRadius: "12px", fontSize: "0.8rem",
-  background: "var(--chip-filled-bg)", border: "1px solid var(--chip-filled-border)",
-  color: "var(--chip-filled-text)",
-};
-
-function MultiEntityFilter({
-  options, selected, onChange, placeholder,
-}: {
-  options: PaperlessEntity[];
-  selected: string[];
-  onChange: (ids: string[]) => void;
-  placeholder: string;
-}) {
-  const selectedSet = new Set(selected);
-  const available = options.filter(o => !selectedSet.has(String(o.id)));
-  const getLabel = (id: string) => options.find(o => String(o.id) === id)?.name ?? `#${id}`;
-
-  return (
-    <div style={{ display: "flex", flexDirection: "column", gap: "0.35rem" }}>
-      {available.length > 0 ? (
-        <select
-          value=""
-          onChange={e => { if (e.target.value) onChange([...selected, e.target.value]); }}
-          style={{ fontSize: "0.82rem", padding: "0.3rem 0.5rem" }}
-        >
-          <option value="">
-            {selected.length === 0 ? `— ${placeholder} —` : `＋ Add ${placeholder.toLowerCase()}`}
-          </option>
-          {available.map(o => <option key={o.id} value={String(o.id)}>{o.name}</option>)}
-        </select>
-      ) : selected.length > 0 ? (
-        <span style={{ fontSize: "0.78rem", color: "var(--text-on-card-muted)", fontStyle: "italic" }}>
-          All {placeholder.toLowerCase()}s selected
-        </span>
-      ) : null}
-      {selected.length > 0 && (
-        <div style={{ display: "flex", flexWrap: "wrap", gap: "0.3rem" }}>
-          {selected.map(id => (
-            <span key={id} style={CHIP_BASE}>
-              {getLabel(id)}
-              <button
-                type="button"
-                onClick={() => onChange(selected.filter(s => s !== id))}
-                style={{ background: "none", border: "none", cursor: "pointer", padding: 0, color: "rgba(255,255,255,0.7)", fontSize: "1rem", lineHeight: 1, marginLeft: "1px" }}
-              >×</button>
-            </span>
-          ))}
-        </div>
-      )}
-    </div>
-  );
-}
-
-// ---------------------------------------------------------------------------
-// Main page
-// ---------------------------------------------------------------------------
+function saveFilters(f: AnalysisFilters) { try { localStorage.setItem(FILTERS_KEY, JSON.stringify(f)); } catch {} }
 
 export default function ManualPage() {
   const [filters, setFilters] = useState<AnalysisFilters>(loadFilters);
   const [page, setPage] = useState(1);
   const [shouldSearch, setShouldSearch] = useState(false);
-
   const [analysisResults, setAnalysisResults] = useState<Record<number, MetadataSuggestionResponse>>({});
   const [analysisErrors, setAnalysisErrors] = useState<Record<number, string>>({});
   const [analyzingDocs, setAnalyzingDocs] = useState<Set<number>>(new Set());
@@ -117,28 +46,13 @@ export default function ManualPage() {
   const docTypes = useQuery({ queryKey: ["docTypes"], queryFn: api.getDocumentTypes, retry: false });
   const customFields = useQuery({ queryKey: ["customFields"], queryFn: api.getCustomFields, retry: false });
 
-  // Persist filters whenever they change
   const updateFilters = useCallback((patch: Partial<AnalysisFilters>) => {
-    setFilters(prev => {
-      const next = { ...prev, ...patch };
-      saveFilters(next);
-      return next;
-    });
+    setFilters(prev => { const next = { ...prev, ...patch }; saveFilters(next); return next; });
   }, []);
 
-  const clearFilters = useCallback(() => {
-    const cleared = { ...DEFAULT_FILTERS };
-    setFilters(cleared);
-    saveFilters(cleared);
-    setShouldSearch(false);
-  }, []);
+  const clearFilters = useCallback(() => { setFilters(DEFAULT_FILTERS); saveFilters(DEFAULT_FILTERS); setShouldSearch(false); }, []);
 
-  const hasActiveFilters =
-    filters.titleQuery.trim() ||
-    filters.tagIds.length > 0 ||
-    filters.corrIds.length > 0 ||
-    filters.dtIds.length > 0 ||
-    filters.cfAdded.some(id => filters.cfValues[id]);
+  const hasActiveFilters = filters.titleQuery.trim() || filters.tagIds.length > 0 || filters.corrIds.length > 0 || filters.dtIds.length > 0 || filters.cfAdded.some(id => filters.cfValues[id]);
 
   const buildParams = () => {
     const p: Record<string, string | string[]> = { page: String(page), page_size: "20" };
@@ -146,31 +60,18 @@ export default function ManualPage() {
     if (filters.tagIds.length) p.tag_ids = filters.tagIds;
     if (filters.corrIds.length) p.correspondent_ids = filters.corrIds;
     if (filters.dtIds.length) p.document_type_ids = filters.dtIds;
-    for (const id of filters.cfAdded) {
-      const v = filters.cfValues[id];
-      if (v) p[`custom_fields__${id}`] = v;
-    }
+    for (const id of filters.cfAdded) { const v = filters.cfValues[id]; if (v) p[`custom_fields__${id}`] = v; }
     return p;
   };
 
-  const docs = useQuery({
-    queryKey: ["documents", filters, page],
-    queryFn: () => api.getDocuments(buildParams()),
-    enabled: shouldSearch,
-    retry: false,
-  });
+  const docs = useQuery({ queryKey: ["documents", filters, page], queryFn: () => api.getDocuments(buildParams()), enabled: shouldSearch, retry: false });
 
   const analyzeOne = useCallback(async (docId: number) => {
     setAnalyzingDocs(prev => new Set(prev).add(docId));
     setAnalysisErrors(prev => { const next = { ...prev }; delete next[docId]; return next; });
-    try {
-      const data = await api.analyze(docId);
-      setAnalysisResults(prev => ({ ...prev, [docId]: data }));
-    } catch (err: unknown) {
-      setAnalysisErrors(prev => ({ ...prev, [docId]: (err as Error).message }));
-    } finally {
-      setAnalyzingDocs(prev => { const next = new Set(prev); next.delete(docId); return next; });
-    }
+    try { const result = await api.analyze(docId); setAnalysisResults(prev => ({ ...prev, [docId]: result })); }
+    catch (err: unknown) { setAnalysisErrors(prev => ({ ...prev, [docId]: (err as Error).message })); }
+    finally { setAnalyzingDocs(prev => { const next = new Set(prev); next.delete(docId); return next; }); }
   }, []);
 
   const handleBatchAnalyze = useCallback(async () => {
@@ -181,7 +82,6 @@ export default function ManualPage() {
     setSelectedDocs(new Set());
   }, [selectedDocs, analyzeOne]);
 
-  /** Queue a suggestion for review. Shows success flash for 1.8 s then auto-removes. */
   const handleQueue = useCallback(async (suggestion: MetadataSuggestionResponse, docId: number) => {
     setQueuingDocs(prev => new Set(prev).add(docId));
     try {
@@ -192,23 +92,16 @@ export default function ManualPage() {
         setAnalysisResults(prev => { const next = { ...prev }; delete next[docId]; return next; });
         setQueuedDocs(prev => { const next = new Set(prev); next.delete(docId); return next; });
       }, 1800);
-    } catch (err: unknown) {
-      setAnalysisErrors(prev => ({ ...prev, [docId]: (err as Error).message }));
-    } finally {
-      setQueuingDocs(prev => { const next = new Set(prev); next.delete(docId); return next; });
-    }
+    } catch (err: unknown) { setAnalysisErrors(prev => ({ ...prev, [docId]: (err as Error).message })); }
+    finally { setQueuingDocs(prev => { const next = new Set(prev); next.delete(docId); return next; }); }
   }, []);
 
-  /** Queue all suggestions that haven't been queued or dismissed yet. */
   const handleQueueAll = useCallback(async () => {
-    const toQueue = Object.keys(analysisResults)
-      .map(Number)
-      .filter(id => !queuedDocs.has(id) && !dismissed.has(id));
+    const toQueue = Object.keys(analysisResults).map(Number).filter(id => !queuedDocs.has(id) && !dismissed.has(id));
     await Promise.all(toQueue.map(id => handleQueue(analysisResults[id], id)));
   }, [analysisResults, queuedDocs, dismissed, handleQueue]);
 
   const handleSearch = () => { setPage(1); setShouldSearch(true); setSelectedDocs(new Set()); };
-  const handleKeyDown = (e: React.KeyboardEvent) => { if (e.key === "Enter") handleSearch(); };
   const handleDismiss = (docId: number) => {
     setDismissed(prev => new Set(prev).add(docId));
     setAnalysisResults(prev => { const next = { ...prev }; delete next[docId]; return next; });
@@ -226,333 +119,214 @@ export default function ManualPage() {
   const tagMap = new Map((tagsQ.data ?? []).map((t: PaperlessEntity) => [t.id, t.name]));
   const corrMap = new Map((correspondents.data ?? []).map((c: PaperlessEntity) => [c.id, c.name]));
   const dtMap = new Map((docTypes.data ?? []).map((d: PaperlessEntity) => [d.id, d.name]));
+  const readyToQueue = useMemo(() => Object.keys(analysisResults).map(Number).filter(id => !queuedDocs.has(id) && !dismissed.has(id)), [analysisResults, queuedDocs, dismissed]);
 
-  /** Count of analyzed results ready to be queued (not yet queued/dismissed). */
-  const readyToQueue = useMemo(
-    () => Object.keys(analysisResults).map(Number).filter(id => !queuedDocs.has(id) && !dismissed.has(id)),
-    [analysisResults, queuedDocs, dismissed]
-  );
-
-  // ---------------------------------------------------------------------------
-  // Compact read-only suggestion preview
-  // ---------------------------------------------------------------------------
+  const toSelectData = (items: PaperlessEntity[]) => (items ?? []).map(o => ({ value: String(o.id), label: o.name }));
+  const cfAvailableToAdd = (customFields.data ?? []).filter((cf: PaperlessCustomField) => !filters.cfAdded.includes(String(cf.id)));
 
   const renderSuggestion = (suggestion: MetadataSuggestionResponse, docId: number) => {
-    const customFieldEntries = Object.entries(suggestion.custom_fields ?? {});
+    const cfEntries = Object.entries(suggestion.custom_fields ?? {});
     const isQueuing = queuingDocs.has(docId);
     const isQueued = queuedDocs.has(docId);
-    const hasFields =
-      suggestion.title || suggestion.tags.length > 0 || suggestion.correspondent ||
-      suggestion.document_type || suggestion.storage_path || customFieldEntries.length > 0;
-
-    const rowStyle: React.CSSProperties = { display: "flex", gap: "0.5rem", alignItems: "flex-start", fontSize: "0.82rem" };
-    const labelStyle: React.CSSProperties = { color: "var(--text-on-card-muted)", minWidth: "110px", flexShrink: 0 };
-    const valueStyle: React.CSSProperties = { color: "var(--text-on-card)", fontWeight: 500 };
+    const hasFields = suggestion.title || suggestion.tags.length > 0 || suggestion.correspondent || suggestion.document_type || suggestion.storage_path || cfEntries.length > 0;
 
     return (
-      <div style={{
-        marginTop: "0.5rem", padding: "0.75rem 1rem",
-        background: "rgba(0,0,0,0.04)", borderRadius: "6px",
-        border: "1px solid var(--gray-200)",
-      }}>
-        <strong style={{ fontSize: "0.82rem", color: "var(--text-on-card-secondary)", textTransform: "uppercase", letterSpacing: "0.04em" }}>
-          {t("analysis.suggestedMetadata")}
-        </strong>
-
+      <Paper withBorder p="sm" radius="sm" mt="sm" bg="var(--mantine-color-default-hover)">
+        <Text size="xs" fw={700} tt="uppercase" c="dimmed" mb="xs">{t("analysis.suggestedMetadata")}</Text>
         {!hasFields ? (
-          <p style={{ color: "var(--text-on-card-muted)", fontStyle: "italic", fontSize: "0.82rem", marginTop: "0.4rem" }}>
-            {t("analysis.noMetadata")}
-          </p>
+          <Text size="sm" c="dimmed" fs="italic">{t("analysis.noMetadata")}</Text>
         ) : (
-          <div style={{ marginTop: "0.5rem", display: "flex", flexDirection: "column", gap: "0.3rem" }}>
-            {suggestion.title && (
-              <div style={rowStyle}>
-                <span style={labelStyle}>{t("analysis.title_field")}</span>
-                <span style={valueStyle}>{suggestion.title}</span>
-              </div>
-            )}
+          <Stack gap={4}>
+            {suggestion.title && <Group gap="sm"><Text size="xs" c="dimmed" w={110}>{t("analysis.title_field")}</Text><Text size="sm" fw={500}>{suggestion.title}</Text></Group>}
             {suggestion.tags.length > 0 && (
-              <div style={rowStyle}>
-                <span style={labelStyle}>{t("analysis.tags_field")}</span>
-                <div style={{ display: "flex", flexWrap: "wrap", gap: "0.25rem" }}>
-                  {suggestion.tags.map((tag, i) => (
-                    <span key={i} style={{
-                      background: "var(--petrol-600)", color: "#fff",
-                      borderRadius: "10px", padding: "1px 8px", fontSize: "0.75rem",
-                    }}>{tag}</span>
-                  ))}
-                </div>
-              </div>
+              <Group gap="sm" align="flex-start">
+                <Text size="xs" c="dimmed" w={110}>{t("analysis.tags_field")}</Text>
+                <Group gap={4}>{suggestion.tags.map((tag, i) => <Badge key={i} size="sm">{tag}</Badge>)}</Group>
+              </Group>
             )}
-            {suggestion.correspondent && (
-              <div style={rowStyle}>
-                <span style={labelStyle}>{t("analysis.correspondent_field")}</span>
-                <span style={{ color: "var(--text-on-card)" }}>{suggestion.correspondent}</span>
-              </div>
-            )}
-            {suggestion.document_type && (
-              <div style={rowStyle}>
-                <span style={labelStyle}>{t("analysis.docType_field")}</span>
-                <span style={{ color: "var(--text-on-card)" }}>{suggestion.document_type}</span>
-              </div>
-            )}
-            {suggestion.storage_path && (
-              <div style={rowStyle}>
-                <span style={labelStyle}>{t("analysis.storagePath_field")}</span>
-                <span style={{ color: "var(--text-on-card)" }}>{suggestion.storage_path}</span>
-              </div>
-            )}
-            {customFieldEntries.map(([key, val]) => (
-              <div key={key} style={rowStyle}>
-                <span style={labelStyle}>{key}</span>
-                <span style={{ color: "var(--text-on-card)" }}>{String(val ?? "")}</span>
-              </div>
-            ))}
-          </div>
+            {suggestion.correspondent && <Group gap="sm"><Text size="xs" c="dimmed" w={110}>{t("analysis.correspondent_field")}</Text><Text size="sm">{suggestion.correspondent}</Text></Group>}
+            {suggestion.document_type && <Group gap="sm"><Text size="xs" c="dimmed" w={110}>{t("analysis.docType_field")}</Text><Text size="sm">{suggestion.document_type}</Text></Group>}
+            {suggestion.storage_path && <Group gap="sm"><Text size="xs" c="dimmed" w={110}>{t("analysis.storagePath_field")}</Text><Text size="sm">{suggestion.storage_path}</Text></Group>}
+            {cfEntries.map(([key, val]) => <Group key={key} gap="sm"><Text size="xs" c="dimmed" w={110}>{key}</Text><Text size="sm">{String(val ?? "")}</Text></Group>)}
+          </Stack>
         )}
-
-        {isQueued ? (
-          <p className="success" style={{ marginTop: "0.6rem", fontSize: "0.85rem" }}>
-            {t("analysis.queued")}
-          </p>
-        ) : (
-          <div style={{ display: "flex", gap: "0.5rem", marginTop: "0.75rem" }}>
-            <button className="btn btn-primary" disabled={isQueuing}
-              onClick={() => handleQueue(suggestion, docId)}>
-              {isQueuing ? t("analysis.queuing") : t("analysis.queueForReview")}
-            </button>
-            <button className="btn" disabled={isQueuing}
-              onClick={() => handleDismiss(docId)}>
-              {t("analysis.dismiss")}
-            </button>
-          </div>
-        )}
-      </div>
+        <Group gap="xs" mt="sm">
+          {isQueued ? (
+            <Text size="sm" c="teal">{t("analysis.queued")}</Text>
+          ) : (
+            <>
+              <Button size="xs" loading={isQueuing} onClick={() => handleQueue(suggestion, docId)}>{t("analysis.queueForReview")}</Button>
+              <Button size="xs" variant="default" disabled={isQueuing} onClick={() => handleDismiss(docId)}>{t("analysis.dismiss")}</Button>
+            </>
+          )}
+        </Group>
+      </Paper>
     );
   };
 
-  // Custom fields available to add (not yet added)
-  const cfAvailableToAdd = (customFields.data ?? []).filter(
-    (cf: PaperlessCustomField) => !filters.cfAdded.includes(String(cf.id))
-  );
-
   return (
-    <div>
-      <h2>{t("analysis.title")}</h2>
+    <Stack gap="md">
+      <Title order={2}>{t("analysis.title")}</Title>
+
       {paperlessUnavailable && (
-        <div className="card"><p className="error">{t("analysis.paperlessUnavailable")}</p></div>
+        <Alert color="red" variant="light">{t("analysis.paperlessUnavailable")}</Alert>
       )}
 
-      {/* ── Filter panel ── */}
-      <div className="card">
-        {/* Title search */}
-        <div className="form-group">
-          <label htmlFor="title-search">{t("analysis.search")}</label>
-          <input id="title-search" value={filters.titleQuery}
-            onChange={e => updateFilters({ titleQuery: e.target.value })}
-            onKeyDown={handleKeyDown}
-            placeholder={t("analysis.searchPlaceholder")} />
-        </div>
+      {/* Filter panel */}
+      <Paper withBorder p="md" radius="md">
+        <Stack gap="sm">
+          <TextInput
+            label={t("analysis.search")}
+            placeholder={t("analysis.searchPlaceholder")}
+            value={filters.titleQuery}
+            onChange={e => updateFilters({ titleQuery: e.currentTarget.value })}
+            onKeyDown={e => e.key === "Enter" && handleSearch()}
+          />
 
-        {/* Multi-select row: Tags | Correspondent | Document Type */}
-        <div style={{ display: "grid", gridTemplateColumns: "repeat(3, 1fr)", gap: "0.75rem", marginBottom: "0.75rem" }}>
-          <div className="form-group" style={{ margin: 0 }}>
-            <label>{t("analysis.tag")}</label>
-            <MultiEntityFilter
-              options={tagsQ.data ?? []}
-              selected={filters.tagIds}
-              onChange={tagIds => updateFilters({ tagIds })}
+          <SimpleGrid cols={3} spacing="sm">
+            <MultiSelect
+              label={t("analysis.tag")}
               placeholder={t("analysis.allTags")}
+              data={toSelectData(tagsQ.data ?? [])}
+              value={filters.tagIds}
+              onChange={tagIds => updateFilters({ tagIds })}
+              searchable clearable
             />
-          </div>
-          <div className="form-group" style={{ margin: 0 }}>
-            <label>{t("analysis.correspondent")}</label>
-            <MultiEntityFilter
-              options={correspondents.data ?? []}
-              selected={filters.corrIds}
-              onChange={corrIds => updateFilters({ corrIds })}
+            <MultiSelect
+              label={t("analysis.correspondent")}
               placeholder={t("analysis.allCorrespondents")}
+              data={toSelectData(correspondents.data ?? [])}
+              value={filters.corrIds}
+              onChange={corrIds => updateFilters({ corrIds })}
+              searchable clearable
             />
-          </div>
-          <div className="form-group" style={{ margin: 0 }}>
-            <label>{t("analysis.docType")}</label>
-            <MultiEntityFilter
-              options={docTypes.data ?? []}
-              selected={filters.dtIds}
-              onChange={dtIds => updateFilters({ dtIds })}
+            <MultiSelect
+              label={t("analysis.docType")}
               placeholder={t("analysis.allTypes")}
+              data={toSelectData(docTypes.data ?? [])}
+              value={filters.dtIds}
+              onChange={dtIds => updateFilters({ dtIds })}
+              searchable clearable
             />
-          </div>
-        </div>
+          </SimpleGrid>
 
-        {/* On-demand custom field filters */}
-        {filters.cfAdded.length > 0 && (
-          <div style={{ display: "flex", flexWrap: "wrap", gap: "0.5rem", marginBottom: "0.75rem" }}>
-            {filters.cfAdded.map(cfId => {
-              const cf = (customFields.data ?? []).find((c: PaperlessCustomField) => String(c.id) === cfId);
-              if (!cf) return null;
-              const val = filters.cfValues[cfId] ?? "";
-              const setValue = (v: string) => updateFilters({ cfValues: { ...filters.cfValues, [cfId]: v } });
-              const removeField = () => {
-                const nextAdded = filters.cfAdded.filter(id => id !== cfId);
-                const nextValues = { ...filters.cfValues };
-                delete nextValues[cfId];
-                updateFilters({ cfAdded: nextAdded, cfValues: nextValues });
-              };
-              return (
-                <div key={cfId} className="form-group" style={{ margin: 0, minWidth: "180px", flex: "1 1 180px" }}>
-                  <label style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
-                    <span>{cf.name}</span>
-                    <button type="button" onClick={removeField}
-                      style={{ background: "none", border: "none", cursor: "pointer", color: "var(--text-on-card-muted)", fontSize: "1rem", lineHeight: 1, padding: 0 }}
-                      title="Remove this filter">×</button>
-                  </label>
-                  {cf.data_type === "boolean" ? (
-                    <select value={val} onChange={e => setValue(e.target.value)}>
-                      <option value="">All</option>
-                      <option value="true">Yes</option>
-                      <option value="false">No</option>
-                    </select>
-                  ) : cf.data_type === "date" ? (
-                    <input type="date" value={val} onChange={e => setValue(e.target.value)} />
-                  ) : ["integer", "float", "monetary"].includes(cf.data_type) ? (
-                    <input type="number" value={val} onChange={e => setValue(e.target.value)} placeholder={`Filter by ${cf.name}…`} />
-                  ) : (
-                    <input type="text" value={val} onChange={e => setValue(e.target.value)} placeholder={`Filter by ${cf.name}…`} />
-                  )}
-                </div>
-              );
-            })}
-          </div>
-        )}
-
-        {/* Add field filter + actions row */}
-        <div style={{ display: "flex", gap: "0.5rem", alignItems: "center", flexWrap: "wrap" }}>
-          {cfAvailableToAdd.length > 0 && (
-            <select
-              value=""
-              onChange={e => {
-                if (e.target.value)
-                  updateFilters({ cfAdded: [...filters.cfAdded, e.target.value] });
-              }}
-              style={{ fontSize: "0.82rem", padding: "0.3rem 0.5rem" }}
-            >
-              <option value="">＋ Add field filter…</option>
-              {cfAvailableToAdd.map((cf: PaperlessCustomField) => (
-                <option key={cf.id} value={String(cf.id)}>{cf.name}</option>
-              ))}
-            </select>
+          {/* Custom field filters */}
+          {filters.cfAdded.length > 0 && (
+            <SimpleGrid cols={3} spacing="sm">
+              {filters.cfAdded.map(cfId => {
+                const cf = (customFields.data ?? []).find((c: PaperlessCustomField) => String(c.id) === cfId);
+                if (!cf) return null;
+                const val = filters.cfValues[cfId] ?? "";
+                const setValue = (v: string) => updateFilters({ cfValues: { ...filters.cfValues, [cfId]: v } });
+                const removeField = () => {
+                  const nextAdded = filters.cfAdded.filter(id => id !== cfId);
+                  const nextValues = { ...filters.cfValues }; delete nextValues[cfId];
+                  updateFilters({ cfAdded: nextAdded, cfValues: nextValues });
+                };
+                return (
+                  <Box key={cfId}>
+                    <Group justify="space-between" mb={4}>
+                      <Text size="xs" fw={500}>{cf.name}</Text>
+                      <ActionIcon size="xs" variant="subtle" color="gray" onClick={removeField}>×</ActionIcon>
+                    </Group>
+                    {cf.data_type === "boolean" ? (
+                      <Select value={val} onChange={v => setValue(v ?? "")} data={[{ value: "", label: "All" }, { value: "true", label: "Yes" }, { value: "false", label: "No" }]} />
+                    ) : ["integer", "float", "monetary"].includes(cf.data_type) ? (
+                      <NumberInput value={val} onChange={v => setValue(String(v))} placeholder={`Filter by ${cf.name}…`} />
+                    ) : (
+                      <TextInput value={val} onChange={e => setValue(e.currentTarget.value)} placeholder={`Filter by ${cf.name}…`} />
+                    )}
+                  </Box>
+                );
+              })}
+            </SimpleGrid>
           )}
 
-          <button className="btn btn-primary" onClick={handleSearch} disabled={paperlessUnavailable}>
-            {t("analysis.searchBtn")}
-          </button>
-
-          {hasActiveFilters && (
-            <button
-              className="btn"
-              onClick={clearFilters}
-              style={{ fontSize: "0.82rem", color: "var(--text-on-card-muted)" }}
-            >
-              ✕ Clear all filters
-            </button>
-          )}
-        </div>
-      </div>
-
-      {/* ── Results ── */}
-      {docs.isLoading && <p>{t("analysis.searching")}</p>}
-      {docs.isError && <p className="error">{t("analysis.searchFailed")}</p>}
-      {docs.isSuccess && (
-        <div>
-          <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", margin: "0.75rem 0 0.5rem", flexWrap: "wrap", gap: "0.5rem" }}>
-            <p style={{ margin: 0, color: "var(--text-on-body-secondary)" }}>
-              {t("analysis.docsFound", { count: docs.data.total })}
-            </p>
-            {docs.data.items.length > 0 && (
-              <div style={{ display: "flex", gap: "0.75rem", alignItems: "center", flexWrap: "wrap" }}>
-                <label style={{ fontSize: "0.85rem", cursor: "pointer", display: "flex", alignItems: "center", gap: "0.25rem", color: "var(--text-on-body-secondary)" }}>
-                  <input type="checkbox" checked={hideAnalyzed} onChange={e => setHideAnalyzed(e.target.checked)} />
-                  {t("analysis.hideAnalyzed")}
-                </label>
-                <label style={{ fontSize: "0.85rem", cursor: "pointer", display: "flex", alignItems: "center", gap: "0.25rem", color: "var(--text-on-body-secondary)" }}>
-                  <input type="checkbox"
-                    checked={docs.data.items.length > 0 && docs.data.items.every((d: DocumentItem) => selectedDocs.has(d.id))}
-                    onChange={toggleSelectAll} />
-                  {t("analysis.selectAll")}
-                </label>
-                <button className="btn btn-primary" onClick={handleBatchAnalyze} disabled={selectedDocs.size === 0 || batchRunning}>
-                  {batchRunning ? t("analysis.analyzing") : t("analysis.analyzeSelected", { count: String(selectedDocs.size) })}
-                </button>
-                {readyToQueue.length >= 2 && (
-                  <button className="btn btn-primary" onClick={handleQueueAll} disabled={queuingDocs.size > 0}>
-                    {t("analysis.queueAll", { count: String(readyToQueue.length) })}
-                  </button>
-                )}
-              </div>
+          <Group gap="sm">
+            {cfAvailableToAdd.length > 0 && (
+              <Select
+                placeholder="＋ Add field filter…"
+                data={cfAvailableToAdd.map((cf: PaperlessCustomField) => ({ value: String(cf.id), label: cf.name }))}
+                value={null}
+                onChange={v => { if (v) updateFilters({ cfAdded: [...filters.cfAdded, v] }); }}
+                w={220}
+              />
             )}
-          </div>
+            <Button onClick={handleSearch} disabled={paperlessUnavailable}>{t("analysis.searchBtn")}</Button>
+            {hasActiveFilters && (
+              <Button variant="subtle" color="gray" onClick={clearFilters}>✕ Clear all filters</Button>
+            )}
+          </Group>
+        </Stack>
+      </Paper>
 
-          {(() => {
-            let visibleIdx = 0;
-            return docs.data.items.map((doc: DocumentItem) => {
-              const isAnalyzing = analyzingDocs.has(doc.id);
-              const result = analysisResults[doc.id];
-              const error = analysisErrors[doc.id];
-              const isDismissed = dismissed.has(doc.id);
-              const wasAnalyzed = !!result || isDismissed;
-              if (hideAnalyzed && wasAnalyzed) return null;
-              const cardIdx = visibleIdx++;
-              return (
-                <div key={doc.id} className={`card${cardIdx % 2 === 1 ? " card-alt" : ""}`} style={{ marginBottom: "0.5rem" }}>
-                  <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start" }}>
-                    <div style={{ display: "flex", gap: "0.5rem", alignItems: "flex-start" }}>
-                      <input type="checkbox" checked={selectedDocs.has(doc.id)} onChange={() => toggleDocSelection(doc.id)} style={{ marginTop: "0.3rem" }} />
-                      <div>
-                        <strong style={{ color: "var(--text-on-card)" }}>{doc.title || `Document #${doc.id}`}</strong>
-                        <div style={{ fontSize: "0.82rem", color: "var(--text-on-card-muted)", marginTop: "0.2rem" }}>
-                          {doc.correspondent ? <span>{corrMap.get(doc.correspondent) ?? doc.correspondent} · </span> : null}
-                          {doc.document_type ? <span>{dtMap.get(doc.document_type) ?? doc.document_type}{doc.tags.length > 0 ? " · " : ""}</span> : null}
-                          {doc.tags.length > 0 && <span>{doc.tags.map(tg => tagMap.get(tg) ?? tg).join(", ")}</span>}
-                        </div>
-                      </div>
-                    </div>
-                    <button
-                      className="btn btn-primary"
-                      style={{ whiteSpace: "nowrap", marginLeft: "1rem", flexShrink: 0 }}
-                      onClick={() => analyzeOne(doc.id)}
-                      disabled={isAnalyzing || batchRunning}
-                    >
-                      {isAnalyzing ? t("analysis.analyzing") : t("analysis.analyze")}
-                    </button>
-                  </div>
-                  {isAnalyzing && (
-                    <p style={{ marginTop: "0.5rem", color: "var(--text-on-card-muted)", fontStyle: "italic", fontSize: "0.85rem" }}>
-                      {t("analysis.analyzingDoc")}
-                    </p>
-                  )}
-                  {error && (
-                    <p className="error" style={{ marginTop: "0.5rem" }}>
-                      {t("analysis.analysisFailed")} {error}
-                    </p>
-                  )}
-                  {result && !isDismissed && renderSuggestion(result, doc.id)}
-                </div>
-              );
-            });
-          })()}
+      {/* Results */}
+      {docs.isLoading && <Loader size="sm" />}
+      {docs.isError && <Alert color="red" variant="light">{t("analysis.searchFailed")}</Alert>}
+
+      {docs.isSuccess && (
+        <Stack gap="sm">
+          <Group justify="space-between" align="center" wrap="wrap">
+            <Text size="sm" c="dimmed">{t("analysis.docsFound", { count: docs.data.total })}</Text>
+            {docs.data.items.length > 0 && (
+              <Group gap="sm" wrap="wrap">
+                <Checkbox size="xs" label={t("analysis.hideAnalyzed")} checked={hideAnalyzed} onChange={e => setHideAnalyzed(e.currentTarget.checked)} />
+                <Checkbox
+                  size="xs" label={t("analysis.selectAll")}
+                  checked={docs.data.items.length > 0 && docs.data.items.every((d: DocumentItem) => selectedDocs.has(d.id))}
+                  onChange={toggleSelectAll}
+                />
+                <Button size="xs" disabled={selectedDocs.size === 0 || batchRunning} loading={batchRunning} onClick={handleBatchAnalyze}>
+                  {t("analysis.analyzeSelected", { count: String(selectedDocs.size) })}
+                </Button>
+                {readyToQueue.length >= 2 && (
+                  <Button size="xs" disabled={queuingDocs.size > 0} onClick={handleQueueAll}>
+                    {t("analysis.queueAll", { count: String(readyToQueue.length) })}
+                  </Button>
+                )}
+              </Group>
+            )}
+          </Group>
+
+          {docs.data.items.map((doc: DocumentItem) => {
+            const isAnalyzing = analyzingDocs.has(doc.id);
+            const result = analysisResults[doc.id];
+            const error = analysisErrors[doc.id];
+            const isDismissed = dismissed.has(doc.id);
+            const wasAnalyzed = !!result || isDismissed;
+            if (hideAnalyzed && wasAnalyzed) return null;
+            return (
+              <Paper key={doc.id} withBorder p="md" radius="md">
+                <Group justify="space-between" align="flex-start">
+                  <Group align="flex-start" gap="sm">
+                    <Checkbox mt={2} checked={selectedDocs.has(doc.id)} onChange={() => toggleDocSelection(doc.id)} />
+                    <Box>
+                      <Text fw={600} size="sm">{doc.title || `Document #${doc.id}`}</Text>
+                      <Text size="xs" c="dimmed">
+                        {doc.correspondent ? `${corrMap.get(doc.correspondent) ?? doc.correspondent} · ` : ""}
+                        {doc.document_type ? `${dtMap.get(doc.document_type) ?? doc.document_type}${doc.tags.length > 0 ? " · " : ""}` : ""}
+                        {doc.tags.length > 0 && doc.tags.map(tg => tagMap.get(tg) ?? tg).join(", ")}
+                      </Text>
+                    </Box>
+                  </Group>
+                  <Button size="xs" loading={isAnalyzing} disabled={batchRunning} onClick={() => analyzeOne(doc.id)} style={{ flexShrink: 0 }}>
+                    {t("analysis.analyze")}
+                  </Button>
+                </Group>
+                {isAnalyzing && <Text size="sm" c="dimmed" fs="italic" mt="xs">{t("analysis.analyzingDoc")}</Text>}
+                {error && <Text size="sm" c="red" mt="xs">{t("analysis.analysisFailed")} {error}</Text>}
+                {result && !isDismissed && renderSuggestion(result, doc.id)}
+              </Paper>
+            );
+          })}
 
           {docs.data.total > 20 && (
-            <div style={{ display: "flex", gap: "0.5rem", marginTop: "0.5rem", alignItems: "center" }}>
-              <button className="btn" disabled={page <= 1} onClick={() => setPage(p => p - 1)}>←</button>
-              <span style={{ lineHeight: "2rem", fontSize: "0.85rem", color: "var(--text-on-body-secondary)" }}>
-                {page} / {Math.ceil(docs.data.total / 20)}
-              </span>
-              <button className="btn" disabled={page * 20 >= docs.data.total} onClick={() => setPage(p => p + 1)}>→</button>
-            </div>
+            <Group justify="center">
+              <Pagination total={Math.ceil(docs.data.total / 20)} value={page} onChange={setPage} size="sm" />
+            </Group>
           )}
-        </div>
+        </Stack>
       )}
-    </div>
+    </Stack>
   );
 }

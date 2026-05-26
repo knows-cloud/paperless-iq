@@ -1,4 +1,8 @@
 import { useState, FormEvent } from "react";
+import {
+  Center, Paper, Title, Text, TextInput, PasswordInput,
+  Button, Alert, Stack,
+} from "@mantine/core";
 import { api, setStoredToken } from "../api";
 
 interface LoginPageProps {
@@ -28,123 +32,52 @@ export default function LoginPage({ onLogin }: LoginPageProps) {
   }
 
   return (
-    <div style={{
-      minHeight: "100vh",
-      display: "flex",
-      alignItems: "center",
-      justifyContent: "center",
-      background: "var(--bg-body)",
-    }}>
-      <div style={{
-        background: "var(--bg-card)",
-        border: "1px solid var(--card-border, var(--gray-200))",
-        borderRadius: "16px",
-        padding: "2.5rem 2rem",
-        width: "100%",
-        maxWidth: "380px",
-        boxShadow: "var(--shadow-lg)",
-      }}>
-        {/* Logo / title */}
-        <div style={{ textAlign: "center", marginBottom: "2rem" }}>
-          <div style={{
-            fontSize: "2.5rem",
-            marginBottom: "0.5rem",
-            lineHeight: 1,
-          }}>📄</div>
-          <h1 style={{
-            margin: 0,
-            fontSize: "1.4rem",
-            fontWeight: 700,
-            color: "var(--text-on-card)",
-          }}>Paperless IQ</h1>
-          <p style={{
-            margin: "0.35rem 0 0",
-            fontSize: "0.85rem",
-            color: "var(--text-on-card-secondary)",
-          }}>Sign in with your Paperless-NGX account</p>
-        </div>
+    <Center mih="100vh">
+      <Paper withBorder shadow="lg" p="xl" radius="md" w="100%" maw={380}>
+        <Stack align="center" mb="xl" gap={4}>
+          <Text size="2.5rem" lh={1}>📄</Text>
+          <Title order={2} mt={4}>Paperless IQ</Title>
+          <Text size="sm" c="dimmed">Sign in with your Paperless-NGX account</Text>
+        </Stack>
 
-        <form onSubmit={handleSubmit} style={{ display: "flex", flexDirection: "column", gap: "1rem" }}>
-          <div style={{ display: "flex", flexDirection: "column", gap: "0.35rem" }}>
-            <label style={{ fontSize: "0.8rem", color: "var(--text-on-card-secondary)", fontWeight: 500 }}>
-              Username
-            </label>
-            <input
-              type="text"
+        <form onSubmit={handleSubmit}>
+          <Stack gap="md">
+            <TextInput
+              label="Username"
+              placeholder="paperless-username"
               autoComplete="username"
               autoFocus
               value={username}
-              onChange={e => setUsername(e.target.value)}
+              onChange={e => setUsername(e.currentTarget.value)}
               disabled={loading}
-              placeholder="paperless-username"
-              style={{
-                padding: "0.65rem 0.85rem",
-                borderRadius: "8px",
-                border: "1px solid var(--gray-300)",
-                background: "var(--bg-input)",
-                color: "var(--text-on-card)",
-                fontSize: "0.95rem",
-                outline: "none",
-              }}
             />
-          </div>
-
-          <div style={{ display: "flex", flexDirection: "column", gap: "0.35rem" }}>
-            <label style={{ fontSize: "0.8rem", color: "var(--text-on-card-secondary)", fontWeight: 500 }}>
-              Password
-            </label>
-            <input
-              type="password"
+            <PasswordInput
+              label="Password"
+              placeholder="••••••••"
               autoComplete="current-password"
               value={password}
-              onChange={e => setPassword(e.target.value)}
+              onChange={e => setPassword(e.currentTarget.value)}
               disabled={loading}
-              placeholder="••••••••"
-              style={{
-                padding: "0.65rem 0.85rem",
-                borderRadius: "8px",
-                border: "1px solid var(--gray-300)",
-                background: "var(--bg-input)",
-                color: "var(--text-on-card)",
-                fontSize: "0.95rem",
-                outline: "none",
-              }}
             />
-          </div>
 
-          {error && (
-            <div style={{
-              padding: "0.6rem 0.85rem",
-              borderRadius: "8px",
-              background: "var(--error-band-bg, rgba(220,38,38,0.12))",
-              border: "1px solid var(--error-band-border, rgba(220,38,38,0.30))",
-              color: "var(--error-on-card)",
-              fontSize: "0.85rem",
-            }}>
-              {error}
-            </div>
-          )}
+            {error && (
+              <Alert color="red" variant="light">
+                {error}
+              </Alert>
+            )}
 
-          <button
-            type="submit"
-            disabled={loading || !username.trim() || !password.trim()}
-            style={{
-              marginTop: "0.5rem",
-              padding: "0.75rem",
-              borderRadius: "8px",
-              border: "none",
-              background: loading ? "var(--petrol-400)" : "var(--petrol-600)",
-              color: "#fff",
-              fontWeight: 600,
-              fontSize: "1rem",
-              cursor: loading ? "not-allowed" : "pointer",
-              transition: "opacity 0.15s",
-            }}
-          >
-            {loading ? "Signing in…" : "Sign in"}
-          </button>
+            <Button
+              type="submit"
+              fullWidth
+              mt="xs"
+              loading={loading}
+              disabled={!username.trim() || !password.trim()}
+            >
+              Sign in
+            </Button>
+          </Stack>
         </form>
-      </div>
-    </div>
+      </Paper>
+    </Center>
   );
 }
