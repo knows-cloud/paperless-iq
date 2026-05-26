@@ -193,6 +193,19 @@ The bootstrap problem (first admin has no permissions yet) is solved by `sync_ng
 
 ---
 
+## D-19 · Session expiry via background loop, not startup hard-delete
+
+**Decision:** Expired conversation sessions (older than 24 hours) are processed by a persistent `_session_expiry_loop` background task, not by a hard-delete in `lifespan()`. The loop runs immediately at startup and then every hour.
+
+**Rationale:** The original startup prune ran before providers and the memory store were initialized, so it could only hard-delete sessions — memories were silently lost. The background loop runs after all providers are ready, so it calls `_extract_memories_from_session()` for each expired session before deleting it. Sessions that expire while the app is down are caught on the first loop iteration after restart.
+
+**Rule:**
+- Do not re-introduce a startup hard-delete of sessions in `lifespan()`.
+- Memory extraction is always attempted before deletion; failures are logged but do not block deletion.
+- The loop is always started (regardless of automation settings) and cancelled on shutdown alongside the automation tasks.
+
+---
+
 ## D-15 · `_paperless_list` handles all entity pagination
 
 **Decision:** The private helper `_paperless_list(entity, extra_fields=None)` in `main.py` handles all pagination for Paperless NGX list endpoints. Functions like `list_tags`, `list_custom_fields`, `list_storage_paths` are one-liners that call this helper.

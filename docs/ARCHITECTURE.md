@@ -39,8 +39,9 @@ The FastAPI application entry-point. Contains:
 - All HTTP route handlers (`@app.get/post/put/delete`)
 - `lifespan()` — startup/shutdown: DB init, background task launch, settings seed
 - `_automation_loop(batch_size=None|N)` — unified background loop (inbox monitor or scheduler)
+- `_session_expiry_loop(app)` — hourly background task: extracts memories from sessions older than 24 hours, then deletes them (see D-19)
 - `_background_index(doc_id)` — background task to embed a document after it is processed
-- `_extract_memories_from_session(session_id)` — extracts and deduplicates memories on session close
+- `_extract_memories_from_session(session, ...)` — extracts and deduplicates memories; called from explicit session close and from `_session_expiry_loop`
 - Helper utilities: `_paperless_list()`, `_apply_settings()`, auth middleware
 
 **Session management rule:**

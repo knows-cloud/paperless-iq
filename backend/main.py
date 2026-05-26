@@ -14,7 +14,7 @@ logging.basicConfig(
     force=True,  # override any handler uvicorn may have added first
 )
 from contextlib import asynccontextmanager
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Annotated, Any, AsyncGenerator
 from uuid import UUID, uuid4
@@ -424,6 +424,53 @@ async def _background_index(
         logger.warning("Background indexing failed.", exc_info=True)
 
 
+async def _session_expiry_loop(app: FastAPI) -> None:
+    """Extract memories from sessions older than 24 hours, then delete them.
+
+    Runs immediately at startup (to catch sessions that expired while the app
+    was down) and then every hour. Memory extraction is skipped gracefully if
+    providers are unavailable or memory is disabled.
+    """
+    while True:
+        try:
+            config = _settings_svc.config
+            providers = getattr(app.state, "providers", None)
+            memory_store = getattr(app.state, "memory_store", None)
+
+            cutoff = datetime.now(timezone.utc) - timedelta(hours=24)
+            async with AsyncSessionLocal() as db:
+                result = await db.execute(
+                    select(ConversationSessionORM).where(
+                        ConversationSessionORM.updated_at < cutoff
+                    )
+                )
+                expired = result.scalars().all()
+
+            if expired:
+                logger.info("Session expiry: processing %d expired session(s)", len(expired))
+                provider = providers.get(config.llm_provider) if providers else None
+                for session in expired:
+                    if provider and memory_store:
+                        try:
+                            await _extract_memories_from_session(session, provider, memory_store, config)
+                        except Exception:
+                            logger.warning(
+                                "Session expiry: memory extraction failed for session %s",
+                                session.id, exc_info=True,
+                            )
+                    async with AsyncSessionLocal() as db:
+                        await db.execute(
+                            sa_delete(ConversationSessionORM).where(
+                                ConversationSessionORM.id == session.id
+                            )
+                        )
+                        await db.commit()
+        except Exception:
+            logger.warning("Session expiry loop error", exc_info=True)
+
+        await asyncio.sleep(3600)
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     """Application lifespan: startup and shutdown hooks."""
@@ -436,20 +483,6 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     async with engine.begin() as conn:
         await conn.run_sync(Base.metadata.create_all)
 
-    # Prune conversation sessions older than 24 hours
-    try:
-        cutoff = datetime.now(timezone.utc).timestamp() - 86400
-        async with AsyncSessionLocal() as db:
-            await db.execute(
-                sa_delete(ConversationSessionORM).where(
-                    ConversationSessionORM.updated_at < datetime.fromtimestamp(cutoff, tz=timezone.utc)
-                )
-            )
-            await db.commit()
-        logger.info("Pruned stale conversation sessions")
-    except Exception:
-        logger.warning("Failed to prune conversation sessions", exc_info=True)
-
     # Load persisted settings from DB (seeds from env vars on first run)
     await _settings_svc.load_from_db()
 
@@ -460,6 +493,7 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     app.state.rate_limiter = RateLimiter()
     app.state.inbox_task = None
     app.state.scheduler_task = None
+    app.state.session_expiry_task = None
     app.state.vector_store = None
     app.state.ollama_queue = None
     app.state.memory_store = None
@@ -556,10 +590,13 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
                 _automation_loop(app, config.poll_interval_seconds, batch_size=config.batch_size)
             )
 
+    # Always run the session expiry loop — extracts memories then deletes expired sessions
+    app.state.session_expiry_task = asyncio.create_task(_session_expiry_loop(app))
+
     yield
 
     # Shutdown: cancel automation tasks
-    for task_name in ("inbox_task", "scheduler_task"):
+    for task_name in ("inbox_task", "scheduler_task", "session_expiry_task"):
         task: asyncio.Task[Any] | None = getattr(app.state, task_name, None)
         if task is not None and not task.done():
             task.cancel()
@@ -1258,7 +1295,8 @@ _DISCOVER_VERBATIM_WINDOW = 8
 async def _extract_memories_from_session(session, provider, memory_store, config) -> int:
     """Extract memorable facts from a conversation session and persist them.
 
-    Called when a session is explicitly closed (DELETE /api/discover/sessions/{id}).
+    Called from two paths: explicit session close (DELETE /api/discover/sessions/{id})
+    and the periodic _session_expiry_loop (sessions older than 24 hours).
     Returns the number of memories created or updated.
     """
     if not getattr(config, "memory_enabled", True):
@@ -2200,6 +2238,14 @@ async def get_status(request: Request) -> dict:
     config = _settings_svc.config
     queue: OllamaQueue | None = getattr(request.app.state, "ollama_queue", None)
 
+    # /api/status is a public path so require_auth never sets request.state.user.
+    # Detect authentication by reading the token directly from the header.
+    is_authed = not _is_auth_required()
+    if not is_authed:
+        auth_header = request.headers.get("Authorization", "")
+        if auth_header.startswith("Bearer "):
+            is_authed = bool(get_session_user(auth_header[7:]))
+
     # Use cached health if queue is busy or cache is fresh (< 30s)
     llm_online = False
     embed_online = False
@@ -2265,8 +2311,6 @@ async def get_status(request: Request) -> dict:
                     total_eligible = resp.json().get("count", 0)
         except Exception:
             pass
-
-    is_authed = bool(getattr(request.state, "user", None)) or not _is_auth_required()
 
     base: dict[str, Any] = {
         "llm_online": llm_online,

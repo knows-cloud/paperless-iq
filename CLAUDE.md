@@ -11,7 +11,7 @@ that keep the codebase consistent.
 | File | What it covers |
 |------|---------------|
 | `docs/ARCHITECTURE.md` | System diagram, all backend modules, frontend tree, three key data flows, async patterns, security |
-| `docs/DECISIONS.md` | 18 design decisions (D-01–D-18) — each has Decision, Rationale, and an explicit Rule |
+| `docs/DECISIONS.md` | 19 design decisions (D-01–D-19) — each has Decision, Rationale, and an explicit Rule |
 
 
 **Always read `docs/DECISIONS.md` before starting a refactor.** The decisions there are not optional style preferences — they reflect real bugs that were fixed by establishing the rule.
