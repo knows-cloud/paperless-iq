@@ -137,12 +137,11 @@ def check_login_rate_limit(ip: str) -> bool:
 # Webhook secret
 # ---------------------------------------------------------------------------
 
-def check_webhook_secret(request: Request) -> bool:
-    """Return True if the webhook secret header matches WEBHOOK_SECRET.
+def check_webhook_secret(request: Request, expected: str) -> bool:
+    """Return True if the X-Webhook-Secret header matches *expected*.
 
-    When WEBHOOK_SECRET is not set, all requests are accepted (backwards compat).
+    When *expected* is empty, all requests are accepted (webhook is open).
     """
-    expected = os.environ.get("WEBHOOK_SECRET", "")
     if not expected:
         return True
     provided = request.headers.get("X-Webhook-Secret", "")

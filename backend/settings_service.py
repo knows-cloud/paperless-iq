@@ -57,7 +57,7 @@ def _decrypt_creds(stored: str) -> str:
 logger = logging.getLogger(__name__)
 
 # Fields that contain credentials and must be redacted on export / API response
-CREDENTIAL_FIELDS = frozenset({"llm_credentials"})
+CREDENTIAL_FIELDS = frozenset({"llm_credentials", "webhook_secret"})
 
 # Placeholder used in exported config files and masked API responses
 REDACTED_PLACEHOLDER = "__REDACTED__"
@@ -164,9 +164,11 @@ class SettingsService:
             if row is not None:
                 try:
                     data = json.loads(row.config_json)
-                    # Decrypt credential blob if it was stored encrypted
+                    # Decrypt credential fields if stored encrypted
                     if data.get("llm_credentials"):
                         data["llm_credentials"] = _decrypt_creds(data["llm_credentials"])
+                    if data.get("webhook_secret"):
+                        data["webhook_secret"] = _decrypt_creds(data["webhook_secret"])
                     self._config = PaperlessIQConfig(**data)
                     logger.info("Settings loaded from database.")
                     return
@@ -196,6 +198,10 @@ class SettingsService:
                 data["llm_credentials"] = _encrypt_creds(plaintext)
             else:
                 data["llm_credentials"] = ""
+            if self._config.webhook_secret:
+                data["webhook_secret"] = _encrypt_creds(self._config.webhook_secret)
+            else:
+                data["webhook_secret"] = ""
 
             row = await session.get(SettingsORM, 1)
             if row is None:
@@ -237,7 +243,7 @@ class SettingsService:
                     pass
 
         for field in CREDENTIAL_FIELDS:
-            if field in data:
+            if data.get(field):  # only redact when non-empty
                 data[field] = REDACTED_PLACEHOLDER
         return data
 
@@ -321,7 +327,7 @@ class SettingsService:
         """Export config as JSON-serializable dict with credentials redacted."""
         data = self._config.model_dump(mode="json")
         for field in CREDENTIAL_FIELDS:
-            if field in data:
+            if data.get(field):  # only redact when non-empty
                 data[field] = REDACTED_PLACEHOLDER
         return data
 

@@ -1,10 +1,19 @@
-import { Switch, NumberInput, TextInput, Select, Paper, Text, Divider, Stack, Alert } from "@mantine/core";
+import { Switch, NumberInput, TextInput, Select, Paper, Text, Divider, Stack, Alert, PasswordInput, Group, Button, Badge } from "@mantine/core";
 
 interface Props {
   s: Record<string, unknown>;
+  webhookSecretSet: boolean;
+  webhookSecretInput: string | null;
+  onWebhookSecretChange: (v: string | null) => void;
 }
 
-export function AutomationTab({ s }: Props) {
+function generateSecret(): string {
+  const arr = new Uint8Array(24);
+  window.crypto.getRandomValues(arr);
+  return Array.from(arr).map(b => b.toString(16).padStart(2, "0")).join("");
+}
+
+export function AutomationTab({ s, webhookSecretSet, webhookSecretInput, onWebhookSecretChange }: Props) {
   return (
     <Stack gap="md">
       <Paper withBorder p="md" radius="md">
@@ -96,6 +105,59 @@ export function AutomationTab({ s }: Props) {
               { value: "allow_new", label: "Allow new — keep unknown types, create automatically" },
             ]}
           />
+        </Stack>
+      </Paper>
+      <Paper withBorder p="md" radius="md">
+        <Group justify="space-between" mb="xs">
+          <Text fw={600}>Webhook Security</Text>
+          {webhookSecretSet && webhookSecretInput === null
+            ? <Badge color="teal" variant="light">Secret set</Badge>
+            : webhookSecretInput === ""
+            ? <Badge color="orange" variant="light">Will be cleared on save</Badge>
+            : webhookSecretInput
+            ? <Badge color="blue" variant="light">New secret pending save</Badge>
+            : <Badge color="gray" variant="light">No secret</Badge>
+          }
+        </Group>
+        <Text size="sm" c="dimmed" mb="sm">
+          Paperless NGX sends the secret in the <strong>X-Webhook-Secret</strong> header.
+          Leave blank to keep the current value; generate or paste a new one to rotate it.
+        </Text>
+        <Stack gap="xs">
+          <PasswordInput
+            placeholder={webhookSecretSet && webhookSecretInput === null ? "Secret is set — enter new value to rotate" : "No secret set"}
+            value={webhookSecretInput ?? ""}
+            onChange={e => onWebhookSecretChange(e.currentTarget.value || null)}
+          />
+          <Group gap="xs">
+            <Button
+              size="xs"
+              variant="light"
+              onClick={() => onWebhookSecretChange(generateSecret())}
+            >
+              Generate
+            </Button>
+            {(webhookSecretSet || webhookSecretInput) && (
+              <Button
+                size="xs"
+                variant="subtle"
+                color="red"
+                onClick={() => onWebhookSecretChange("")}
+              >
+                Clear
+              </Button>
+            )}
+            {webhookSecretInput !== null && (
+              <Button
+                size="xs"
+                variant="subtle"
+                color="gray"
+                onClick={() => onWebhookSecretChange(null)}
+              >
+                Cancel
+              </Button>
+            )}
+          </Group>
         </Stack>
       </Paper>
     </Stack>

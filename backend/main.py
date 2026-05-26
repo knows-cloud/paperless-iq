@@ -590,13 +590,15 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
                 _automation_loop(app, config.poll_interval_seconds, batch_size=config.batch_size)
             )
 
-    # Warn if the webhook endpoint is unprotected (WEBHOOK_SECRET not set)
-    # To secure it: set WEBHOOK_SECRET in your environment and configure Paperless NGX
-    # to send the same value as the X-Webhook-Secret header on every webhook call.
-    if not os.environ.get("WEBHOOK_SECRET", "").strip():
+    # Warn if the webhook endpoint is unprotected.
+    # Set a secret in Settings → Automation → Webhook Security, then configure
+    # Paperless NGX to send it as the X-Webhook-Secret header on each call.
+    # The WEBHOOK_SECRET env var is still honoured as a fallback for existing deployments.
+    _effective_webhook_secret = _settings_svc.config.webhook_secret or os.environ.get("WEBHOOK_SECRET", "")
+    if not _effective_webhook_secret:
         logger.warning(
-            "WEBHOOK_SECRET is not set — the /api/webhook/paperless endpoint accepts "
-            "requests from any caller. Set WEBHOOK_SECRET to restrict access."
+            "Webhook secret is not configured — /api/webhook/paperless accepts requests "
+            "from any caller. Set a secret in Settings → Automation → Webhook Security."
         )
 
     # Always run the session expiry loop — extracts memories then deletes expired sessions
@@ -2531,11 +2533,11 @@ async def paperless_webhook(request: Request) -> dict:
     """Receive a Paperless NGX webhook and re-index the affected document.
 
     This endpoint is intentionally unauthenticated so Paperless NGX can call it
-    without a Paperless IQ session token.  Set WEBHOOK_SECRET in the environment
-    and configure Paperless NGX to send it as X-Webhook-Secret to secure this
-    endpoint.
+    without a Paperless IQ session token. Configure a webhook secret in
+    Settings → Automation → Webhook Security to restrict access.
     """
-    if not check_webhook_secret(request):
+    expected = _settings_svc.config.webhook_secret or os.environ.get("WEBHOOK_SECRET", "")
+    if not check_webhook_secret(request, expected):
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
             detail="Invalid or missing webhook secret.",

@@ -147,6 +147,9 @@ class PaperlessIQConfig(BaseModel):
     # Access control
     sync_ng_admins: bool = True  # Paperless NGX superusers/staff auto-get full PIQ access
 
+    # Webhook security
+    webhook_secret: str = ""  # stored encrypted; empty = no auth required
+
     # Long-term memory
     memory_enabled: bool = True
 

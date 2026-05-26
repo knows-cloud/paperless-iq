@@ -69,6 +69,9 @@ export default function SettingsPage() {
   const [themeFontSize, setThemeFontSize] = useState("14px");
   const [themeNavIcons, setThemeNavIcons] = useState<Record<string, string>>({});
 
+  // Automation tab
+  const [webhookSecretInput, setWebhookSecretInput] = useState<string | null>(null);
+
   // Access control / maintenance tab
   const [reindexing, setReindexing] = useState(false);
   const [resettingTracking, setResettingTracking] = useState(false);
@@ -230,6 +233,12 @@ export default function SettingsPage() {
     if (settingsTab === "automation") {
       values.auto_apply         = fd.get("auto_apply") === "on";
       values.automation_enabled = fd.get("automation_enabled") === "on";
+      // webhookSecretInput: null = no change, "" = clear, "value" = set new
+      if (webhookSecretInput !== null) {
+        values.webhook_secret = webhookSecretInput;
+      } else {
+        delete values.webhook_secret;
+      }
     }
     if (settingsTab === "metadataRules") {
       values.smart_entity_selection = fd.get("smart_entity_selection") === "on";
@@ -408,7 +417,12 @@ export default function SettingsPage() {
           </Tabs.Panel>
 
           <Tabs.Panel value="automation" keepMounted={false}>
-            <AutomationTab s={s} />
+            <AutomationTab
+              s={s}
+              webhookSecretSet={s.webhook_secret === "__REDACTED__"}
+              webhookSecretInput={webhookSecretInput}
+              onWebhookSecretChange={setWebhookSecretInput}
+            />
           </Tabs.Panel>
 
           <Tabs.Panel value="appearance" keepMounted={false}>
