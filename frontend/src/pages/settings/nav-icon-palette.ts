@@ -7,7 +7,6 @@ export function toKebab(name: string): string {
 
 /** "file-search" → "FileSearch"  (palette key lookup) */
 export function toPascal(name: string): string {
-  if (!name.includes("-")) return name; // already PascalCase
   return name.split("-").map(w => w ? w[0].toUpperCase() + w.slice(1) : "").join("");
 }
 import {
