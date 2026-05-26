@@ -2694,10 +2694,18 @@ async def list_logos() -> list[str]:
     return sorted(f.name for f in _LOGO_DIR.iterdir() if f.suffix.lower() in (".png", ".jpeg", ".jpg", ".svg"))
 
 
+_LEGACY_LOGO = "iq_1.png"
+_LEGACY_NAV_ICONS = {"🔍", "📋", "💬", "⚡", "📜", "⚙️"}
+
+
 @app.get("/api/theme", tags=["theme"])
 async def get_theme() -> dict:
     """Return current theme settings."""
     config = _settings_svc.config
+    # Strip legacy defaults so existing databases self-heal after the upgrade
+    # to Tabler SVG icons and the pIQ logo component.
+    logo = "" if config.theme_logo == _LEGACY_LOGO else config.theme_logo
+    nav_icons = {k: v for k, v in config.theme_nav_icons.items() if v not in _LEGACY_NAV_ICONS}
     return {
         "primary_color": config.theme_primary_color,
         "sidebar_from": config.theme_sidebar_from,
@@ -2709,8 +2717,8 @@ async def get_theme() -> dict:
         "card_color": config.theme_card_color,
         "card_alt_hex": config.theme_card_alt_hex,
         "card_alt_opacity": config.theme_card_alt_opacity,
-        "logo": config.theme_logo,
-        "nav_icons": config.theme_nav_icons,
+        "logo": logo,
+        "nav_icons": nav_icons,
         "ui_language": config.ui_language,
         "chip_color": config.theme_chip_color,
         "mantine_color": config.mantine_color,
