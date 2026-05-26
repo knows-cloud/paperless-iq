@@ -2683,18 +2683,7 @@ async def delete_piq_user(
 # ---------------------------------------------------------------------------
 
 _FRONTEND_DIR = Path(__file__).resolve().parent.parent / "frontend" / "dist"
-_LOGO_DIR = Path(__file__).resolve().parent.parent / "logo"
 
-
-@app.get("/api/logos", tags=["theme"])
-async def list_logos() -> list[str]:
-    """List available logo filenames."""
-    if not _LOGO_DIR.is_dir():
-        return []
-    return sorted(f.name for f in _LOGO_DIR.iterdir() if f.suffix.lower() in (".png", ".jpeg", ".jpg", ".svg"))
-
-
-_LEGACY_LOGO = "iq_1.png"
 _LEGACY_NAV_ICONS = {"🔍", "📋", "💬", "⚡", "📜", "⚙️"}
 
 
@@ -2702,9 +2691,7 @@ _LEGACY_NAV_ICONS = {"🔍", "📋", "💬", "⚡", "📜", "⚙️"}
 async def get_theme() -> dict:
     """Return current theme settings."""
     config = _settings_svc.config
-    # Strip legacy defaults so existing databases self-heal after the upgrade
-    # to Tabler SVG icons and the pIQ logo component.
-    logo = "" if config.theme_logo == _LEGACY_LOGO else config.theme_logo
+    # Strip legacy emoji nav_icons so existing databases self-heal automatically.
     nav_icons = {k: v for k, v in config.theme_nav_icons.items() if v not in _LEGACY_NAV_ICONS}
     return {
         "primary_color": config.theme_primary_color,
@@ -2717,17 +2704,12 @@ async def get_theme() -> dict:
         "card_color": config.theme_card_color,
         "card_alt_hex": config.theme_card_alt_hex,
         "card_alt_opacity": config.theme_card_alt_opacity,
-        "logo": logo,
         "nav_icons": nav_icons,
         "ui_language": config.ui_language,
         "chip_color": config.theme_chip_color,
         "mantine_color": config.mantine_color,
         "color_scheme": config.color_scheme,
     }
-
-
-if _LOGO_DIR.is_dir():
-    app.mount("/logos", StaticFiles(directory=_LOGO_DIR), name="logos")
 
 if _FRONTEND_DIR.is_dir():
     app.mount("/assets", StaticFiles(directory=_FRONTEND_DIR / "assets"), name="static")

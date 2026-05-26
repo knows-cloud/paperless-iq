@@ -8,7 +8,6 @@ interface ThemeConfig {
   mantine_color: string;
   font: string;
   color_scheme: MantineColorScheme;
-  logo: string;
   nav_icons: Record<string, string>;
 }
 
@@ -16,7 +15,6 @@ const DEFAULT: ThemeConfig = {
   mantine_color: "teal",
   font: "",
   color_scheme: "dark",
-  logo: "",
   nav_icons: {},
 };
 
@@ -33,7 +31,6 @@ function ThemeSync({ onLoad }: { onLoad: (c: ThemeConfig) => void }) {
         mantine_color: (t as Record<string, unknown>).mantine_color as string ?? "teal",
         font: t.font ?? "",
         color_scheme: ((t as Record<string, unknown>).color_scheme as MantineColorScheme) ?? "dark",
-        logo: t.logo ?? "iq_1.png",
         nav_icons: t.nav_icons ?? DEFAULT.nav_icons,
       };
       setColorScheme(cfg.color_scheme);

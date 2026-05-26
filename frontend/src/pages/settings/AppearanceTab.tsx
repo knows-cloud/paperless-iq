@@ -1,7 +1,8 @@
 import {
   Select, Paper, Text, Divider, Stack, Group, ColorSwatch, Tooltip,
-  SegmentedControl, SimpleGrid, NumberInput,
+  SegmentedControl, SimpleGrid, NumberInput, TextInput,
 } from "@mantine/core";
+import { NAV_ICON_PALETTE } from "./nav-icon-palette";
 
 const MANTINE_COLORS = [
   "teal", "blue", "violet", "grape", "pink", "red",
@@ -9,11 +10,12 @@ const MANTINE_COLORS = [
 ] as const;
 
 const NAV_ITEMS = [
-  { id: "manual", label: "Analysis" },
-  { id: "queue", label: "Queue" },
-  { id: "discovery", label: "Discovery" },
-  { id: "audit", label: "Audit" },
-  { id: "settings", label: "Settings" },
+  { id: "manual",     label: "Analysis",       placeholder: "FileSearch"    },
+  { id: "queue",      label: "Queue",           placeholder: "ListCheck"     },
+  { id: "discovery",  label: "Discovery",       placeholder: "Sparkles"      },
+  { id: "processing", label: "Processing",      placeholder: "Activity"      },
+  { id: "audit",      label: "Audit",           placeholder: "ClipboardList" },
+  { id: "settings",   label: "Settings",        placeholder: "Settings"      },
 ];
 
 interface Props {
@@ -26,11 +28,35 @@ interface Props {
   setThemeFont: (v: string) => void;
   themeFontSize: string;
   setThemeFontSize: (v: string) => void;
-  themeLogo: string;
-  setThemeLogo: (v: string) => void;
   themeNavIcons: Record<string, string>;
   setThemeNavIcons: React.Dispatch<React.SetStateAction<Record<string, string>>>;
-  logoNames: string[];
+}
+
+function NavIconInput({
+  item,
+  value,
+  onChange,
+}: {
+  item: typeof NAV_ITEMS[0];
+  value: string;
+  onChange: (v: string) => void;
+}) {
+  const name = value || item.placeholder;
+  const Icon = NAV_ICON_PALETTE[name];
+  const isUnknown = value !== "" && !NAV_ICON_PALETTE[value];
+
+  return (
+    <TextInput
+      label={item.label}
+      placeholder={item.placeholder}
+      value={value}
+      onChange={e => onChange(e.currentTarget.value)}
+      size="sm"
+      error={isUnknown ? "Unknown icon" : undefined}
+      leftSection={Icon ? <Icon size={16} /> : null}
+      description={isUnknown ? undefined : "Tabler icon name, e.g. FileText"}
+    />
+  );
 }
 
 export function AppearanceTab({
@@ -39,9 +65,7 @@ export function AppearanceTab({
   colorScheme, setColorScheme,
   themeFont, setThemeFont,
   themeFontSize, setThemeFontSize,
-  themeLogo, setThemeLogo,
   themeNavIcons, setThemeNavIcons,
-  logoNames,
 }: Props) {
   return (
     <Stack gap="md">
@@ -55,8 +79,8 @@ export function AppearanceTab({
               onChange={setColorScheme}
               data={[
                 { label: "Light", value: "light" },
-                { label: "Dark", value: "dark" },
-                { label: "Auto", value: "auto" },
+                { label: "Dark",  value: "dark"  },
+                { label: "Auto",  value: "auto"  },
               ]}
             />
           </div>
@@ -71,7 +95,9 @@ export function AppearanceTab({
                     onClick={() => setMantineColor(color)}
                     style={{
                       cursor: "pointer",
-                      outline: mantineColor === color ? "3px solid var(--mantine-color-teal-5)" : "2px solid transparent",
+                      outline: mantineColor === color
+                        ? "3px solid var(--mantine-color-teal-5)"
+                        : "2px solid transparent",
                       outlineOffset: "2px",
                     }}
                   />
@@ -89,16 +115,16 @@ export function AppearanceTab({
               value={themeFont}
               onChange={v => setThemeFont(v ?? "Roboto")}
               data={[
-                { value: "Roboto", label: "Roboto" },
-                { value: "Open Sans", label: "Open Sans" },
-                { value: "Inter", label: "Inter" },
-                { value: "Fira Sans", label: "Fira Sans" },
-                { value: "Source Sans 3", label: "Source Sans 3" },
-                { value: "Nunito", label: "Nunito" },
-                { value: "Ubuntu", label: "Ubuntu" },
-                { value: "Noto Sans", label: "Noto Sans (full Unicode)" },
-                { value: "JetBrains Mono", label: "JetBrains Mono" },
-                { value: "Fira Code", label: "Fira Code" },
+                { value: "Roboto",        label: "Roboto"               },
+                { value: "Open Sans",     label: "Open Sans"            },
+                { value: "Inter",         label: "Inter"                },
+                { value: "Fira Sans",     label: "Fira Sans"            },
+                { value: "Source Sans 3", label: "Source Sans 3"        },
+                { value: "Nunito",        label: "Nunito"               },
+                { value: "Ubuntu",        label: "Ubuntu"               },
+                { value: "Noto Sans",     label: "Noto Sans (full Unicode)" },
+                { value: "JetBrains Mono",label: "JetBrains Mono"      },
+                { value: "Fira Code",     label: "Fira Code"           },
               ]}
             />
             <Select
@@ -109,52 +135,22 @@ export function AppearanceTab({
             />
           </SimpleGrid>
 
-          <Divider label="Branding" labelPosition="left" />
+          <Divider label="Navigation Icons" labelPosition="left" />
+          <Text size="xs" c="dimmed" mt={-8}>
+            Enter a Tabler icon name (e.g. <strong>FileText</strong>, <strong>Bell</strong>, <strong>Star</strong>).
+            Leave blank to keep the default. The icon preview updates as you type.
+          </Text>
 
-          {logoNames.length > 0 && (
-            <div>
-              <Text size="sm" fw={500} mb="xs">Logo</Text>
-              <Group gap="sm">
-                {logoNames.map(name => (
-                  <div
-                    key={name}
-                    onClick={() => setThemeLogo(name)}
-                    style={{
-                      cursor: "pointer", padding: "0.35rem", borderRadius: "var(--mantine-radius-sm)",
-                      border: themeLogo === name
-                        ? "2px solid var(--mantine-color-teal-5)"
-                        : "2px solid var(--mantine-color-default-border)",
-                      background: themeLogo === name ? "var(--mantine-color-teal-0)" : "transparent",
-                    }}
-                  >
-                    <img src={`/logos/${name}`} alt={name}
-                      style={{ width: "48px", height: "48px", objectFit: "contain", display: "block" }} />
-                  </div>
-                ))}
-              </Group>
-            </div>
-          )}
-
-          <div>
-            <Text size="sm" fw={500} mb={4}>Navigation Icons</Text>
-            <Text size="xs" c="dimmed" mb="xs">Emoji or Unicode symbol for each section.</Text>
-            <Group gap="sm">
-              {NAV_ITEMS.map(item => (
-                <div key={item.id} style={{ display: "flex", flexDirection: "column", alignItems: "center", gap: "0.2rem" }}>
-                  <input
-                    value={themeNavIcons[item.id] ?? ""}
-                    onChange={e => setThemeNavIcons(prev => ({ ...prev, [item.id]: e.target.value }))}
-                    style={{
-                      width: "3rem", textAlign: "center", fontSize: "1.1rem", padding: "0.3rem",
-                      background: "var(--mantine-color-default)", border: "1px solid var(--mantine-color-default-border)",
-                      borderRadius: "var(--mantine-radius-sm)", color: "inherit",
-                    }}
-                  />
-                  <Text size="xs" c="dimmed">{item.label}</Text>
-                </div>
-              ))}
-            </Group>
-          </div>
+          <SimpleGrid cols={3}>
+            {NAV_ITEMS.map(item => (
+              <NavIconInput
+                key={item.id}
+                item={item}
+                value={themeNavIcons[item.id] ?? ""}
+                onChange={v => setThemeNavIcons(prev => ({ ...prev, [item.id]: v }))}
+              />
+            ))}
+          </SimpleGrid>
         </Stack>
       </Paper>
 
@@ -167,10 +163,10 @@ export function AppearanceTab({
             defaultValue={String(s.ui_language ?? "en")}
             description="Language for the Paperless IQ user interface. Refresh the page after saving."
             data={[
-              { value: "en", label: "English" },
-              { value: "de", label: "Deutsch" },
+              { value: "en", label: "English"  },
+              { value: "de", label: "Deutsch"  },
               { value: "fr", label: "Français" },
-              { value: "es", label: "Español" },
+              { value: "es", label: "Español"  },
               { value: "it", label: "Italiano" },
             ]}
           />

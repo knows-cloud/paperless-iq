@@ -1,15 +1,11 @@
 import { useState, useEffect } from "react";
-import type { ReactNode } from "react";
 import {
   AppShell, Burger, NavLink, Text, Group, Box, Button,
   useMantineColorScheme,
 } from "@mantine/core";
 import { useDisclosure } from "@mantine/hooks";
-import {
-  IconFileSearch, IconListCheck, IconSparkles,
-  IconActivity, IconClipboardList, IconSettings,
-  IconLogin,
-} from "@tabler/icons-react";
+import { IconLogin } from "@tabler/icons-react";
+import { NAV_ICON_PALETTE } from "./pages/settings/nav-icon-palette";
 import { useTheme } from "./ThemeProvider";
 import { PiqLogo } from "./PiqLogo";
 import StatusPanel from "./StatusPanel";
@@ -29,13 +25,13 @@ type Page = "manual" | "queue" | "discovery" | "processing" | "audit" | "setting
 
 const VALID_PAGES: Set<string> = new Set(["manual", "queue", "discovery", "processing", "audit", "settings"]);
 
-const NAV_ITEMS: Array<{ id: Page; labelKey: string; defaultIcon: ReactNode }> = [
-  { id: "manual",     labelKey: "nav.analysis",   defaultIcon: <IconFileSearch   size={18} /> },
-  { id: "queue",      labelKey: "nav.queue",       defaultIcon: <IconListCheck    size={18} /> },
-  { id: "discovery",  labelKey: "nav.discovery",   defaultIcon: <IconSparkles     size={18} /> },
-  { id: "processing", labelKey: "nav.processing",  defaultIcon: <IconActivity     size={18} /> },
-  { id: "audit",      labelKey: "nav.audit",       defaultIcon: <IconClipboardList size={18} /> },
-  { id: "settings",   labelKey: "nav.settings",    defaultIcon: <IconSettings     size={18} /> },
+const NAV_ITEMS: Array<{ id: Page; labelKey: string; defaultIconName: string }> = [
+  { id: "manual",     labelKey: "nav.analysis",   defaultIconName: "FileSearch"   },
+  { id: "queue",      labelKey: "nav.queue",       defaultIconName: "ListCheck"    },
+  { id: "discovery",  labelKey: "nav.discovery",   defaultIconName: "Sparkles"     },
+  { id: "processing", labelKey: "nav.processing",  defaultIconName: "Activity"     },
+  { id: "audit",      labelKey: "nav.audit",       defaultIconName: "ClipboardList"},
+  { id: "settings",   labelKey: "nav.settings",    defaultIconName: "Settings"     },
 ];
 
 function getPageFromHash(): Page {
@@ -175,26 +171,10 @@ export default function App() {
         {/* Brand */}
         <Box p="md" pb="xs">
           <Group gap="sm" wrap="nowrap">
-            {theme.logo
-              ? (
-                <>
-                  <img
-                    src={`/logos/${theme.logo}`}
-                    alt="Paperless IQ"
-                    style={{ width: 36, height: 36, borderRadius: 8, objectFit: "contain", flexShrink: 0 }}
-                  />
-                  <div>
-                    <Text fw={700} size="sm" lh={1.2}>{t("app.title")}</Text>
-                    <Text size="xs" c="dimmed" lh={1.2}>{t("app.subtitle")}</Text>
-                  </div>
-                </>
-              ) : (
-                <div>
-                  <PiqLogo size={30} />
-                  <Text size="xs" c="dimmed" lh={1.4} mt={2}>{t("app.subtitle")}</Text>
-                </div>
-              )
-            }
+            <div>
+              <PiqLogo size={30} />
+              <Text size="xs" c="dimmed" lh={1.4} mt={2}>{t("app.subtitle")}</Text>
+            </div>
           </Group>
         </Box>
 
@@ -207,11 +187,11 @@ export default function App() {
               key={item.id}
               href={`#${item.id}`}
               label={t(item.labelKey)}
-              leftSection={
-                theme.nav_icons[item.id]
-                  ? <span style={{ fontSize: "1rem", lineHeight: 1 }}>{theme.nav_icons[item.id]}</span>
-                  : item.defaultIcon
-              }
+              leftSection={(() => {
+                const name = theme.nav_icons[item.id] || item.defaultIconName;
+                const Icon = NAV_ICON_PALETTE[name];
+                return Icon ? <Icon size={18} /> : null;
+              })()}
               active={page === item.id}
               variant="light"
               color="teal"

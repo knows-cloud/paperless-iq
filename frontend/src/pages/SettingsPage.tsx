@@ -31,7 +31,6 @@ export default function SettingsPage() {
   const { data, isLoading, error } = useQuery({ queryKey: ["settings"], queryFn: api.getSettings });
   const tags = useQuery({ queryKey: ["tags"], queryFn: api.getTags, retry: false });
   const customFields = useQuery({ queryKey: ["customFields"], queryFn: api.getCustomFields, retry: false });
-  const logos = useQuery({ queryKey: ["logos"], queryFn: api.getLogos, retry: false });
 
   const [msg, setMsg] = useState("");
   const [settingsTab, setSettingsTab] = useState<SettingsTab>("connection");
@@ -68,7 +67,6 @@ export default function SettingsPage() {
   const [colorScheme, setColorScheme] = useState("dark");
   const [themeFont, setThemeFont] = useState("Roboto");
   const [themeFontSize, setThemeFontSize] = useState("14px");
-  const [themeLogo, setThemeLogo] = useState("iq_1.png");
   const [themeNavIcons, setThemeNavIcons] = useState<Record<string, string>>({});
 
   // Access control / maintenance tab
@@ -135,7 +133,6 @@ export default function SettingsPage() {
     setColorScheme(String(s.color_scheme ?? "dark"));
     setThemeFont(String(s.theme_font ?? "Roboto"));
     setThemeFontSize(String(s.theme_font_size ?? "14px"));
-    setThemeLogo(String(s.theme_logo ?? "iq_1.png"));
     setThemeNavIcons((s.theme_nav_icons as Record<string, string>) ?? {});
     setMemoryEnabled(s.memory_enabled !== false);
   }, [s]);
@@ -308,7 +305,6 @@ export default function SettingsPage() {
     values.color_scheme   = colorScheme;
     values.theme_font     = themeFont;
     values.theme_font_size = themeFontSize;
-    values.theme_logo     = themeLogo;
     values.theme_nav_icons = themeNavIcons;
 
     setMsg("");
@@ -327,7 +323,6 @@ export default function SettingsPage() {
 
   const cfList    = (customFields.data ?? []) as PaperlessCustomField[];
   const tagList   = (tags.data ?? []) as PaperlessEntity[];
-  const logoNames = (logos.data ?? []) as string[];
 
   return (
     <form onSubmit={handleSubmit}>
@@ -427,11 +422,8 @@ export default function SettingsPage() {
               setThemeFont={setThemeFont}
               themeFontSize={themeFontSize}
               setThemeFontSize={setThemeFontSize}
-              themeLogo={themeLogo}
-              setThemeLogo={setThemeLogo}
               themeNavIcons={themeNavIcons}
               setThemeNavIcons={setThemeNavIcons}
-              logoNames={logoNames}
             />
           </Tabs.Panel>
 

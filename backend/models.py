@@ -177,7 +177,6 @@ class PaperlessIQConfig(BaseModel):
     theme_card_alt_hex: str = "#1a7288"
     theme_card_alt_opacity: int = 12
     theme_chip_color: str = ""  # empty = derive from primary_color
-    theme_logo: str = ""
     mantine_color: str = "teal"
     color_scheme: str = "dark"  # "light" | "dark" | "auto"
     theme_nav_icons: dict[str, str] = {}
