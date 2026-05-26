@@ -3,6 +3,7 @@ import {
   Stack, Paper, Text, Switch, Button, Group, Badge, Divider,
   Alert, Loader, Table, ActionIcon, Tooltip,
 } from "@mantine/core";
+import { IconTrash } from "@tabler/icons-react";
 import { api } from "../../api";
 import type { UserPermissions } from "../../api";
 
@@ -169,7 +170,7 @@ export function AccessControlTab({
                       <ActionIcon
                         size="xs" color="red" variant="subtle"
                         onClick={() => setDeleteConfirm(user.username)}
-                      >🗑</ActionIcon>
+                      ><IconTrash size={14} /></ActionIcon>
                     )}
                   </Table.Td>
                 </Table.Tr>

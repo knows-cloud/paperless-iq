@@ -3,6 +3,7 @@ import {
   Center, Paper, Title, Text, TextInput, PasswordInput,
   Button, Alert, Stack,
 } from "@mantine/core";
+import { IconLogin2 } from "@tabler/icons-react";
 import { api, setStoredToken } from "../api";
 
 interface LoginPageProps {
@@ -72,6 +73,7 @@ export default function LoginPage({ onLogin }: LoginPageProps) {
               mt="xs"
               loading={loading}
               disabled={!username.trim() || !password.trim()}
+              leftSection={<IconLogin2 size={16} />}
             >
               Sign in
             </Button>

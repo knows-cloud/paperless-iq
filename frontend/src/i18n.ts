@@ -5,7 +5,7 @@ export type Lang = "en" | "de" | "fr" | "es" | "it";
 const translations: Record<Lang, Record<string, string>> = {
   en: {
     "app.title": "Paperless IQ",
-    "app.subtitle": "AI Document Intelligence",
+    "app.subtitle": "Ask your archive anything",
     "app.signedInAs": "Signed in as",
     "app.signOut": "Sign out",
     "nav.analysis": "Analysis",
@@ -160,7 +160,7 @@ const translations: Record<Lang, Record<string, string>> = {
 
   de: {
     "app.title": "Paperless IQ",
-    "app.subtitle": "KI-Dokumentenintelligenz",
+    "app.subtitle": "Frag dein Archiv alles",
     "app.signedInAs": "Angemeldet als",
     "app.signOut": "Abmelden",
     "nav.analysis": "Analyse",
@@ -308,7 +308,7 @@ const translations: Record<Lang, Record<string, string>> = {
 
   fr: {
     "app.title": "Paperless IQ",
-    "app.subtitle": "Intelligence documentaire IA",
+    "app.subtitle": "Interrogez votre archive",
     "app.signedInAs": "Connecté en tant que",
     "app.signOut": "Se déconnecter",
     "nav.analysis": "Analyse",
@@ -456,7 +456,7 @@ const translations: Record<Lang, Record<string, string>> = {
 
   es: {
     "app.title": "Paperless IQ",
-    "app.subtitle": "Inteligencia documental IA",
+    "app.subtitle": "Pregunta a tu archivo todo",
     "app.signedInAs": "Conectado como",
     "app.signOut": "Cerrar sesión",
     "nav.analysis": "Análisis",
@@ -604,7 +604,7 @@ const translations: Record<Lang, Record<string, string>> = {
 
   it: {
     "app.title": "Paperless IQ",
-    "app.subtitle": "Intelligenza documentale IA",
+    "app.subtitle": "Chiedi tutto al tuo archivio",
     "app.signedInAs": "Accesso come",
     "app.signOut": "Disconnetti",
     "nav.analysis": "Analisi",

@@ -16,8 +16,8 @@ const DEFAULT: ThemeConfig = {
   mantine_color: "teal",
   font: "",
   color_scheme: "dark",
-  logo: "iq_1.png",
-  nav_icons: { manual: "🔍", queue: "📋", discovery: "💬", processing: "⚡", audit: "📜", settings: "⚙️" },
+  logo: "",
+  nav_icons: {},
 };
 
 const ThemeConfigContext = createContext<ThemeConfig>(DEFAULT);
