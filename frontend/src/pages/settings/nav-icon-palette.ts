@@ -1,4 +1,15 @@
 import type { ComponentType } from "react";
+
+/** "FileSearch" → "file-search"  (for display, matches tabler.io naming) */
+export function toKebab(name: string): string {
+  return name.replace(/([A-Z])/g, (c, _, i) => (i > 0 ? "-" : "") + c.toLowerCase());
+}
+
+/** "file-search" → "FileSearch"  (palette key lookup) */
+export function toPascal(name: string): string {
+  if (!name.includes("-")) return name; // already PascalCase
+  return name.split("-").map(w => w ? w[0].toUpperCase() + w.slice(1) : "").join("");
+}
 import {
   IconActivity, IconAdjustments, IconArchive, IconBell, IconBook,
   IconBookmark, IconBrain, IconBriefcase, IconCalendar,
@@ -94,3 +105,6 @@ export const NAV_ICON_PALETTE: Record<string, TablerNavIcon> = {
   Wand:             IconWand,
   Zoom:             IconZoom,
 };
+
+/** All supported icon names in kebab-case (matches tabler.io display format). */
+export const NAV_ICON_NAMES = Object.keys(NAV_ICON_PALETTE).map(toKebab).sort();

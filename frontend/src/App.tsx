@@ -5,7 +5,7 @@ import {
 } from "@mantine/core";
 import { useDisclosure } from "@mantine/hooks";
 import { IconLogin } from "@tabler/icons-react";
-import { NAV_ICON_PALETTE } from "./pages/settings/nav-icon-palette";
+import { NAV_ICON_PALETTE, toPascal } from "./pages/settings/nav-icon-palette";
 import { useTheme } from "./ThemeProvider";
 import { PiqLogo } from "./PiqLogo";
 import StatusPanel from "./StatusPanel";
@@ -188,8 +188,9 @@ export default function App() {
               href={`#${item.id}`}
               label={t(item.labelKey)}
               leftSection={(() => {
-                const name = theme.nav_icons[item.id] || item.defaultIconName;
-                const Icon = NAV_ICON_PALETTE[name];
+                const stored = theme.nav_icons[item.id];
+                const key = stored ? toPascal(stored) : item.defaultIconName;
+                const Icon = NAV_ICON_PALETTE[key];
                 return Icon ? <Icon size={18} /> : null;
               })()}
               active={page === item.id}

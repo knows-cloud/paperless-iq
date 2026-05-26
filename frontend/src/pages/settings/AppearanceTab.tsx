@@ -1,8 +1,8 @@
 import {
   Select, Paper, Text, Divider, Stack, Group, ColorSwatch, Tooltip,
-  SegmentedControl, SimpleGrid, NumberInput, TextInput,
+  SegmentedControl, SimpleGrid, NumberInput, Autocomplete, Anchor,
 } from "@mantine/core";
-import { NAV_ICON_PALETTE } from "./nav-icon-palette";
+import { NAV_ICON_PALETTE, NAV_ICON_NAMES, toPascal } from "./nav-icon-palette";
 
 const MANTINE_COLORS = [
   "teal", "blue", "violet", "grape", "pink", "red",
@@ -10,12 +10,12 @@ const MANTINE_COLORS = [
 ] as const;
 
 const NAV_ITEMS = [
-  { id: "manual",     label: "Analysis",       placeholder: "FileSearch"    },
-  { id: "queue",      label: "Queue",           placeholder: "ListCheck"     },
-  { id: "discovery",  label: "Discovery",       placeholder: "Sparkles"      },
-  { id: "processing", label: "Processing",      placeholder: "Activity"      },
-  { id: "audit",      label: "Audit",           placeholder: "ClipboardList" },
-  { id: "settings",   label: "Settings",        placeholder: "Settings"      },
+  { id: "manual",     label: "Analysis",   placeholder: "file-search"    },
+  { id: "queue",      label: "Queue",      placeholder: "list-check"     },
+  { id: "discovery",  label: "Discovery",  placeholder: "sparkles"       },
+  { id: "processing", label: "Processing", placeholder: "activity"       },
+  { id: "audit",      label: "Audit",      placeholder: "clipboard-list" },
+  { id: "settings",   label: "Settings",   placeholder: "settings"       },
 ];
 
 interface Props {
@@ -38,23 +38,24 @@ function NavIconInput({
   onChange,
 }: {
   item: typeof NAV_ITEMS[0];
-  value: string;
+  value: string;      // stored as kebab-case
   onChange: (v: string) => void;
 }) {
-  const name = value || item.placeholder;
-  const Icon = NAV_ICON_PALETTE[name];
-  const isUnknown = value !== "" && !NAV_ICON_PALETTE[value];
+  const paletteName = toPascal(value || item.placeholder);
+  const Icon = NAV_ICON_PALETTE[paletteName];
+  const isUnknown = value !== "" && !NAV_ICON_PALETTE[toPascal(value)];
 
   return (
-    <TextInput
+    <Autocomplete
       label={item.label}
       placeholder={item.placeholder}
       value={value}
-      onChange={e => onChange(e.currentTarget.value)}
+      onChange={onChange}
+      data={NAV_ICON_NAMES}
+      limit={8}
       size="sm"
       error={isUnknown ? "Unknown icon" : undefined}
       leftSection={Icon ? <Icon size={16} /> : null}
-      description={isUnknown ? undefined : "Tabler icon name, e.g. FileText"}
     />
   );
 }
@@ -136,10 +137,20 @@ export function AppearanceTab({
           </SimpleGrid>
 
           <Divider label="Navigation Icons" labelPosition="left" />
-          <Text size="xs" c="dimmed" mt={-8}>
-            Enter a Tabler icon name (e.g. <strong>FileText</strong>, <strong>Bell</strong>, <strong>Star</strong>).
-            Leave blank to keep the default. The icon preview updates as you type.
-          </Text>
+          <Group justify="space-between" mt={-8}>
+            <Text size="xs" c="dimmed">
+              Type a Tabler icon name (e.g. <strong>file-text</strong>, <strong>bell</strong>).
+              Leave blank to keep the default.
+            </Text>
+            <Anchor
+              href="https://tabler.io/icons"
+              target="_blank"
+              rel="noopener noreferrer"
+              size="xs"
+            >
+              Browse icons ↗
+            </Anchor>
+          </Group>
 
           <SimpleGrid cols={3}>
             {NAV_ITEMS.map(item => (
