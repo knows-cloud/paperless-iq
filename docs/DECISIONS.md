@@ -157,6 +157,42 @@ Do not reorder steps 2 and 3. React-state fields (theme colours, prompt text, Be
 
 ---
 
+## D-16 · Bedrock uses the Converse API, not model-specific InvokeModel
+
+**Decision:** `BedrockProvider.chat()` calls the Bedrock `converse()` API (unified request shape) rather than `invoke_model()` with a model-specific JSON body.
+
+**Rationale:** The original implementation used `invoke_model()` with a Claude-specific body (`anthropic_version`, `messages`, `system`). This worked only for Claude models — switching to Nova, Llama, or Mistral would have required branching logic per model family. The Converse API accepts a single unified shape for all model families; Bedrock handles per-model translation internally.
+
+**Rule:** Do not introduce `invoke_model()` calls or model-family branching in `BedrockProvider.chat()`. If a model is not supported by the Converse API, use a different provider adapter.
+
+---
+
+## D-17 · Permission system: middleware for base access, `Depends` for per-route checks
+
+**Decision:** The `can_access` check runs in `auth_middleware` using `AsyncSessionLocal()`. All other per-route permission checks use `require_perm(*perms)` as a FastAPI `Depends`.
+
+**Rationale:** FastAPI middleware cannot participate in the dependency injection graph (`Depends` is not available there). The base access check must be in middleware because it needs to run before any route handler sees the request. Per-route checks that need richer context (which specific permission, e.g. `can_approve` vs `can_settings`) use `Depends(require_perm(...))` so they get the request-scoped session from `Depends(get_session)` and don't need a separate session open.
+
+The bootstrap problem (first admin has no permissions yet) is solved by `sync_ng_admins=True` (default): Paperless NGX superusers/staff automatically receive full PIQ access on first login, with no manual setup required.
+
+**Rule:**
+- Middleware uses `async with AsyncSessionLocal()` — never `Depends`.
+- Route handlers use `dependencies=[Depends(require_perm("can_X"))]` — never `AsyncSessionLocal()`.
+- Do not add a second base-access check inside route handlers; middleware already enforces it.
+- `sync_ng_admins` must default to `True` so fresh installs are not locked out.
+
+---
+
+## D-18 · Metadata prefix prepended to chunks before embedding
+
+**Decision:** `ChromaVectorStore.upsert()` prepends a structured metadata header (title, document type, correspondent, tags, custom fields) to each text chunk before computing its embedding.
+
+**Rationale:** Without the prefix, a chunk of body text that merely *mentions* a topic (e.g. a salary slip mentioning "Lebensversicherung" in passing) can outscore a document that *is* about that topic, because the chunk's semantic content reflects its surrounding text rather than the document's identity. Prepending the metadata makes the embedding capture both the document's classification and its content, dramatically improving recall for queries like "show me my life insurance documents".
+
+**Rule:** The prefix is prepended at embed time only — it is not stored in the `documents` column of ChromaDB (which still holds the raw chunk). Do not store the prefix as part of the passage returned in search results.
+
+---
+
 ## D-15 · `_paperless_list` handles all entity pagination
 
 **Decision:** The private helper `_paperless_list(entity, extra_fields=None)` in `main.py` handles all pagination for Paperless NGX list endpoints. Functions like `list_tags`, `list_custom_fields`, `list_storage_paths` are one-liners that call this helper.

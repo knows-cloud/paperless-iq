@@ -9,7 +9,7 @@
 ```
 ┌──────────────────────────────────────────────────────────────────┐
 │                        Browser (SPA)                              │
-│   React 18 · TypeScript · Vite · TanStack Query · Inline CSS     │
+│   React 18 · TypeScript · Vite · TanStack Query · Mantine UI      │
 └────────────────────────────┬─────────────────────────────────────┘
                              │ HTTP/REST + Server-Sent Events (SSE)
 ┌────────────────────────────▼─────────────────────────────────────┐
@@ -92,7 +92,7 @@ All blocking (boto3) calls use `loop.run_in_executor(None, fn)` with `asyncio.ge
 Manages the `piq_memories` ChromaDB collection. Key method: `find_similar(fact) → str | None` — returns the ID of an existing memory with cosine similarity ≥ 0.92 (deduplication threshold), or `None` if the fact is new.
 
 ### `backend/orm_models.py`
-SQLAlchemy 2 ORM declarations. Six tables:
+SQLAlchemy 2 ORM declarations. Seven tables:
 
 | Table | Purpose |
 |-------|---------|
@@ -102,6 +102,7 @@ SQLAlchemy 2 ORM declarations. Six tables:
 | `settings` | Single-row JSON blob for `PaperlessIQConfig` |
 | `conversation_sessions` | Discovery chat sessions (verbatim turns + rolling summary) |
 | `user_memories` | Long-term memory facts |
+| `user_permissions` | Per-user access-control flags; created/updated at every login |
 
 ### `backend/models.py`
 Pydantic v2 models. Separate from ORM models — the API serialises Pydantic, persistence uses ORM. Mapping is explicit (`from_attributes=True`).
@@ -121,8 +122,9 @@ Loads `PaperlessIQConfig` from the database; falls back to `PIQ_*` env vars on f
 frontend/src/
 ├── api.ts                   # All API calls (single module, typed return values)
 ├── i18n.ts                  # Translation lookup (t("key"))
-├── App.tsx                  # Router, layout, nav sidebar
-├── ThemeProvider.tsx         # Injects CSS variables from settings into :root
+├── App.tsx                  # Router, layout, nav sidebar; fetches + applies permissions
+├── ThemeProvider.tsx        # MantineProvider + createTheme driven by /api/theme settings
+├── PermissionsContext.tsx   # React context + usePermissions() hook
 ├── main.tsx                 # React root
 │
 ├── components/
@@ -133,10 +135,10 @@ frontend/src/
 │   ├── LoginPage.tsx
 │   ├── ManualPage.tsx        # On-demand document analysis
 │   ├── QueuePage.tsx         # Approval queue
-│   ├── ProcessingPage.tsx    # Re-index / status panel
+│   ├── ProcessingPage.tsx    # Status panel (monitoring only — no maintenance actions)
 │   ├── AuditPage.tsx
 │   ├── DiscoveryPage.tsx     # RAG chat interface
-│   ├── SettingsPage.tsx      # ~470-line orchestrator — all state + handleSubmit
+│   ├── SettingsPage.tsx      # ~510-line orchestrator — all state + handleSubmit
 │   └── settings/
 │       ├── constants.ts      # METADATA_FIELDS · LLM_MODEL_DEFAULTS · EMBED_MODEL_DEFAULTS
 │       ├── ConnectionTab.tsx
@@ -145,7 +147,8 @@ frontend/src/
 │       ├── MetadataRulesTab.tsx
 │       ├── AutomationTab.tsx
 │       ├── AppearanceTab.tsx
-│       └── MemoriesTab.tsx
+│       ├── MemoriesTab.tsx
+│       └── AccessControlTab.tsx  # User permissions table + maintenance actions (reindex, reset)
 │
 ├── AutocompleteInput.tsx     # Reusable tag autocomplete
 ├── CfNameEditor.tsx          # Custom field name inline editor
@@ -158,13 +161,16 @@ frontend/src/
 `SettingsPage.tsx` owns **all** state, effects, mutations, and the `handleSubmit` form handler. It renders the active tab component as a pure display tree, passing values and setters as props.
 
 Tab components (`settings/*.tsx`):
-- Are **pure display** — no `useQuery`, no `useMutation`, no API calls (exception: `MemoriesTab` owns its fire-and-forget CRUD mutations because lifting them would require 4+ extra props for trivial state)
+- Are **pure display** — no `useQuery`, no `useMutation`, no API calls. Exceptions:
+  - `MemoriesTab` owns its fire-and-forget memory CRUD (lifting would require 4+ extra callback props for trivial state)
+  - `AccessControlTab` owns its `/api/piq-users` CRUD and maintenance action calls (same reasoning; these don't feed into `handleSubmit`)
 - Receive props via explicit TypeScript `interface Props`
 - **Never** define constants that are also needed by `SettingsPage` — put shared constants in `constants.ts`
 
 ### State management
 - TanStack Query for server state (settings, tags, custom fields, logos)
-- `useState` for all form/UI state that needs to survive tab switches (the form is a single `<form>` element wrapping all 7 tab views; switching tabs shows/hides — not unmounts — the content)
+- `useState` for all form/UI state that needs to survive tab switches (the form is a single `<form>` element wrapping all 8 tab views; switching tabs shows/hides — not unmounts — the content)
+- `PermissionsContext` provides the current user's effective permissions to all pages; populated from `GET /api/piq-users/me` after login
 - No Redux or Zustand — the query cache + local component state is sufficient
 
 ---
@@ -215,7 +221,7 @@ POST /api/discovery/close  {session_id}
 ```
 
 ### 4.3 Settings save (frontend → backend)
-The form collects state from all 7 tabs into a single `values` dict:
+The form collects state from all 8 tabs into a single `values` dict:
 1. Starts from the current full server settings (`{...s}`) so hidden-tab values are not lost
 2. Overlays `FormData` fields present in the active tab's DOM
 3. Merges React-state-owned values (theme, prompt text, field descriptions, Bedrock fields) explicitly
@@ -236,7 +242,24 @@ This means every save is a full replacement — the backend receives the complet
 
 ## 6. Security
 
-- Credentials (API keys, Bedrock secret) are Fernet-encrypted with `SECRET_KEY` before being stored in SQLite. The plaintext never appears in logs.
-- Bedrock `__KEEP__` sentinel: the frontend sends `"__KEEP__"` for secret sub-fields that weren't changed; the backend recognises this and retains the existing encrypted value.
-- Optional HTTP basic auth (`AUTH_USER` / `AUTH_PASSWORD` env vars). When disabled (default), all routes are open — intended for single-user LAN deployments.
-- `PAPERLESS_TOKEN` is stored in the environment only (not in the settings DB) and is injected at request time.
+### Credentials
+- LLM API keys and Bedrock secrets are Fernet-encrypted with `SECRET_KEY` before being stored in SQLite. Plaintext never appears in logs or API responses.
+- Bedrock `__KEEP__` sentinel: the frontend sends `"__KEEP__"` for secret sub-fields that weren't changed; the backend retains the existing encrypted value.
+- `PAPERLESS_TOKEN` is stored in the environment only (not in the settings DB) and injected at request time.
+
+### Authentication
+- Session tokens are HMAC-SHA256 signed (`jti.username_b64.exp.sig`) using the machine key. Valid for 7 days. Revocation is in-memory (cleared on restart).
+- Auth is enforced only when `PAPERLESS_URL` is set. Without it the app runs in open/dev mode.
+- Login is rate-limited to 10 attempts per IP per 5-minute window (in-memory, resets on restart).
+- `POST /api/auth/login` validates credentials against Paperless NGX (`/api/token/`), checks admin status, upserts the `user_permissions` row, and issues the session token.
+- Public paths exempt from auth: `/api/auth/*`, `/api/status`, `/api/theme`, `/api/logos`, `/health`.
+
+### Authorisation
+- `require_perm(*perms)` in `main.py` is a FastAPI dependency factory. It checks that the authenticated user has **any** of the listed permission flags in their `user_permissions` row.
+- `sync_ng_admins=True` (default): Paperless NGX superusers/staff are auto-granted full PIQ access on login without manual permission grants (solves the bootstrap problem).
+- The `can_access` base check runs in `auth_middleware` using a fresh `AsyncSessionLocal()` session — it cannot use `Depends(get_session)` because middleware runs outside the request dependency graph.
+- All per-route permission checks use `Depends(require_perm(...))` with `Depends(get_session)` — never `AsyncSessionLocal()`.
+
+### Webhook
+- `POST /api/webhook/paperless` is intentionally unauthenticated (Paperless NGX calls it without a PIQ session token). Set `WEBHOOK_SECRET` in the environment and configure Paperless NGX to send it as `X-Webhook-Secret` to restrict access.
+- CORS origins are restricted via `CORS_ALLOWED_ORIGINS` env var (comma-separated). Defaults to `*` for backwards compatibility.

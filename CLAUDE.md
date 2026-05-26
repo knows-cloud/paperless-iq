@@ -11,7 +11,7 @@ that keep the codebase consistent.
 | File | What it covers |
 |------|---------------|
 | `docs/ARCHITECTURE.md` | System diagram, all backend modules, frontend tree, three key data flows, async patterns, security |
-| `docs/DECISIONS.md` | 15 design decisions (D-01–D-15) — each has Decision, Rationale, and an explicit Rule |
+| `docs/DECISIONS.md` | 18 design decisions (D-01–D-18) — each has Decision, Rationale, and an explicit Rule |
 
 
 **Always read `docs/DECISIONS.md` before starting a refactor.** The decisions there are not optional style preferences — they reflect real bugs that were fixed by establishing the rule.
@@ -54,16 +54,17 @@ backend/
   analyzer.py        — DocumentAnalyzer pipeline (fetch → prompt → LLM → persist)
   providers/         — 4 LLM adapters (ollama, bedrock, anthropic, openai)
   protocols.py       — LLMProvider + VectorStore as typing.Protocol
-  orm_models.py      — SQLAlchemy 2 ORM (6 tables)
+  orm_models.py      — SQLAlchemy 2 ORM (7 tables)
   models.py          — Pydantic v2 API models (separate from ORM)
   vector_store.py    — ChromaDB + Bedrock KB implementations
   memory_store.py    — piq_memories ChromaDB collection (long-term memory)
 
 frontend/src/
-  pages/SettingsPage.tsx          — ~470-line orchestrator (all state + handleSubmit)
+  pages/SettingsPage.tsx          — ~510-line orchestrator (all state + handleSubmit)
   pages/settings/constants.ts     — METADATA_FIELDS, LLM_MODEL_DEFAULTS, EMBED_MODEL_DEFAULTS
-  pages/settings/*.tsx            — 7 pure display tab components (no useQuery, no API calls)
+  pages/settings/*.tsx            — 8 tab components (pure display; exceptions: MemoriesTab + AccessControlTab own their CRUD)
   components/MarkdownText.tsx     — markdown + citation renderer (used by DiscoveryPage)
+  PermissionsContext.tsx          — React context + usePermissions() hook; populated from /api/piq-users/me
 ```
 
 ### Key invariants
@@ -83,7 +84,7 @@ frontend/src/
 | `asyncio.get_event_loop()` | `asyncio.get_running_loop()` |
 | `AsyncSessionLocal()` in a route handler | `Depends(get_session)` |
 | Define `METADATA_FIELDS` in a tab component | Import from `settings/constants.ts` |
-| `useQuery` / `useMutation` in a tab component | Lift to `SettingsPage.tsx` (except MemoriesTab CRUD) |
+| `useQuery` / `useMutation` in a tab component | Lift to `SettingsPage.tsx` (except MemoriesTab and AccessControlTab CRUD) |
 | Two separate automation loops | `_automation_loop(batch_size=None|N)` |
 | Duplicate pagination loop for Paperless NGX lists | `_paperless_list(entity, extra_fields=None)` |
 | `get_document_ocr_text()` inside `analyze()` | `doc_meta.get("content", "")` |
