@@ -68,9 +68,17 @@ def test_property_30_export_credential_redaction(
     exported = svc.export_config()
 
     for field in CREDENTIAL_FIELDS:
-        assert exported.get(field) == REDACTED_PLACEHOLDER, (
-            f"Credential field '{field}' not redacted in export"
-        )
+        raw = getattr(config, field, None)
+        is_set = bool(raw)  # empty string / empty bytes = not configured
+        if is_set:
+            assert exported.get(field) == REDACTED_PLACEHOLDER, (
+                f"Non-empty credential field '{field}' not redacted in export"
+            )
+        else:
+            # Unset credentials should export as empty, never as plaintext
+            assert exported.get(field, "") in ("", REDACTED_PLACEHOLDER), (
+                f"Unset credential field '{field}' exported unexpected value"
+            )
 
     # Ensure no plaintext credential value appears anywhere in the export
     cred_value = config.llm_credentials

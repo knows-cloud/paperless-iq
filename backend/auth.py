@@ -138,13 +138,16 @@ def check_login_rate_limit(ip: str) -> bool:
 # ---------------------------------------------------------------------------
 
 def check_webhook_secret(request: Request, expected: str) -> bool:
-    """Return True if the X-Webhook-Secret header matches *expected*.
+    """Return True if the request carries the correct webhook secret.
 
-    When *expected* is empty, all requests are accepted (webhook is open).
+    Checks the ``?key=`` query parameter (used when the secret is auto-embedded
+    in the callback URL).  Falls back to the ``X-Webhook-Secret`` header for
+    backward compatibility with deployments that set WEBHOOK_SECRET manually.
+    When *expected* is empty, all requests are accepted.
     """
     if not expected:
         return True
-    provided = request.headers.get("X-Webhook-Secret", "")
+    provided = request.query_params.get("key") or request.headers.get("X-Webhook-Secret", "")
     return hmac.compare_digest(expected, provided)
 
 

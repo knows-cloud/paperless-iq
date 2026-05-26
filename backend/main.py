@@ -486,6 +486,12 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     # Load persisted settings from DB (seeds from env vars on first run)
     await _settings_svc.load_from_db()
 
+    # Auto-generate webhook secret on first run so the callback URL is always authenticated.
+    if not _settings_svc.config.webhook_secret:
+        import secrets as _secrets
+        await _settings_svc.update_and_persist({"webhook_secret": _secrets.token_urlsafe(24)})
+        logger.info("Generated webhook secret (embedded in callback URL when webhook is registered).")
+
     # Initialize all app.state attributes to safe defaults
     app.state.providers = None
     app.state.paperless_client = None
@@ -589,17 +595,6 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
             app.state.scheduler_task = asyncio.create_task(
                 _automation_loop(app, config.poll_interval_seconds, batch_size=config.batch_size)
             )
-
-    # Warn if the webhook endpoint is unprotected.
-    # Set a secret in Settings → Automation → Webhook Security, then configure
-    # Paperless NGX to send it as the X-Webhook-Secret header on each call.
-    # The WEBHOOK_SECRET env var is still honoured as a fallback for existing deployments.
-    _effective_webhook_secret = _settings_svc.config.webhook_secret or os.environ.get("WEBHOOK_SECRET", "")
-    if not _effective_webhook_secret:
-        logger.warning(
-            "Webhook secret is not configured — /api/webhook/paperless accepts requests "
-            "from any caller. Set a secret in Settings → Automation → Webhook Security."
-        )
 
     # Always run the session expiry loop — extracts memories then deletes expired sessions
     app.state.session_expiry_task = asyncio.create_task(_session_expiry_loop(app))
@@ -2448,7 +2443,8 @@ async def register_webhook(request: Request) -> dict:
         if config.paperless_iq_internal_url
         else str(request.base_url).rstrip("/")
     )
-    callback_url = f"{base_url}/api/webhook/paperless"
+    secret = _settings_svc.config.webhook_secret
+    callback_url = f"{base_url}/api/webhook/paperless?key={secret}" if secret else f"{base_url}/api/webhook/paperless"
 
     paperless_base = pc._base_url
     headers = {**pc._headers, "Content-Type": "application/json"}
@@ -2537,7 +2533,7 @@ async def paperless_webhook(request: Request) -> dict:
     Settings → Automation → Webhook Security to restrict access.
     """
     expected = _settings_svc.config.webhook_secret or os.environ.get("WEBHOOK_SECRET", "")
-    if not check_webhook_secret(request, expected):
+    if not check_webhook_secret(request, expected):  # checks ?key= param (or X-Webhook-Secret for env-var compat)
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
             detail="Invalid or missing webhook secret.",
