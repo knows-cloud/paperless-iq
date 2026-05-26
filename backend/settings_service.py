@@ -18,30 +18,38 @@ from pydantic import ValidationError
 
 from backend.keystore import get_machine_key
 from backend.models import PaperlessIQConfig
-from backend.providers.encryption import decrypt_credential, encrypt_credential
+from backend.providers.encryption import (
+    decrypt_credential,
+    decrypt_credential_v2,
+    encrypt_credential_v2,
+)
 
-# Prefix that marks an encrypted credential blob in the database.
-# Old plaintext entries lack this prefix and are still loadable (backward compat).
-_CRED_ENC_PREFIX = "enc1:"
+# Prefixes for credential blobs stored in the database.
+# enc1: legacy fixed-salt (read only)
+# enc2: random per-credential salt (current)
+_CRED_ENC_PREFIX_V1 = "enc1:"
+_CRED_ENC_PREFIX_V2 = "enc2:"
 
 
 def _encrypt_creds(plaintext: str) -> str:
-    """Encrypt a credential string for DB storage using the machine key."""
+    """Encrypt a credential string for DB storage using the machine key (enc2 scheme)."""
     secret_key = get_machine_key()
-    return _CRED_ENC_PREFIX + encrypt_credential(plaintext, secret_key)
+    return _CRED_ENC_PREFIX_V2 + encrypt_credential_v2(plaintext, secret_key)
 
 
 def _decrypt_creds(stored: str) -> str:
     """Decrypt a credential blob loaded from the DB.
 
-    Accepts both encrypted (``enc1:…``) and legacy plaintext values.
+    Accepts enc2 (current), enc1 (legacy fixed-salt), and plaintext (very old).
     Returns an empty string on decryption failure (wrong key, corrupt data).
     """
-    if not stored.startswith(_CRED_ENC_PREFIX):
-        return stored  # plaintext / legacy
     secret_key = get_machine_key()
     try:
-        return decrypt_credential(stored[len(_CRED_ENC_PREFIX):], secret_key)
+        if stored.startswith(_CRED_ENC_PREFIX_V2):
+            return decrypt_credential_v2(stored[len(_CRED_ENC_PREFIX_V2):], secret_key)
+        if stored.startswith(_CRED_ENC_PREFIX_V1):
+            return decrypt_credential(stored[len(_CRED_ENC_PREFIX_V1):], secret_key)
+        return stored  # plaintext / very old legacy
     except Exception:
         logger.error("Failed to decrypt stored credentials — wrong machine key?", exc_info=True)
         return ""

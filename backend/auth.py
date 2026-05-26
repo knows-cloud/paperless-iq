@@ -238,7 +238,7 @@ async def require_auth(request: Request) -> None:
 
     # These endpoints are safe to expose without auth — they contain no
     # sensitive data and are needed for health monitoring / login-page styling.
-    _PUBLIC_PATHS = {"/api/status", "/api/theme", "/api/logos", "/health"}
+    _PUBLIC_PATHS = {"/api/status", "/api/theme", "/health"}
     if path in _PUBLIC_PATHS:
         return
 

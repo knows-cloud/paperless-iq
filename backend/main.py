@@ -590,6 +590,15 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
                 _automation_loop(app, config.poll_interval_seconds, batch_size=config.batch_size)
             )
 
+    # Warn if the webhook endpoint is unprotected (WEBHOOK_SECRET not set)
+    # To secure it: set WEBHOOK_SECRET in your environment and configure Paperless NGX
+    # to send the same value as the X-Webhook-Secret header on every webhook call.
+    if not os.environ.get("WEBHOOK_SECRET", "").strip():
+        logger.warning(
+            "WEBHOOK_SECRET is not set — the /api/webhook/paperless endpoint accepts "
+            "requests from any caller. Set WEBHOOK_SECRET to restrict access."
+        )
+
     # Always run the session expiry loop — extracts memories then deletes expired sessions
     app.state.session_expiry_task = asyncio.create_task(_session_expiry_loop(app))
 
