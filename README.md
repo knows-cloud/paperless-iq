@@ -46,23 +46,24 @@ AI-powered intelligence layer for [Paperless NGX](https://docs.paperless-ngx.com
 - **Configurable retention** — audit entries are automatically pruned after a configurable number of days (minimum 90)
 
 ### Settings
-Settings are organised into seven tabs:
+Settings are organised into eight tabs:
 
 | Tab | Contents |
 |-----|----------|
-| **Connection** | Paperless NGX public URL, connection test, inbox tag |
+| **Connection** | Paperless NGX public URL, connection test, inbox tag, webhook registration |
 | **AI Provider** | LLM provider + model + credentials, context window, analysis mode, embedding provider, vector store backend |
 | **Prompts & Fields** | Global system prompt, LLM output language, per-field instructions, custom fields |
 | **Metadata Rules** | Smart entity selection toggle, similar-docs count, frequency fallback, entity creation policies |
-| **Automation** | Enable/disable, auto-apply, poll interval, batch size, cron schedule |
-| **Appearance** | Theme colours (primary, sidebar, content, cards, chips), typography, logo, nav icons, UI language |
+| **Automation** | Enable/disable, auto-apply, poll interval, batch size, cron schedule, creation policies |
+| **Appearance** | Theme colours, typography, logo, nav icons, UI language, colour scheme (light/dark/auto) |
 | **Memories** | Enable/disable long-term memory, list/edit/delete individual facts, clear all |
+| **Access Control** | Per-user permission flags, NG admin sync toggle, maintenance actions (reindex, reset tracking) |
 
 ### LLM Providers
 | Provider | Completions | Embeddings |
 |----------|-------------|------------|
 | **Ollama** (local) | ✓ | ✓ |
-| **Amazon Bedrock** | ✓ (Claude family + cross-region profiles) | ✓ (Titan v1/v2, Cohere) |
+| **Amazon Bedrock** | ✓ (all model families via Converse API — Claude, Nova, Llama, Mistral) | ✓ (Titan v1/v2, Cohere) |
 | **Anthropic** | ✓ | — |
 | **OpenAI** | ✓ | ✓ (text-embedding-3-small) |
 
@@ -72,7 +73,7 @@ All provider health checks are credential-only — no live API calls are made du
 - **Responsive mobile layout** — sidebar slides in from the left as a drawer on small screens; a backdrop overlay and auto-close on navigation
 - **Full theme customisation** — primary colour, sidebar gradient, body/card/chip colours, font family and size, custom logo, per-page nav icons
 - **Dark/light sidebar detection** — WCAG-based contrast calculation ensures text and chip colours are always legible regardless of chosen palette
-- **Optional authentication** — username/password login with session tokens; can be disabled for single-user setups
+- **Authentication & access control** — HMAC-signed session tokens; login validated against Paperless NGX; per-user permission flags (view queue, approve, analyze, discover, settings); Paperless NGX admins optionally auto-granted full access; can be disabled for single-user setups
 - **Internationalisation** — UI language switchable (English, German, French, Spanish, Italian); LLM output language independently configurable
 
 ---
@@ -131,6 +132,13 @@ All settings are configurable via the web UI. On first startup, settings can be 
 | `PAPERLESS_TOKEN` | API token for Paperless NGX |
 | `SECRET_KEY` | Master key for Fernet encryption of credentials stored at rest |
 
+### Security Environment Variables
+
+| Variable | Default | Purpose |
+|----------|---------|---------|
+| `CORS_ALLOWED_ORIGINS` | `*` | Comma-separated list of allowed CORS origins (e.g. `https://paperless.example.com`) |
+| `WEBHOOK_SECRET` | — | If set, Paperless NGX must send this value as `X-Webhook-Secret` on webhook calls |
+
 ### Optional Environment Variables (`PIQ_*` — initial seed only)
 
 | Variable | Default | Purpose |
@@ -165,35 +173,28 @@ All settings are configurable via the web UI. On first startup, settings can be 
 
 ## Architecture
 
-```
-┌─────────────────────────────────────────────────────┐
-│                    Browser (SPA)                     │
-│         React 18 · TypeScript · Vite · TanStack      │
-└────────────────────┬────────────────────────────────┘
-                     │ HTTP / REST
-┌────────────────────▼────────────────────────────────┐
-│                 FastAPI backend                       │
-│   Python 3.12 · SQLAlchemy 2.x · SQLite              │
-│                                                       │
-│  ┌─────────────┐  ┌──────────────┐  ┌─────────────┐ │
-│  │   Analyzer   │  │  Discovery   │  │  Automation │ │
-│  │  (metadata)  │  │  (RAG chat)  │  │  (inbox)    │ │
-│  └──────┬──────┘  └──────┬───────┘  └──────┬──────┘ │
-│         │                │                  │         │
-│  ┌──────▼──────────────────────────────────▼──────┐  │
-│  │              LLM Provider Layer                 │  │
-│  │   Ollama · Bedrock · Anthropic · OpenAI         │  │
-│  └─────────────────────────────────────────────────┘  │
-│                                                       │
-│  ┌──────────────────────────────────────────────────┐ │
-│  │           ChromaDB (local persistent)             │ │
-│  │   documents collection · memories collection      │ │
-│  └──────────────────────────────────────────────────┘ │
-└─────────────────────────────────────────────────────┘
-                     │
-┌────────────────────▼────────────────────────────────┐
-│               Paperless NGX                          │
-└─────────────────────────────────────────────────────┘
+```mermaid
+graph TD
+    Browser["Browser — SPA\nReact 18 · TypeScript · Vite · TanStack Query · Mantine UI"]
+
+    subgraph FastAPI["FastAPI Backend — Python 3.12 · SQLAlchemy 2 async · SQLite"]
+        direction LR
+        Analyzer["Document\nAnalyzer"]
+        Discovery["Discovery\n& RAG"]
+        Automation["Automation\nEngine"]
+    end
+
+    LLM["LLM Provider Layer\nOllama · Bedrock · Anthropic · OpenAI"]
+    Storage["Storage\nSQLite (ORM) · ChromaDB (on disk)"]
+    NGX["Paperless NGX\nREST API (token-authenticated)"]
+
+    Browser -->|"HTTP / REST + SSE"| FastAPI
+    Analyzer --> LLM
+    Discovery --> LLM
+    Automation --> LLM
+    FastAPI <-->|"read / write"| Storage
+    Analyzer -->|"GET /api/documents/"| NGX
+    FastAPI -->|"PATCH /api/documents/"| NGX
 ```
 
 ### Key data flows

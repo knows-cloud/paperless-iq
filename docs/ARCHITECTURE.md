@@ -6,36 +6,28 @@
 
 ## 1. System Overview
 
-```
-┌──────────────────────────────────────────────────────────────────┐
-│                        Browser (SPA)                              │
-│   React 18 · TypeScript · Vite · TanStack Query · Mantine UI      │
-└────────────────────────────┬─────────────────────────────────────┘
-                             │ HTTP/REST + Server-Sent Events (SSE)
-┌────────────────────────────▼─────────────────────────────────────┐
-│                      FastAPI backend                               │
-│            Python 3.12 · SQLAlchemy 2 async · SQLite              │
-│                                                                    │
-│  ┌───────────────┐  ┌─────────────────┐  ┌────────────────────┐  │
-│  │  DocumentAnalyzer│  │ Discovery / RAG  │  │  Automation Engine │  │
-│  │  (analyzer.py) │  │  (main.py routes)│  │  (_automation_loop)│  │
-│  └───────┬───────┘  └────────┬────────┘  └──────────┬─────────┘  │
-│          │                   │                        │             │
-│  ┌───────▼───────────────────▼────────────────────────▼─────────┐ │
-│  │                   LLM Provider Layer                           │ │
-│  │    protocols.LLMProvider · provider_registry · 4 adapters     │ │
-│  └───────────────────────────────────────────────────────────────┘ │
-│                                                                    │
-│  ┌─────────────────────────────────────────────────────────────┐  │
-│  │                  Storage Layer                               │  │
-│  │  SQLite (ORM)  ·  ChromaDB (persistent on disk)             │  │
-│  └─────────────────────────────────────────────────────────────┘  │
-└──────────────────────────────────────────────────────────────────┘
-                             │
-┌────────────────────────────▼─────────────────────────────────────┐
-│                     Paperless NGX                                  │
-│              REST API (token-authenticated)                        │
-└──────────────────────────────────────────────────────────────────┘
+```mermaid
+graph TD
+    Browser["Browser — SPA\nReact 18 · TypeScript · Vite · TanStack Query · Mantine UI"]
+
+    subgraph FastAPI["FastAPI Backend — Python 3.12 · SQLAlchemy 2 async · SQLite"]
+        direction LR
+        Analyzer["Document\nAnalyzer"]
+        Discovery["Discovery\n& RAG"]
+        Automation["Automation\nEngine"]
+    end
+
+    LLM["LLM Provider Layer\nOllama · Bedrock · Anthropic · OpenAI"]
+    Storage["Storage\nSQLite (ORM) · ChromaDB (on disk)"]
+    NGX["Paperless NGX\nREST API (token-authenticated)"]
+
+    Browser -->|"HTTP / REST + SSE"| FastAPI
+    Analyzer --> LLM
+    Discovery --> LLM
+    Automation --> LLM
+    FastAPI <-->|"read / write"| Storage
+    Analyzer -->|"GET /api/documents/"| NGX
+    FastAPI -->|"PATCH /api/documents/"| NGX
 ```
 
 ---
@@ -178,46 +170,55 @@ Tab components (`settings/*.tsx`):
 ## 4. Data Flows
 
 ### 4.1 Metadata analysis pipeline
-```
-InboxMonitor.poll()
-  └─► DocumentAnalyzer.analyze(doc_id)
-        ├── GET /api/documents/{id}/          # metadata + content (single call)
-        ├── _fetch_entity_context()           # parallel: tags, correspondents, types
-        │     └── returns (ctx_str, tags[], correspondents[], doc_types[])
-        ├── _build_field_instructions()
-        ├── LLMProvider.complete(prompt)
-        ├── parse JSON → MetadataSuggestion
-        ├── _apply_creation_policy(…, all_tags=tags, …)   # no extra API calls
-        └── INSERT suggestions row
-              └─► shown in QueuePage
-```
 
-On approval:
-```
-ApprovalQueue.approve(suggestion_id)
-  ├── PATCH /api/documents/{id}/   # write metadata to Paperless NGX
-  ├── INSERT audit_log rows (one per changed field)
-  └── UPDATE suggestions.status = "approved"
+```mermaid
+flowchart TD
+    Poll["InboxMonitor.poll()"] --> Analyze["DocumentAnalyzer.analyze(doc_id)"]
+    Analyze --> Fetch["GET /api/documents/{id}/\nmetadata + OCR content — single call"]
+    Analyze --> Entity["_fetch_entity_context()\ntags · correspondents · types — parallel"]
+    Analyze --> Fields["_build_field_instructions()"]
+    Fetch & Entity & Fields --> Prompt["Assemble prompt"]
+    Prompt --> LLM["LLMProvider.complete(prompt)"]
+    LLM --> Parse["Parse JSON → MetadataSuggestion"]
+    Parse --> Policy["_apply_creation_policy()\nreuses pre-fetched lists — no extra API calls"]
+    Policy --> DB[("INSERT suggestions")]
+    DB --> Queue["QueuePage"]
+
+    Queue --> Approve{"User approves"}
+    Approve --> Write["PATCH /api/documents/{id}/\nwrite metadata to Paperless NGX"]
+    Approve --> Audit[("INSERT audit_log\none row per changed field")]
+    Approve --> Status[("UPDATE suggestions.status = 'approved'")]
 ```
 
 ### 4.2 Discovery conversation
-```
-POST /api/discovery/chat  {question, session_id?}
-  ├── get_or_create ConversationSession
-  ├── if history: LLM reformulates question → standalone search query
-  ├── MemoryStore.find_relevant(query) → injected into system prompt
-  ├── VectorStore.query(query, top_n=8) → source chunks
-  ├── LLMProvider.chat([system, …history_turns, user])
-  ├── append new turn to session.turns
-  ├── if len(turns) > 8: compress oldest turns → session.summary
-  └── return {answer, sources[]}
 
-POST /api/discovery/close  {session_id}
-  ├── LLM extracts facts from full conversation
-  └── for each fact:
-        ├── MemoryStore.find_similar(fact) → existing_id or None
-        ├── if duplicate: UPDATE user_memories + chroma upsert
-        └── if new: INSERT user_memories + chroma upsert
+**Per-question flow:**
+
+```mermaid
+flowchart TD
+    Ask["POST /api/discover\n{question, session_id?}"] --> Session["get_or_create ConversationSession"]
+    Session --> History{"Has prior\nhistory?"}
+    History -->|Yes| Reform["LLM reformulates question\n→ standalone search query"]
+    History -->|No| Search
+    Reform --> Search["VectorStore.query()\n→ source chunks"]
+    Session --> Memories["MemoryStore.find_relevant()\n→ inject into system prompt"]
+    Memories & Search --> Chat["LLMProvider.chat()\nsystem prompt + history turns + fresh context"]
+    Chat --> Return["Return {answer, sources[]}"]
+    Return --> Append["Append turn to session.turns"]
+    Append --> Window{"len(turns) > 8?"}
+    Window -->|Yes| Compress["LLM compresses oldest turns\n→ session.summary"]
+    Window -->|No| Done["Done"]
+```
+
+**On session close — memory extraction:**
+
+```mermaid
+flowchart TD
+    Close["Session closed"] --> Extract["LLM extracts memorable facts\nfrom full conversation"]
+    Extract --> Loop["For each fact"]
+    Loop --> Similar{"MemoryStore.find_similar()\ncosine distance ≤ 0.08?"}
+    Similar -->|Duplicate| Update[("UPDATE user_memories\n+ Chroma upsert")]
+    Similar -->|New| Insert[("INSERT user_memories\n+ Chroma upsert")]
 ```
 
 ### 4.3 Settings save (frontend → backend)
