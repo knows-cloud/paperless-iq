@@ -75,17 +75,34 @@ def _mock_httpx_client(get_handler):
     return _FakeClient
 
 
+_auth_patcher = None
+
+
 def _setup_env():
-    """Set env vars for Paperless proxy tests."""
+    """Set env vars for Paperless proxy tests and bypass auth enforcement.
+
+    PAPERLESS_URL being set triggers the auth middleware. Patch
+    backend.main.require_auth to a no-op so proxy tests don't need real tokens.
+    """
+    global _auth_patcher
     os.environ["PAPERLESS_URL"] = "http://paperless.test"
     os.environ["PAPERLESS_TOKEN"] = "test-token"
     os.environ.pop("SECRET_KEY", None)
 
+    from unittest.mock import patch, AsyncMock
+
+    _auth_patcher = patch("backend.main.require_auth", new=AsyncMock(return_value=None))
+    _auth_patcher.start()
+
 
 def _cleanup_env():
-    """Remove env vars after tests."""
+    """Remove env vars and restore auth after tests."""
+    global _auth_patcher
     os.environ.pop("PAPERLESS_URL", None)
     os.environ.pop("PAPERLESS_TOKEN", None)
+    if _auth_patcher is not None:
+        _auth_patcher.stop()
+        _auth_patcher = None
 
 
 # Strategies
@@ -152,11 +169,11 @@ async def test_search_parameter_forwarding(
                 if query is not None:
                     params["query"] = query
                 if tag_id is not None:
-                    params["tag_id"] = tag_id
+                    params["tag_ids"] = tag_id
                 if correspondent_id is not None:
-                    params["correspondent_id"] = correspondent_id
+                    params["correspondent_ids"] = correspondent_id
                 if document_type_id is not None:
-                    params["document_type_id"] = document_type_id
+                    params["document_type_ids"] = document_type_id
 
                 resp = await client.get("/api/documents", params=params)
     finally:
@@ -174,9 +191,9 @@ async def test_search_parameter_forwarding(
     if tag_id is not None:
         assert str(captured_params.get("tags__id__in")) == str(tag_id)
     if correspondent_id is not None:
-        assert str(captured_params.get("correspondent__id")) == str(correspondent_id)
+        assert str(captured_params.get("correspondent__id__in")) == str(correspondent_id)
     if document_type_id is not None:
-        assert str(captured_params.get("document_type__id")) == str(document_type_id)
+        assert str(captured_params.get("document_type__id__in")) == str(document_type_id)
 
 
 # ---------------------------------------------------------------------------

@@ -88,7 +88,8 @@ _PROTECTED_ENDPOINTS = [
 async def unauth_client():
     """Async HTTP test client WITHOUT any auth headers."""
     import os
-    # Set a SECRET_KEY so auth is enforced
+    # Set PAPERLESS_URL so auth is enforced (auth.py checks this, not SECRET_KEY)
+    os.environ["PAPERLESS_URL"] = "http://paperless.test"
     os.environ["SECRET_KEY"] = "test-secret-key-for-auth"
 
     # Re-import to pick up the env var
@@ -104,6 +105,7 @@ async def unauth_client():
         yield client
 
     # Clean up
+    os.environ.pop("PAPERLESS_URL", None)
     os.environ.pop("SECRET_KEY", None)
     importlib.reload(backend.auth)
 

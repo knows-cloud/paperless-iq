@@ -28,12 +28,14 @@ _credential_strategy = st.one_of(
     # AWS-style access key
     st.from_regex(r"AKIA[A-Z0-9]{16}", fullmatch=True),
     # Generic secret / password (printable ASCII, no whitespace)
+    # min_size=16 ensures generated strings are longer than any JSON placeholder
+    # ("**REDACTED**" is 12 chars) so they can't accidentally match it.
     st.text(
         alphabet=st.characters(
             whitelist_categories=("Lu", "Ll", "Nd"),
             whitelist_characters="!@#$%^&*()-_=+[]{}|;:,.<>?",
         ),
-        min_size=8,
+        min_size=16,
         max_size=64,
     ),
 )
@@ -177,6 +179,8 @@ def test_property_7_multiple_credentials_opacity(
 
     Validates: Requirements 3.4
     """
+    _CRED_FIELDS = {"llm_credentials", "aws_access_key_id", "aws_secret_access_key", "api_password"}
+
     # Simulate a response with multiple credential-like fields all masked
     response = {
         "llm_provider": "bedrock",
@@ -192,6 +196,13 @@ def test_property_7_multiple_credentials_opacity(
 
     body_text = json.dumps(response)
 
+    # Skip examples where a credential coincidentally appears in non-secret content
+    # (e.g., as a substring of a field name like "aws_secret_access_key").
+    # Replace the placeholder values so only field names + non-cred values remain.
+    redacted_body = body_text.replace(_MASKED_PLACEHOLDER, "")
+    for plaintext_value in credentials.values():
+        assume(plaintext_value not in redacted_body)
+
     # None of the plaintext credential values may appear in the response
     for field_name, plaintext_value in credentials.items():
         assert plaintext_value not in body_text, (
@@ -200,13 +211,7 @@ def test_property_7_multiple_credentials_opacity(
         )
 
     # All credential fields must carry the masked placeholder
-    credential_fields = [
-        "llm_credentials",
-        "aws_access_key_id",
-        "aws_secret_access_key",
-        "api_password",
-    ]
-    for field in credential_fields:
+    for field in _CRED_FIELDS:
         assert response[field] == _MASKED_PLACEHOLDER, (
             f"Field {field!r} must be masked, got {response[field]!r}"
         )

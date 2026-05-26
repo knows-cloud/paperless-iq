@@ -64,6 +64,7 @@ _doc_text = st.text(
 
 def _make_store() -> ChromaVectorStore:
     """Create a ChromaVectorStore backed by an ephemeral (in-memory) client."""
+    import asyncio
     import chromadb
 
     provider = _MockLLMProvider()
@@ -71,6 +72,8 @@ def _make_store() -> ChromaVectorStore:
     store._llm = provider
     store._chunk_size = DEFAULT_CHUNK_SIZE
     store._chunk_overlap = DEFAULT_CHUNK_OVERLAP
+    store._embed_sem = asyncio.Semaphore(1)
+    store._embed_concurrency = 1
     store._client = chromadb.EphemeralClient()
     store._collection = store._client.get_or_create_collection(
         name="test",

@@ -113,7 +113,19 @@ def _make_mock_paperless(
             return list(document_types)
         return []
 
+    async def _list_entities_with_map(entity_type: str) -> tuple[list[str], dict[int, str]]:
+        if entity_type == "tags":
+            names = list(tags)
+        elif entity_type == "correspondents":
+            names = list(correspondents)
+        elif entity_type == "document_types":
+            names = list(document_types)
+        else:
+            names = []
+        return names, {i + 1: name for i, name in enumerate(names)}
+
     client.list_entities = AsyncMock(side_effect=_list_entities)
+    client.list_entities_with_map = AsyncMock(side_effect=_list_entities_with_map)
     client.list_custom_field_definitions = AsyncMock(return_value=list(custom_field_defs))
     return client
 

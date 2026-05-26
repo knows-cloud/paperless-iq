@@ -134,18 +134,19 @@ class TestCredentialMasking:
 class TestAnthropicHealthCheck:
     @pytest.mark.asyncio
     async def test_health_check_returns_true_on_success(self, anthropic_provider: AnthropicProvider):
-        mock_client = AsyncMock()
-        mock_client.models.list = AsyncMock(return_value=[])
-        with patch.object(anthropic_provider, "_client", return_value=mock_client):
-            result = await anthropic_provider.health_check()
+        # health_check decrypts the key and checks it's non-empty — no network call
+        result = await anthropic_provider.health_check()
         assert result is True
 
     @pytest.mark.asyncio
-    async def test_health_check_returns_false_on_exception(self, anthropic_provider: AnthropicProvider):
-        mock_client = AsyncMock()
-        mock_client.models.list = AsyncMock(side_effect=Exception("connection refused"))
-        with patch.object(anthropic_provider, "_client", return_value=mock_client):
-            result = await anthropic_provider.health_check()
+    async def test_health_check_returns_false_on_exception(self):
+        # Provide an undecryptable token — health_check catches the exception and returns False
+        bad_provider = AnthropicProvider(
+            api_key_enc="not-a-valid-fernet-token",
+            model="claude-3-haiku-20240307",
+            secret_key=TEST_SECRET_KEY,
+        )
+        result = await bad_provider.health_check()
         assert result is False
 
 
@@ -156,18 +157,18 @@ class TestAnthropicHealthCheck:
 class TestOpenAIHealthCheck:
     @pytest.mark.asyncio
     async def test_health_check_returns_true_on_success(self, openai_provider: OpenAIProvider):
-        mock_client = AsyncMock()
-        mock_client.models.list = AsyncMock(return_value=[])
-        with patch.object(openai_provider, "_client", return_value=mock_client):
-            result = await openai_provider.health_check()
+        # health_check decrypts the key and checks it's non-empty — no network call
+        result = await openai_provider.health_check()
         assert result is True
 
     @pytest.mark.asyncio
-    async def test_health_check_returns_false_on_exception(self, openai_provider: OpenAIProvider):
-        mock_client = AsyncMock()
-        mock_client.models.list = AsyncMock(side_effect=Exception("unauthorized"))
-        with patch.object(openai_provider, "_client", return_value=mock_client):
-            result = await openai_provider.health_check()
+    async def test_health_check_returns_false_on_exception(self):
+        bad_provider = OpenAIProvider(
+            api_key_enc="not-a-valid-fernet-token",
+            model="gpt-4o",
+            secret_key=TEST_SECRET_KEY,
+        )
+        result = await bad_provider.health_check()
         assert result is False
 
 
@@ -178,19 +179,20 @@ class TestOpenAIHealthCheck:
 class TestBedrockHealthCheck:
     @pytest.mark.asyncio
     async def test_health_check_returns_true_on_success(self, bedrock_provider: BedrockProvider):
-        mock_client = MagicMock()
-        mock_client.list_foundation_models.return_value = {"modelSummaries": []}
-        with patch.object(bedrock_provider, "_bedrock_client", return_value=mock_client):
-            result = await bedrock_provider.health_check()
+        # health_check decrypts both keys, checks they're non-empty — no network call
+        result = await bedrock_provider.health_check()
         assert result is True
-        mock_client.list_foundation_models.assert_called_once()
 
     @pytest.mark.asyncio
-    async def test_health_check_returns_false_on_exception(self, bedrock_provider: BedrockProvider):
-        mock_client = MagicMock()
-        mock_client.list_foundation_models.side_effect = Exception("no credentials")
-        with patch.object(bedrock_provider, "_bedrock_client", return_value=mock_client):
-            result = await bedrock_provider.health_check()
+    async def test_health_check_returns_false_on_exception(self):
+        bad_provider = BedrockProvider(
+            region="us-east-1",
+            access_key_id_enc="not-a-valid-fernet-token",
+            secret_access_key_enc="not-a-valid-fernet-token",
+            secret_key=TEST_SECRET_KEY,
+            model="anthropic.claude-3-haiku-20240307-v1:0",
+        )
+        result = await bad_provider.health_check()
         assert result is False
 
 
@@ -295,25 +297,25 @@ class TestOpenAISDKCalls:
 
 class TestBedrockSDKCalls:
     @pytest.mark.asyncio
-    async def test_complete_calls_invoke_model_with_correct_body(
+    async def test_complete_calls_converse_with_correct_args(
         self, bedrock_provider: BedrockProvider
     ):
-        import json
-        mock_body = MagicMock()
-        mock_body.read.return_value = json.dumps(
-            {"content": [{"text": "Hello from Bedrock"}]}
-        ).encode()
+        # complete() → chat() uses the Bedrock Converse API, not invoke_model
         mock_client = MagicMock()
-        mock_client.invoke_model.return_value = {"body": mock_body}
+        mock_client.converse.return_value = {
+            "output": {"message": {"content": [{"text": "Hello from Bedrock"}]}},
+            "usage": {},
+        }
 
         with patch.object(bedrock_provider, "_runtime_client", return_value=mock_client):
             result = await bedrock_provider.complete("Say hello", max_tokens=200)
 
-        call_kwargs = mock_client.invoke_model.call_args[1]
+        call_kwargs = mock_client.converse.call_args[1]
         assert call_kwargs["modelId"] == "anthropic.claude-3-haiku-20240307-v1:0"
-        body = json.loads(call_kwargs["body"])
-        assert body["max_tokens"] == 200
-        assert body["messages"] == [{"role": "user", "content": "Say hello"}]
+        assert call_kwargs["inferenceConfig"] == {"maxTokens": 200}
+        assert call_kwargs["messages"] == [
+            {"role": "user", "content": [{"text": "Say hello"}]}
+        ]
         assert result == "Hello from Bedrock"
 
     @pytest.mark.asyncio
