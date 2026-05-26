@@ -30,6 +30,8 @@ Return ONLY a JSON object with these keys (omit keys you cannot determine):
   "storage_path": "<string or null>",
   "custom_fields": {"<field_name>": "<value>", ...}
 }
+The "tags" list must be the COMPLETE desired set — include every tag you want on the document,
+both existing ones to keep and new ones to add. Current tags you omit will be removed.
 Do not include any explanation or markdown — only the raw JSON object.
 """
 
@@ -77,6 +79,21 @@ class PaperlessNGXClient:
 
         Validates: Requirements 2.6, 2.8
         """
+        names, _ = await self.list_entities_with_map(entity_type)
+        return names
+
+    async def list_entities_with_map(
+        self, entity_type: str
+    ) -> tuple[list[str], dict[int, str]]:
+        """
+        Fetch all existing entity names from Paperless NGX.
+
+        entity_type must be one of: "tags", "correspondents", "document_types".
+        Returns ``(names, id_to_name)`` so callers can resolve integer IDs
+        from document metadata to display names without a second API round-trip.
+
+        Validates: Requirements 2.6, 2.8
+        """
         endpoint_map = {
             "tags": "tags",
             "correspondents": "correspondents",
@@ -84,6 +101,7 @@ class PaperlessNGXClient:
         }
         endpoint = endpoint_map[entity_type]
         names: list[str] = []
+        id_to_name: dict[int, str] = {}
         url: str | None = f"{self._base_url}/api/{endpoint}/"
         async with httpx.AsyncClient(headers=self._headers, timeout=30) as client:
             while url:
@@ -94,8 +112,9 @@ class PaperlessNGXClient:
                     name = item.get("name")
                     if name:
                         names.append(name)
+                        id_to_name[item["id"]] = name
                 url = data.get("next")  # follow pagination
-        return names
+        return names, id_to_name
 
     async def list_custom_field_definitions(self) -> list[dict[str, Any]]:
         """
@@ -340,13 +359,19 @@ class DocumentAnalyzer:
         self._vector_store = vector_store
 
     async def _fetch_entity_context(
-        self, document_content: str = ""
+        self,
+        document_content: str = "",
+        doc_meta: dict[str, Any] | None = None,
     ) -> tuple[str, list[str], list[str], list[str]]:
         """Fetch entity lists for the LLM prompt.
 
         Returns ``(context_str, all_tags, all_correspondents, all_document_types)``.
         The raw lists are returned so the caller can pass them to
         ``_apply_creation_policy`` and avoid a second round of API calls.
+
+        When ``doc_meta`` is provided, a "Current metadata on this document"
+        section is appended so the LLM knows what is already assigned and can
+        output the complete desired tag set (including existing tags to keep).
 
         When smart_entity_selection is enabled and a vector store is available,
         queries similar documents to build a focused entity set (hybrid approach:
@@ -365,9 +390,9 @@ class DocumentAnalyzer:
             custom_field_defs = []
 
         try:
-            all_tags = await self._paperless.list_entities("tags")
-            all_correspondents = await self._paperless.list_entities("correspondents")
-            all_document_types = await self._paperless.list_entities("document_types")
+            all_tags, tags_id_map = await self._paperless.list_entities_with_map("tags")
+            all_correspondents, corrs_id_map = await self._paperless.list_entities_with_map("correspondents")
+            all_document_types, doctypes_id_map = await self._paperless.list_entities_with_map("document_types")
         except Exception:
             logger.warning(
                 "Failed to fetch entity lists from Paperless NGX; "
@@ -425,7 +450,35 @@ class DocumentAnalyzer:
             cf_parts = [f"{cf['name']} ({cf['data_type']})" for cf in custom_field_defs]
             sections.append(f"Available custom fields: {', '.join(cf_parts)}")
 
-        return "\n".join(sections), all_tags, all_correspondents, all_document_types
+        # Inject current document state so the LLM outputs the full desired set
+        if doc_meta:
+            current_tag_ids: list[int] = doc_meta.get("tags") or []
+            inbox_tag_id = self._config.inbox_tag_id
+            current_tag_names = [
+                tags_id_map[tid]
+                for tid in current_tag_ids
+                if tid in tags_id_map and tid != inbox_tag_id
+            ]
+            current_corr_id: int | None = doc_meta.get("correspondent")
+            current_corr = corrs_id_map.get(current_corr_id) if current_corr_id else None
+            current_dt_id: int | None = doc_meta.get("document_type")
+            current_dt = doctypes_id_map.get(current_dt_id) if current_dt_id else None
+
+            current_lines = [
+                f"  Tags: {', '.join(current_tag_names) if current_tag_names else 'none'}",
+                f"  Correspondent: {current_corr or 'none'}",
+                f"  Document type: {current_dt or 'none'}",
+            ]
+            sections.append(
+                "Current metadata already on this document:\n"
+                + "\n".join(current_lines)
+                + "\n\n"
+                "Your 'tags' output must be the COMPLETE desired set — include all tags you want "
+                "to keep (from the current set above) plus any new ones to add. "
+                "Current tags you omit will be removed."
+            )
+
+        return "\n\n".join(sections), all_tags, all_correspondents, all_document_types
 
     def _build_field_instructions(self) -> str:
         """
@@ -504,7 +557,7 @@ class DocumentAnalyzer:
 
         # 3. Fetch entity lists for prompt context (Req 12.1–12.6)
         entity_context, all_tags, all_correspondents, all_document_types = (
-            await self._fetch_entity_context(document_content=content)
+            await self._fetch_entity_context(document_content=content, doc_meta=doc_meta)
         )
 
         # 4. Build per-field instructions from config (Req 9.1–9.4, 5.5)

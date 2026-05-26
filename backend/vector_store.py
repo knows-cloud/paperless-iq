@@ -91,12 +91,33 @@ class ChromaVectorStore:
         if not chunks:
             return
 
+        # Build a metadata prefix that is prepended to every chunk before embedding.
+        # This means the vector captures WHO and WHAT the document is (title, type,
+        # correspondent, tags, custom fields) in addition to the raw OCR content —
+        # preventing a salary-slip chunk that merely mentions "Lebensversicherung"
+        # from outranking an actual life-insurance document.
+        prefix_parts: list[str] = []
+        if metadata.get("title"):
+            prefix_parts.append(f"Title: {metadata['title']}")
+        if metadata.get("document_type"):
+            prefix_parts.append(f"Type: {metadata['document_type']}")
+        if metadata.get("correspondent"):
+            prefix_parts.append(f"From: {metadata['correspondent']}")
+        tags = metadata.get("tags") or []
+        if isinstance(tags, list) and any(tags):
+            prefix_parts.append(f"Tags: {', '.join(t for t in tags if t)}")
+        for cf_name, cf_value in (metadata.get("custom_fields") or {}).items():
+            if cf_value is not None and str(cf_value).strip():
+                prefix_parts.append(f"{cf_name}: {cf_value}")
+        embed_prefix = "\n".join(prefix_parts) + "\n\n" if prefix_parts else ""
+
         base_meta: dict[str, Any] = {
             "document_id": doc_id,
             "title": metadata.get("title", ""),
             "tags_json": json.dumps(metadata.get("tags", [])),
             "correspondent": metadata.get("correspondent") or "",
             "document_type": metadata.get("document_type") or "",
+            "custom_fields_json": json.dumps(metadata.get("custom_fields") or {}),
         }
         total = len(chunks)
         loop = asyncio.get_running_loop()
@@ -106,7 +127,7 @@ class ChromaVectorStore:
             nonlocal succeeded
             async with self._embed_sem:
                 try:
-                    embedding = await self._embed(chunk)
+                    embedding = await self._embed(embed_prefix + chunk)
                 except Exception:
                     logger.debug("Failed to embed chunk %d of doc %d", i, doc_id, exc_info=True)
                     return
@@ -193,15 +214,15 @@ class ChromaVectorStore:
             dist = distances[i] if i < len(distances) else 1.0
             passage = documents[i] if i < len(documents) else ""
 
+            # Keep the best (lowest distance) chunk per document.
+            # Process all fetched chunks — don't break early — so every unique
+            # document gets its best chunk recorded before we rank and slice.
             if doc_id not in seen_docs or dist < seen_docs[doc_id]["distance"]:
                 seen_docs[doc_id] = {
                     "distance": dist,
                     "passage": passage,
                     "title": meta.get("title", ""),
                 }
-
-            if len(seen_docs) >= top_n:
-                break
 
         search_results: list[SearchResult] = []
         for doc_id, info in sorted(seen_docs.items(), key=lambda x: x[1]["distance"]):

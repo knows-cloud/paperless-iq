@@ -72,36 +72,42 @@ class BedrockProvider:
         return boto3.client("bedrock", **self._boto_kwargs())
 
     async def chat(self, messages: list[dict], max_tokens: int) -> str:
-        """Invoke Bedrock model with a multi-turn messages array.
+        """Invoke any Bedrock model via the Converse API.
 
-        Bedrock's Claude API accepts a top-level ``system`` field rather than
-        a system-role message, so we extract it from the messages list first.
+        The Converse API accepts a single unified request shape for all model
+        families (Claude, Nova, Llama, Mistral, …) — Bedrock handles per-model
+        translation internally, so no branching is needed here.
         """
-        system: str | None = None
-        filtered = []
+        system: list[dict] = []
+        converse_messages: list[dict] = []
         for m in messages:
             if m.get("role") == "system":
-                system = m["content"]
+                system = [{"text": m["content"]}]
             else:
-                filtered.append(m)
+                content = m["content"]
+                # Converse API requires content as an array of content blocks.
+                if isinstance(content, str):
+                    content = [{"text": content}]
+                converse_messages.append({"role": m["role"], "content": content})
 
-        # Log estimated token cost so you can correlate with your AWS bill.
-        total_chars = sum(len(m.get("content", "")) for m in filtered)
+        total_chars = sum(
+            sum(len(b.get("text", "")) for b in m["content"])
+            for m in converse_messages
+        )
         if system:
-            total_chars += len(system)
+            total_chars += len(system[0]["text"])
         logger.info(
             "Bedrock chat(): model=%s  ~%d chars (~%d tokens est.)  max_output=%d",
             self._model, total_chars, total_chars // 4, max_tokens,
         )
 
-        body_dict: dict = {
-            "anthropic_version": "bedrock-2023-05-31",
-            "max_tokens": max_tokens,
-            "messages": filtered,
+        converse_kwargs: dict = {
+            "modelId": self._model,
+            "messages": converse_messages,
+            "inferenceConfig": {"maxTokens": max_tokens},
         }
         if system:
-            body_dict["system"] = system
-        body = json.dumps(body_dict)
+            converse_kwargs["system"] = system
 
         loop = asyncio.get_running_loop()
 
@@ -109,8 +115,7 @@ class BedrockProvider:
             client = self._runtime_client()
 
             def _invoke() -> dict:
-                response = client.invoke_model(modelId=self._model, body=body)
-                return json.loads(response["body"].read())
+                return client.converse(**converse_kwargs)
 
             try:
                 result = await loop.run_in_executor(None, _invoke)
@@ -122,11 +127,11 @@ class BedrockProvider:
                     continue
                 raise
 
-        output_text = result["content"][0]["text"]
+        output_text = result["output"]["message"]["content"][0]["text"]
         usage = result.get("usage", {})
         logger.info(
             "Bedrock chat(): input_tokens=%s  output_tokens=%s",
-            usage.get("input_tokens", "?"), usage.get("output_tokens", "?"),
+            usage.get("inputTokens", "?"), usage.get("outputTokens", "?"),
         )
         return output_text
 

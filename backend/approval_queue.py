@@ -391,8 +391,10 @@ class ApprovalQueueService:
             if payload.get("title"):
                 patch["title"] = payload["title"]
 
-            # Tags — resolve names to IDs, optionally merge with existing
-            if payload.get("tags"):
+            # Tags — resolve names to IDs, optionally merge with existing.
+            # Use `is not None` (not truthiness) so an empty list still sets tags=[],
+            # which removes all tags from the document as intended.
+            if payload.get("tags") is not None:
                 tag_ids = await self._resolve_or_create_entity_ids(
                     client, base, "tags", payload["tags"], create_missing
                 )
@@ -400,8 +402,7 @@ class ApprovalQueueService:
                     existing = await self._get_document_tag_ids(client, base, document_id)
                     merged = list(dict.fromkeys(existing + tag_ids))  # preserve order, dedupe
                     tag_ids = merged
-                if tag_ids:
-                    patch["tags"] = tag_ids
+                patch["tags"] = tag_ids  # always set — empty list = remove all tags
 
             # Correspondent
             if payload.get("correspondent"):
