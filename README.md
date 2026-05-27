@@ -140,7 +140,12 @@ All settings are configurable via the web UI. On first startup, settings can be 
 |----------|---------|
 | `PAPERLESS_URL` | Base URL of the Paperless-NGX instance (internal, e.g. `http://webserver:8000`) |
 | `PAPERLESS_TOKEN` | API token for Paperless-NGX |
-| `SECRET_KEY` | Master key for Fernet encryption of credentials stored at rest |
+
+### Encryption Key (`SECRET_KEY`)
+
+`SECRET_KEY` is **optional**. On first startup, Paperless IQ auto-generates a random 256-bit key and stores it in the volume at `/data/.secret_key` (mode 600). As long as the volume persists, credentials remain readable across restarts with no configuration required.
+
+Set `SECRET_KEY` explicitly only if you need to restore an encrypted database from a backup after a volume loss — without the original key, stored credentials cannot be decrypted.
 
 ### Security Environment Variables
 

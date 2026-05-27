@@ -13,8 +13,11 @@ services:
     environment:
       PAPERLESS_URL: ${PAPERLESS_URL:-http://webserver:8000}
       PAPERLESS_TOKEN: ${PAPERLESS_TOKEN:?PAPERLESS_TOKEN must be set}
-      SECRET_KEY: ${SECRET_KEY:?SECRET_KEY must be set}
       DATABASE_URL: sqlite+aiosqlite:////data/paperless_iq.db
+      # SECRET_KEY is optional — a random key is auto-generated on first startup
+      # and stored in the volume at /data/.secret_key.  Set it explicitly if you
+      # want to be able to restore an encrypted DB backup after a volume loss.
+      # SECRET_KEY: ${SECRET_KEY}
       # Optional: override Ollama URL if not running on the same host
       # OLLAMA_HOST: http://your-ollama-host:11434
     networks:
