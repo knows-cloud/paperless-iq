@@ -1,6 +1,8 @@
 # Paperless IQ
 
-AI-powered intelligence layer for [Paperless NGX](https://docs.paperless-ngx.com/). Paperless IQ connects to your existing Paperless NGX instance and adds LLM-driven metadata tagging, a conversational document search interface, and an automation engine — all with a human-in-the-loop approval workflow.
+**Open-source AI layer for [Paperless-NGX](https://docs.paperless-ngx.com/).** Paperless IQ connects to your existing paperless-ngx instance and adds LLM-driven automatic metadata tagging, a RAG-powered conversational document search, and a background automation engine — all self-hosted, all with a human-in-the-loop approval workflow.
+
+Works with local models via **Ollama**, **Amazon Bedrock** (Claude, Nova, Llama, Mistral, Titan), **Anthropic**, and **OpenAI**.
 
 ---
 
@@ -11,12 +13,12 @@ AI-powered intelligence layer for [Paperless NGX](https://docs.paperless-ngx.com
 - **Smart entity selection** — ChromaDB vector similarity finds similar previously-processed documents and sends only the relevant subset of tags / correspondents / types to the LLM, reducing prompt size and improving accuracy
 - **Per-field instructions** — tell the LLM exactly how to populate each metadata field (e.g. "always use the full legal name for correspondent")
 - **Per-document-type prompt overrides** — different prompt templates for invoices vs. contracts vs. letters
-- **New value detection** — suggested values that don't exist in Paperless NGX are highlighted; creation policies control whether they can be created on approval
+- **New value detection** — suggested values that don't exist in Paperless-NGX are highlighted; creation policies control whether they can be created on approval
 - **Analysis modes** — `ocr` (fast, just OCR text) or `full_document` (sends full extracted content)
 - **Context window control** — configurable character limit caps what gets sent to the LLM
 
 ### Approval Workflow
-- **Approval queue** — every suggestion is staged for review before anything is written to Paperless NGX
+- **Approval queue** — every suggestion is staged for review before anything is written to Paperless-NGX
 - **Editable suggestions** — edit title, tags, correspondent, document type, storage path, and custom fields inline before approving
 - **Keep existing tags** — merge suggested tags with a document's current tags instead of replacing them
 - **Batch actions** — approve or reject multiple suggestions at once
@@ -32,7 +34,7 @@ AI-powered intelligence layer for [Paperless NGX](https://docs.paperless-ngx.com
 - **Memory management** — Settings → Memories tab lists every stored fact with inline edit and delete; a global toggle enables/disables the feature
 
 ### Automation
-- **Inbox monitoring** — polls a configurable Paperless NGX inbox tag for new documents and processes them automatically
+- **Inbox monitoring** — polls a configurable Paperless-NGX inbox tag for new documents and processes them automatically
 - **Scheduled batch runs** — cron-based batch processing of unanalysed documents
 - **Configurable concurrency** — batch size, poll interval, and per-provider embedding concurrency are all tunable
 
@@ -50,7 +52,7 @@ Settings are organised into eight tabs:
 
 | Tab | Contents |
 |-----|----------|
-| **Connection** | Paperless NGX public URL, connection test, inbox tag, webhook registration |
+| **Connection** | Paperless-NGX public URL, connection test, inbox tag, webhook registration |
 | **AI Provider** | LLM provider + model + credentials, context window, analysis mode, embedding provider, vector store backend |
 | **Prompts & Fields** | Global system prompt, LLM output language, per-field instructions, custom fields |
 | **Metadata Rules** | Smart entity selection toggle, similar-docs count, frequency fallback, entity creation policies |
@@ -73,14 +75,22 @@ All provider health checks are credential-only — no live API calls are made du
 - **Responsive mobile layout** — sidebar slides in from the left as a drawer on small screens; a backdrop overlay and auto-close on navigation
 - **Full theme customisation** — primary colour, sidebar gradient, body/card/chip colours, font family and size, custom logo, per-page nav icons
 - **Dark/light sidebar detection** — WCAG-based contrast calculation ensures text and chip colours are always legible regardless of chosen palette
-- **Authentication & access control** — HMAC-signed session tokens; login validated against Paperless NGX; per-user permission flags (view queue, approve, analyze, discover, settings); Paperless NGX admins optionally auto-granted full access; can be disabled for single-user setups
+- **Authentication & access control** — HMAC-signed session tokens; login validated against Paperless-NGX; per-user permission flags (view queue, approve, analyze, discover, settings); Paperless-NGX admins optionally auto-granted full access; can be disabled for single-user setups
 - **Internationalisation** — UI language switchable (English, German, French, Spanish, Italian); LLM output language independently configurable
+
+---
+
+## Requirements
+
+- A running [Paperless-NGX](https://docs.paperless-ngx.com/) instance (any recent version)
+- Docker (for the recommended deployment path)
+- An LLM provider: a local [Ollama](https://ollama.com/) instance, or API credentials for Anthropic, OpenAI, or Amazon Bedrock
 
 ---
 
 ## Quick Start
 
-Add to your Paperless NGX `docker-compose.yml`:
+Add to your Paperless-NGX `docker-compose.yml`:
 
 ```yaml
   paperless-iq:
@@ -128,16 +138,17 @@ All settings are configurable via the web UI. On first startup, settings can be 
 
 | Variable | Purpose |
 |----------|---------|
-| `PAPERLESS_URL` | Base URL of the Paperless NGX instance (internal, e.g. `http://webserver:8000`) |
-| `PAPERLESS_TOKEN` | API token for Paperless NGX |
+| `PAPERLESS_URL` | Base URL of the Paperless-NGX instance (internal, e.g. `http://webserver:8000`) |
+| `PAPERLESS_TOKEN` | API token for Paperless-NGX |
 | `SECRET_KEY` | Master key for Fernet encryption of credentials stored at rest |
 
 ### Security Environment Variables
 
 | Variable | Default | Purpose |
 |----------|---------|---------|
-| `CORS_ALLOWED_ORIGINS` | `*` | Comma-separated list of allowed CORS origins (e.g. `https://paperless.example.com`) |
-| `WEBHOOK_SECRET` | — | If set, Paperless NGX must send this value as `X-Webhook-Secret` on webhook calls |
+| `CORS_ALLOWED_ORIGINS` | `*` | Comma-separated list of allowed CORS origins. Restrict this in production (e.g. `https://paperless.example.com`). |
+
+> **Webhook secret** — Paperless IQ auto-generates a webhook secret on first startup and embeds it in the callback URL registered with Paperless-NGX. No manual configuration is required.
 
 ### Optional Environment Variables (`PIQ_*` — initial seed only)
 
@@ -157,7 +168,7 @@ All settings are configurable via the web UI. On first startup, settings can be 
 | `PIQ_TAG_CREATION_POLICY` | `existing_only` | `existing_only` or `allow_new` |
 | `PIQ_CORRESPONDENT_CREATION_POLICY` | `existing_only` | `existing_only` or `allow_new` |
 | `PIQ_DOCTYPE_CREATION_POLICY` | `existing_only` | `existing_only` or `allow_new` |
-| `PIQ_INBOX_TAG_ID` | — | Paperless NGX tag ID for the inbox |
+| `PIQ_INBOX_TAG_ID` | — | Paperless-NGX tag ID for the inbox |
 | `PIQ_AUTO_APPLY` | `false` | Skip the approval queue |
 | `PIQ_AUTOMATION_ENABLED` | `false` | Enable inbox polling and scheduled runs |
 | `PIQ_POLL_INTERVAL_SECONDS` | `10` | Inbox poll interval |
@@ -186,7 +197,7 @@ graph TD
 
     LLM["LLM Provider Layer\nOllama · Bedrock · Anthropic · OpenAI"]
     Storage["Storage\nSQLite (ORM) · ChromaDB (on disk)"]
-    NGX["Paperless NGX\nREST API (token-authenticated)"]
+    NGX["Paperless-NGX\nREST API (token-authenticated)"]
 
     Browser -->|"HTTP / REST + SSE"| FastAPI
     Analyzer --> LLM
@@ -201,12 +212,12 @@ graph TD
 
 **Metadata analysis**
 1. Inbox monitor detects new document → queues for analysis
-2. Analyzer fetches OCR text from Paperless NGX
+2. Analyzer fetches OCR text from Paperless-NGX
 3. Smart entity selection queries ChromaDB for similar documents, pre-filters the entity lists
 4. Prompt is assembled and sent to the configured LLM provider
 5. LLM returns structured JSON → parsed into a `MetadataSuggestion`
 6. Suggestion stored in SQLite and shown in the approval queue
-7. On approval → writes metadata back to Paperless NGX via API → audit log entry
+7. On approval → writes metadata back to Paperless-NGX via API → audit log entry
 
 **Discovery conversation**
 1. User sends a question → backend creates or resumes a `ConversationSession`
