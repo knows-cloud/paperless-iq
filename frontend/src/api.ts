@@ -82,6 +82,13 @@ export interface MetadataSuggestionResponse {
   llm_model: string;
 }
 
+export interface VisionAnalysisResult {
+  suggestion: MetadataSuggestionResponse;
+  extracted_content: string | null;
+  original_ocr_content: string | null;
+  page_count: number;
+}
+
 export interface ConnectionTestResult {
   status: "ok" | "error";
   detail?: string;
@@ -179,6 +186,21 @@ export const api = {
   analyze: (documentId: number, overrides?: Record<string, unknown>) =>
     request<MetadataSuggestionResponse>("/analyze", { method: "POST", body: JSON.stringify({ document_id: documentId, ...overrides }) }),
 
+  analyzeVision: (body: { document_id: number; include_content: boolean; max_pages?: number | null }) =>
+    request<VisionAnalysisResult>("/analyze/vision", { method: "POST", body: JSON.stringify(body) }),
+
+  getDocumentPageCount: (documentId: number) =>
+    request<{ page_count: number }>(`/documents/${documentId}/page-count`),
+
+  updateDocumentContent: (documentId: number, content: string) =>
+    request<{ ok: boolean }>(`/documents/${documentId}/content`, {
+      method: "PATCH",
+      body: JSON.stringify({ content }),
+    }),
+
+  getOllamaVisionSupport: () =>
+    request<{ supported: boolean | null; reason?: string }>("/ollama/vision-support"),
+
   exportConfig: () => request<Record<string, unknown>>("/config/export"),
   importConfig: (data: Record<string, unknown>) =>
     request<{ applied: string[]; skipped: unknown[] }>("/config/import", { method: "POST", body: JSON.stringify(data) }),
@@ -200,6 +222,10 @@ export const api = {
   getDocumentPreview: (id: number) => requestBlob(`/documents/${id}/preview`),
   getDocumentThumb: (id: number) => requestBlob(`/documents/${id}/thumb`),
   triggerReindex: () => request<{ detail: string }>("/reindex", { method: "POST" }),
+  reindexSince: (date: string) => request<{ detail: string; count: number }>("/reindex/since", {
+    method: "POST",
+    body: JSON.stringify({ modified_after: date }),
+  }),
   registerWebhook: () => request<{ detail: string; callback_url: string }>("/webhook/register", { method: "POST" }),
   getTrackingStats: () => request<{ tracked_documents: number; suggestions_pending: number; suggestions_approved: number; suggestions_rejected: number }>("/tracking/stats"),
   resetTracking: () => request<{ cleared: number }>("/tracking/reset", { method: "POST" }),

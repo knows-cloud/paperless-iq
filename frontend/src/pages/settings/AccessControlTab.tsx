@@ -20,6 +20,10 @@ interface Props {
   s: Record<string, unknown>;
   onReindex: () => void;
   reindexing: boolean;
+  onReindexSince: () => void;
+  reindexingSince: boolean;
+  reindexSinceDate: string;
+  onReindexSinceDateChange: (date: string) => void;
   onResetTracking: () => void;
   resettingTracking: boolean;
   onResetRejected: () => void;
@@ -31,6 +35,10 @@ export function AccessControlTab({
   s,
   onReindex,
   reindexing,
+  onReindexSince,
+  reindexingSince,
+  reindexSinceDate,
+  onReindexSinceDateChange,
   onResetTracking,
   resettingTracking,
   onResetRejected,
@@ -192,7 +200,7 @@ export function AccessControlTab({
           <Alert color="teal" variant="light" mb="sm">{maintenanceMsg}</Alert>
         )}
         <Divider label="Vector store" labelPosition="left" mb="sm" />
-        <Group gap="sm" mb="md">
+        <Group gap="sm" mb="xs">
           <Button
             variant="light" color="teal" size="sm"
             loading={reindexing}
@@ -203,6 +211,25 @@ export function AccessControlTab({
           <Text size="xs" c="dimmed" style={{ alignSelf: "center" }}>
             Wipes and rebuilds the vector store from scratch. Required after changing the embedding model.
           </Text>
+        </Group>
+        <Group gap="sm" mb="md" align="flex-end">
+          <div>
+            <Text size="xs" c="dimmed" mb={4}>Re-index documents modified on or after:</Text>
+            <input
+              type="date"
+              value={reindexSinceDate}
+              onChange={e => onReindexSinceDateChange(e.target.value)}
+              style={{ fontSize: 13, padding: "4px 8px", borderRadius: 6, border: "1px solid var(--mantine-color-default-border)" }}
+            />
+          </div>
+          <Button
+            variant="light" color="teal" size="sm"
+            loading={reindexingSince}
+            disabled={!reindexSinceDate}
+            onClick={onReindexSince}
+          >
+            Reindex since date
+          </Button>
         </Group>
         <Divider label="Tracking" labelPosition="left" mb="sm" />
         <Group gap="sm">

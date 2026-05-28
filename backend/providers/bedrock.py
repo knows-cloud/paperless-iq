@@ -71,12 +71,22 @@ class BedrockProvider:
     def _bedrock_client(self) -> Any:
         return boto3.client("bedrock", **self._boto_kwargs())
 
-    async def chat(self, messages: list[dict], max_tokens: int) -> str:
+    async def chat(
+        self,
+        messages: list[dict],
+        max_tokens: int,
+        output_schema: dict | None = None,
+        images: list[bytes] | None = None,
+    ) -> str:
         """Invoke any Bedrock model via the Converse API.
 
         The Converse API accepts a single unified request shape for all model
         families (Claude, Nova, Llama, Mistral, …) — Bedrock handles per-model
         translation internally, so no branching is needed here.
+
+        When ``output_schema`` is provided, uses outputConfig.textFormat for
+        native structured JSON output.  When ``images`` are provided, injects
+        them as Converse image content blocks into the last user message.
         """
         system: list[dict] = []
         converse_messages: list[dict] = []
@@ -90,8 +100,11 @@ class BedrockProvider:
                     content = [{"text": content}]
                 converse_messages.append({"role": m["role"], "content": content})
 
+        if images:
+            converse_messages = _inject_images_bedrock(converse_messages, images)
+
         total_chars = sum(
-            sum(len(b.get("text", "")) for b in m["content"])
+            sum(len(b.get("text", "")) for b in m["content"] if isinstance(b, dict))
             for m in converse_messages
         )
         if system:
@@ -108,10 +121,26 @@ class BedrockProvider:
         }
         if system:
             converse_kwargs["system"] = system
+        if output_schema:
+            # Bedrock requires the schema serialised as a JSON string inside jsonSchema.schema.
+            converse_kwargs["outputConfig"] = {
+                "textFormat": {
+                    "type": "json_schema",
+                    "structure": {
+                        "jsonSchema": {
+                            "schema": json.dumps(output_schema),
+                            "name": "document_classification",
+                            "description": "Structured metadata classification result",
+                        }
+                    },
+                }
+            }
 
         loop = asyncio.get_running_loop()
 
-        for attempt in range(2):
+        outputconfig_removed = False
+        token_refreshed = False
+        for _attempt in range(3):
             client = self._runtime_client()
 
             def _invoke() -> dict:
@@ -121,9 +150,26 @@ class BedrockProvider:
                 result = await loop.run_in_executor(None, _invoke)
                 break
             except botocore.exceptions.ClientError as exc:
-                if exc.response["Error"]["Code"] == "ExpiredTokenException" and attempt == 0:
+                code = exc.response["Error"]["Code"]
+                msg = exc.response["Error"].get("Message", "")
+                if (
+                    code == "ValidationException"
+                    and "outputConfig" in msg
+                    and "outputConfig" in converse_kwargs
+                    and not outputconfig_removed
+                ):
+                    logger.warning(
+                        "Bedrock chat(): model=%s rejected outputConfig — "
+                        "falling back to unstructured output. Full error: %s",
+                        self._model, msg,
+                    )
+                    del converse_kwargs["outputConfig"]
+                    outputconfig_removed = True
+                    continue
+                if code == "ExpiredTokenException" and not token_refreshed:
                     logger.info("Bedrock chat(): session token expired — refreshing client.")
                     self._invalidate_runtime_client()
+                    token_refreshed = True
                     continue
                 raise
 
@@ -135,9 +181,20 @@ class BedrockProvider:
         )
         return output_text
 
-    async def complete(self, prompt: str, max_tokens: int) -> str:
+    async def complete(
+        self,
+        prompt: str,
+        max_tokens: int,
+        output_schema: dict | None = None,
+        images: list[bytes] | None = None,
+    ) -> str:
         """Single-turn convenience wrapper around chat()."""
-        return await self.chat([{"role": "user", "content": prompt}], max_tokens)
+        return await self.chat(
+            [{"role": "user", "content": prompt}],
+            max_tokens,
+            output_schema=output_schema,
+            images=images,
+        )
 
     async def embed(self, text: str) -> list[float]:
         """Generate embeddings using the configured Bedrock embedding model.
@@ -208,3 +265,33 @@ class BedrockProvider:
             )
         except Exception:
             return False
+
+
+def _inject_images_bedrock(
+    converse_messages: list[dict], images: list[bytes]
+) -> list[dict]:
+    """Return a copy of converse_messages with Bedrock image blocks prepended
+    to the last user message's content array."""
+    if not converse_messages:
+        return converse_messages
+    converse_messages = [m.copy() for m in converse_messages]
+    for i in reversed(range(len(converse_messages))):
+        if converse_messages[i].get("role") == "user":
+            content = list(converse_messages[i]["content"])
+            image_blocks = [
+                {
+                    "image": {
+                        "format": "jpeg",
+                        "source": {
+                            "bytes": img,
+                        },
+                    }
+                }
+                for img in images
+            ]
+            converse_messages[i] = {
+                **converse_messages[i],
+                "content": image_blocks + content,
+            }
+            break
+    return converse_messages

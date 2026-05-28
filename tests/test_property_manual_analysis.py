@@ -9,7 +9,7 @@ Validates: Requirements 6.2, 6.4
 from __future__ import annotations
 
 from typing import Any
-from unittest.mock import AsyncMock
+from unittest.mock import AsyncMock, patch
 
 import pytest
 from hypothesis import HealthCheck, given, settings
@@ -107,12 +107,19 @@ async def test_property_15_manual_analysis_override(
         paperless_client=paperless,
     )
 
-    suggestion = await svc.analyze(
-        document_id=document_id,
-        provider_override=override_provider,
-        model_override=override_model,
-        mode_override=override_mode,  # type: ignore[arg-type]
-    )
+    # full_document mode now uses vision (PDF → images).  Patch the rendering
+    # layer so the mock bytes don't reach pypdfium2.
+    _fake_page = b"\xff\xd8\xff" + b"\x00" * 16
+    with (
+        patch("backend.analyzer.get_page_count", return_value=1),
+        patch("backend.analyzer.render_pages", return_value=[_fake_page]),
+    ):
+        suggestion = await svc.analyze(
+            document_id=document_id,
+            provider_override=override_provider,
+            model_override=override_model,
+            mode_override=override_mode,  # type: ignore[arg-type]
+        )
 
     # The analysis must have used the overridden provider
     expected_provider = override_provider or base_provider

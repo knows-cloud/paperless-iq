@@ -5,7 +5,8 @@ import {
   MultiSelect, Select, Checkbox, Box, Loader, Alert, Pagination, SimpleGrid,
   NumberInput, ActionIcon,
 } from "@mantine/core";
-import { api, type PaperlessEntity, type PaperlessCustomField, type DocumentItem, type MetadataSuggestionResponse } from "../api";
+import { api, type PaperlessEntity, type PaperlessCustomField, type DocumentItem, type MetadataSuggestionResponse, type VisionAnalysisResult } from "../api";
+import VisionAnalysisFlow from "../VisionAnalysisFlow";
 import { t } from "../i18n";
 
 const FILTERS_KEY = "piq_analysis_filters";
@@ -45,6 +46,12 @@ export default function ManualPage() {
   const correspondents = useQuery({ queryKey: ["correspondents"], queryFn: api.getCorrespondents, retry: false });
   const docTypes = useQuery({ queryKey: ["docTypes"], queryFn: api.getDocumentTypes, retry: false });
   const customFields = useQuery({ queryKey: ["customFields"], queryFn: api.getCustomFields, retry: false });
+  const settingsQ = useQuery({ queryKey: ["settings"], queryFn: api.getSettings, staleTime: 60_000 });
+  const pageWarningThreshold = Number((settingsQ.data as Record<string, unknown> | undefined)?.vision_max_pages_warning ?? 5);
+
+  const handleVisionResult = useCallback((docId: number, result: VisionAnalysisResult) => {
+    setAnalysisResults(prev => ({ ...prev, [docId]: result.suggestion }));
+  }, []);
 
   const updateFilters = useCallback((patch: Partial<AnalysisFilters>) => {
     setFilters(prev => { const next = { ...prev, ...patch }; saveFilters(next); return next; });
@@ -297,10 +304,10 @@ export default function ManualPage() {
             if (hideAnalyzed && wasAnalyzed) return null;
             return (
               <Paper key={doc.id} withBorder p="md" radius="md">
-                <Group justify="space-between" align="flex-start">
-                  <Group align="flex-start" gap="sm">
+                <Group justify="space-between" align="flex-start" wrap="nowrap">
+                  <Group align="flex-start" gap="sm" wrap="nowrap" style={{ flex: 1, minWidth: 0 }}>
                     <Checkbox mt={2} checked={selectedDocs.has(doc.id)} onChange={() => toggleDocSelection(doc.id)} />
-                    <Box>
+                    <Box style={{ minWidth: 0 }}>
                       <Text fw={600} size="sm">{doc.title || `Document #${doc.id}`}</Text>
                       <Text size="xs" c="dimmed">
                         {doc.correspondent ? `${corrMap.get(doc.correspondent) ?? doc.correspondent} · ` : ""}
@@ -309,9 +316,18 @@ export default function ManualPage() {
                       </Text>
                     </Box>
                   </Group>
-                  <Button size="xs" loading={isAnalyzing} disabled={batchRunning} onClick={() => analyzeOne(doc.id)} style={{ flexShrink: 0 }}>
-                    {t("analysis.analyze")}
-                  </Button>
+                  <Group gap="xs" style={{ flexShrink: 0 }}>
+                    <Button size="xs" loading={isAnalyzing} disabled={batchRunning} onClick={() => analyzeOne(doc.id)}>
+                      {t("analysis.analyze")}
+                    </Button>
+                    <VisionAnalysisFlow
+                      documentId={doc.id}
+                      pageWarningThreshold={pageWarningThreshold}
+                      onResult={result => handleVisionResult(doc.id, result)}
+                      size="xs"
+                      disabled={batchRunning}
+                    />
+                  </Group>
                 </Group>
                 {isAnalyzing && <Text size="sm" c="dimmed" fs="italic" mt="xs">{t("analysis.analyzingDoc")}</Text>}
                 {error && <Text size="sm" c="red" mt="xs">{t("analysis.analysisFailed")} {error}</Text>}

@@ -154,8 +154,16 @@ export function AIProviderTab({
               defaultValue={String(s.default_analysis_mode ?? "ocr")}
               data={[
                 { value: "ocr", label: "OCR Text" },
-                { value: "full_document", label: "Full Document" },
+                { value: "full_document", label: "Full Document (Vision)" },
               ]}
+              style={{ flex: 1, minWidth: "160px" }}
+            />
+            <NumberInput
+              label="Vision Page Warning Threshold"
+              name="vision_max_pages_warning"
+              min={1}
+              defaultValue={Number(s.vision_max_pages_warning ?? 5)}
+              description="Show a cost warning when a document has more pages than this before vision analysis."
               style={{ flex: 1, minWidth: "160px" }}
             />
           </div>

@@ -16,6 +16,8 @@ dependencies = [
     "ollama>=0.6.1",
     "openai>=2.30.0",
     "pydantic>=2.12.5",
+    "Pillow>=10.0",
+    "pypdfium2>=4.30",
     "sqlalchemy>=2.0.48",
     "uvicorn>=0.34.0",
 ]

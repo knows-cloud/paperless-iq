@@ -4,10 +4,11 @@ import {
   Title, Paper, Text, Group, Stack, Badge, Button, TextInput,
   Box, Alert, Anchor, Loader,
 } from "@mantine/core";
-import { api, type PaperlessEntity, type PaperlessCustomField } from "../api";
+import { api, type PaperlessEntity, type PaperlessCustomField, type VisionAnalysisResult } from "../api";
 import TagInput from "../TagInput";
 import AutocompleteInput from "../AutocompleteInput";
 import CfNameEditor from "../CfNameEditor";
+import VisionAnalysisFlow from "../VisionAnalysisFlow";
 import { t } from "../i18n";
 
 interface QueueItem {
@@ -32,6 +33,8 @@ export default function QueuePage() {
   const spQ = useQuery({ queryKey: ["storagePaths"], queryFn: api.getStoragePaths, retry: false });
 
   const paperlessUrl = (statusQ.data?.paperless_public_url || statusQ.data?.paperless_url || "").replace(/\/$/, "");
+  const settingsQ = useQuery({ queryKey: ["settings"], queryFn: api.getSettings, staleTime: 60_000 });
+  const pageWarningThreshold = Number((settingsQ.data as Record<string, unknown> | undefined)?.vision_max_pages_warning ?? 5);
 
   const corrNames = useMemo(() => new Set((corrsQ.data ?? []).map((c: PaperlessEntity) => c.name.toLowerCase())), [corrsQ.data]);
   const dtNames = useMemo(() => new Set((dtQ.data ?? []).map((d: PaperlessEntity) => d.name.toLowerCase())), [dtQ.data]);
@@ -142,6 +145,27 @@ export default function QueuePage() {
     setReanalyzingIds(prev => { const n = new Set(prev); n.delete(id); return n; });
   };
 
+  const handleVisionResult = useCallback((raw: Record<string, unknown>, result: VisionAnalysisResult) => {
+    const s = result.suggestion;
+    const id = String(raw.id);
+    // Replace the displayed metadata fields with the vision suggestion values.
+    setEdits(prev => ({
+      ...prev,
+      [id]: {
+        id,
+        document_id: s.document_id,
+        title: s.title,
+        tags: s.tags,
+        correspondent: s.correspondent,
+        document_type: s.document_type,
+        storage_path: s.storage_path,
+        custom_fields: s.custom_fields as Record<string, unknown>,
+      },
+    }));
+    // Refresh the queue so the new vision suggestion appears.
+    qc.invalidateQueries({ queryKey: ["queue"] });
+  }, [qc]);
+
   const getItem = (raw: Record<string, unknown>): QueueItem => {
     const id = String(raw.id);
     if (edits[id]) return edits[id];
@@ -214,8 +238,8 @@ export default function QueuePage() {
         return (
           <Paper key={id} withBorder p="md" radius="md">
             {/* Header */}
-            <Group justify="space-between" align="flex-start" mb="sm">
-              <Box>
+            <Group justify="space-between" align="flex-start" wrap="nowrap" mb="sm">
+              <Box style={{ flex: 1, minWidth: 0 }}>
                 <Text fw={600}>{item.title || `${t("queue.document")} #${item.document_id}`}</Text>
                 {item.title && (
                   <Text size="xs" c="dimmed">
@@ -235,6 +259,12 @@ export default function QueuePage() {
                 <Button size="xs" variant="default" onClick={() => handleReanalyze(id)} loading={isReanalyzing}>
                   {t("queue.reanalyze")}
                 </Button>
+                <VisionAnalysisFlow
+                  documentId={item.document_id}
+                  pageWarningThreshold={pageWarningThreshold}
+                  onResult={result => handleVisionResult(raw, result)}
+                  size="xs"
+                />
               </Group>
             </Group>
 

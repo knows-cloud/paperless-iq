@@ -254,36 +254,36 @@ async def test_property_11_entity_lists_appear_in_prompt(
 
     # Tags
     if tags:
-        assert "Available tags:" in result, "Missing 'Available tags:' section"
+        assert "  Tags:" in result, "Missing 'Tags:' entry in Available block"
         for tag in tags:
             assert tag in result, f"Tag {tag!r} not found in entity context"
     else:
-        assert "Available tags:" not in result, "Empty tag list should not produce a section"
+        assert "  Tags:" not in result, "Empty tag list should not produce a section"
 
     # Correspondents
     if correspondents:
-        assert "Available correspondents:" in result, "Missing 'Available correspondents:' section"
+        assert "  Correspondents:" in result, "Missing 'Correspondents:' entry in Available block"
         for corr in correspondents:
             assert corr in result, f"Correspondent {corr!r} not found in entity context"
     else:
-        assert "Available correspondents:" not in result, "Empty correspondent list should not produce a section"
+        assert "  Correspondents:" not in result, "Empty correspondent list should not produce a section"
 
     # Document types
     if document_types:
-        assert "Available document types:" in result, "Missing 'Available document types:' section"
+        assert "  Document types:" in result, "Missing 'Document types:' entry in Available block"
         for dt in document_types:
             assert dt in result, f"Document type {dt!r} not found in entity context"
     else:
-        assert "Available document types:" not in result, "Empty document type list should not produce a section"
+        assert "  Document types:" not in result, "Empty document type list should not produce a section"
 
     # Custom fields
     if custom_field_defs:
-        assert "Available custom fields:" in result, "Missing 'Available custom fields:' section"
+        assert "  Custom fields:" in result, "Missing 'Custom fields:' entry in Available block"
         for cf in custom_field_defs:
             assert cf["name"] in result, f"Custom field {cf['name']!r} not found in entity context"
             assert cf["data_type"] in result, f"Custom field data_type {cf['data_type']!r} not found"
     else:
-        assert "Available custom fields:" not in result, "Empty custom field list should not produce a section"
+        assert "  Custom fields:" not in result, "Empty custom field list should not produce a section"
 
 
 @settings(max_examples=100, suppress_health_check=[HealthCheck.too_slow])
@@ -310,11 +310,11 @@ async def test_property_11_tags_section_contains_all_names(
 
     # Extract the tags line
     for line in result.split("\n"):
-        if line.startswith("Available tags:"):
+        if line.strip().startswith("Tags:"):
             tag_section = line
             break
     else:
-        pytest.fail("'Available tags:' line not found")
+        pytest.fail("'Tags:' line not found in entity context")
 
     for tag in tags:
         assert tag in tag_section, (
@@ -344,11 +344,11 @@ async def test_property_11_correspondents_section_contains_all_names(
     result, *_ = await analyzer._fetch_entity_context()
 
     for line in result.split("\n"):
-        if line.startswith("Available correspondents:"):
+        if line.strip().startswith("Correspondents:"):
             corr_section = line
             break
     else:
-        pytest.fail("'Available correspondents:' line not found")
+        pytest.fail("'Correspondents:' line not found in entity context")
 
     for corr in correspondents:
         assert corr in corr_section, (
@@ -379,11 +379,11 @@ async def test_property_11_custom_fields_section_contains_all_defs(
     result, *_ = await analyzer._fetch_entity_context()
 
     for line in result.split("\n"):
-        if line.startswith("Available custom fields:"):
+        if line.strip().startswith("Custom fields:"):
             cf_section = line
             break
     else:
-        pytest.fail("'Available custom fields:' line not found")
+        pytest.fail("'Custom fields:' line not found in entity context")
 
     for cf in custom_field_defs:
         expected_part = f"{cf['name']} ({cf['data_type']})"

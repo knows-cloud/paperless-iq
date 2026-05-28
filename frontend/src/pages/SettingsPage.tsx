@@ -71,6 +71,8 @@ export default function SettingsPage() {
 
   // Access control / maintenance tab
   const [reindexing, setReindexing] = useState(false);
+  const [reindexingSince, setReindexingSince] = useState(false);
+  const [reindexSinceDate, setReindexSinceDate] = useState("");
   const [resettingTracking, setResettingTracking] = useState(false);
   const [resettingRejected, setResettingRejected] = useState(false);
   const [maintenanceMsg, setMaintenanceMsg] = useState<string | null>(null);
@@ -182,6 +184,20 @@ export default function SettingsPage() {
       setMaintenanceMsg((e as Error).message);
     } finally {
       setReindexing(false);
+    }
+  }
+
+  async function handleReindexSince() {
+    if (!reindexSinceDate) return;
+    setReindexingSince(true);
+    setMaintenanceMsg(null);
+    try {
+      const r = await api.reindexSince(reindexSinceDate);
+      setMaintenanceMsg(r.detail);
+    } catch (e: unknown) {
+      setMaintenanceMsg((e as Error).message);
+    } finally {
+      setReindexingSince(false);
     }
   }
 
@@ -450,6 +466,10 @@ export default function SettingsPage() {
               s={s}
               onReindex={handleReindex}
               reindexing={reindexing}
+              onReindexSince={handleReindexSince}
+              reindexingSince={reindexingSince}
+              reindexSinceDate={reindexSinceDate}
+              onReindexSinceDateChange={setReindexSinceDate}
               onResetTracking={handleResetTracking}
               resettingTracking={resettingTracking}
               onResetRejected={handleResetRejected}

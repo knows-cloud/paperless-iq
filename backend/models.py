@@ -36,6 +36,14 @@ class MetadataSuggestion(BaseModel):
     raw_llm_response: str
 
 
+class VisionAnalysisResult(BaseModel):
+    """Result of a vision-based full-document analysis."""
+    suggestion: MetadataSuggestion
+    extracted_content: str | None = None   # only present when include_content=True
+    original_ocr_content: str | None = None  # current Paperless OCR text, for diff modal
+    page_count: int
+
+
 class AuditLogEntry(BaseModel):
     model_config = ConfigDict(from_attributes=True)
 
@@ -159,6 +167,9 @@ class PaperlessIQConfig(BaseModel):
     # Localization
     target_language: str | None = None
     ui_language: str = "en"
+
+    # Vision analysis
+    vision_max_pages_warning: int = 5  # warn user (Keep/Limit/Cancel) when page count exceeds this
 
     # Paperless NGX public URL for browser-facing links (may differ from PAPERLESS_URL which
     # uses the internal Docker hostname/network address)
