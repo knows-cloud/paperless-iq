@@ -51,10 +51,14 @@ class AuditLogORM(Base):
 
     id: Mapped[str] = mapped_column(String(36), primary_key=True, default=lambda: str(uuid.uuid4()))
     document_id: Mapped[int] = mapped_column(Integer, nullable=False, index=True)
+    document_title: Mapped[str | None] = mapped_column(Text, nullable=True)
     field_name: Mapped[str] = mapped_column(String(100), nullable=False)
     previous_value: Mapped[str | None] = mapped_column(Text, nullable=True)
     new_value: Mapped[str | None] = mapped_column(Text, nullable=True)
-    change_source: Mapped[str] = mapped_column(String(20), nullable=False)
+    # change_source holds the actor string: "user:<name>", "automation", "webhook", "system", etc.
+    change_source: Mapped[str] = mapped_column(String(200), nullable=False)
+    action_type: Mapped[str] = mapped_column(String(50), nullable=False, default="field_change")
+    session_id: Mapped[str | None] = mapped_column(String(36), nullable=True)
     changed_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False, default=_utcnow
     )

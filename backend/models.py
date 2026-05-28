@@ -49,10 +49,13 @@ class AuditLogEntry(BaseModel):
 
     id: UUID
     document_id: int
+    document_title: str | None = None
     field_name: str
     previous_value: str | None = None
     new_value: str | None = None
-    change_source: Literal["ai", "human"]
+    change_source: str  # actor: "user:<name>", "automation", "webhook", "system", legacy "ai"/"human"
+    action_type: str = "field_change"
+    session_id: str | None = None
     changed_at: datetime  # UTC
     suggestion_id: UUID | None = None
 
@@ -162,7 +165,7 @@ class PaperlessIQConfig(BaseModel):
     memory_enabled: bool = True
 
     # Audit
-    audit_retention_days: int = 90  # minimum 90
+    audit_retention_days: int = 180  # minimum 30
 
     # Localization
     target_language: str | None = None
@@ -198,8 +201,8 @@ class PaperlessIQConfig(BaseModel):
     @field_validator("audit_retention_days")
     @classmethod
     def validate_retention(cls, v: int) -> int:
-        if v < 90:
-            raise ValueError("audit_retention_days must be at least 90")
+        if v < 30:
+            raise ValueError("audit_retention_days must be at least 30")
         return v
 
     @field_validator("poll_interval_seconds")

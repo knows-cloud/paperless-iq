@@ -182,11 +182,11 @@ export function AppearanceTab({
             ]}
           />
           <NumberInput
-            label="Audit Log Retention (days, min 90)"
+            label="Audit Log Retention (days, min 30)"
             name="audit_retention_days"
-            min={90}
-            defaultValue={Number(s.audit_retention_days ?? 365)}
-            description="Audit log entries older than this are automatically deleted."
+            min={30}
+            defaultValue={Number(s.audit_retention_days ?? 180)}
+            description="Audit log entries older than this many days are automatically deleted (default 180 days / 6 months)."
           />
         </Stack>
       </Paper>

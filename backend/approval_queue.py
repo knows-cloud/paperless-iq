@@ -196,6 +196,8 @@ class ApprovalQueueService:
         change_source: str = "human",
         merge_tags: bool = False,
         create_missing: bool = False,
+        document_title: str | None = None,
+        session_id: str | None = None,
     ) -> MetadataSuggestion:
         """
         Approve a suggestion, optionally applying field edits.
@@ -204,7 +206,7 @@ class ApprovalQueueService:
           1. Load the suggestion from DB (must be "pending")
           2. Apply edits to the suggestion fields
           3. Write metadata to Paperless NGX via HTTP PATCH
-          4. Write one AuditLogEntry per changed field
+          4. Write one AuditLogEntry per changed field + one "approved" event
           5. Transition status to "approved"
 
         Raises ValueError if the suggestion is not in "pending" status.
@@ -218,6 +220,8 @@ class ApprovalQueueService:
             raise ValueError(
                 f"Suggestion {suggestion_id} is already '{row.status}'; cannot approve."
             )
+
+        doc_title = document_title or row.title
 
         # Apply edits
         editable_fields = ("title", "tags", "correspondent", "document_type", "storage_path", "custom_fields")
@@ -241,21 +245,42 @@ class ApprovalQueueService:
 
         # Write audit log entries — one per changed field
         now = datetime.now(timezone.utc)
+        any_changes = False
         for field in editable_fields:
             old_val = original[field]
             new_val = getattr(row, field)
             if old_val != new_val:
+                any_changes = True
                 audit = AuditLogORM(
                     id=str(uuid4()),
                     document_id=row.document_id,
+                    document_title=doc_title,
                     field_name=field,
                     previous_value=_value_to_str(old_val),
                     new_value=_value_to_str(new_val),
                     change_source=change_source,
+                    action_type="field_change",
+                    session_id=session_id,
                     changed_at=now,
                     suggestion_id=row.id,
                 )
                 self._session.add(audit)
+
+        # Always write an "approved" event even when no fields changed
+        approval_event = AuditLogORM(
+            id=str(uuid4()),
+            document_id=row.document_id,
+            document_title=doc_title,
+            field_name="_event",
+            previous_value=None,
+            new_value=f"suggestion:{row.id}",
+            change_source=change_source,
+            action_type="approved",
+            session_id=session_id,
+            changed_at=now,
+            suggestion_id=row.id,
+        )
+        self._session.add(approval_event)
 
         row.status = "approved"
         await self._session.commit()
@@ -267,7 +292,13 @@ class ApprovalQueueService:
     # reject
     # ------------------------------------------------------------------
 
-    async def reject(self, suggestion_id: UUID) -> MetadataSuggestion:
+    async def reject(
+        self,
+        suggestion_id: UUID,
+        change_source: str = "human",
+        document_title: str | None = None,
+        session_id: str | None = None,
+    ) -> MetadataSuggestion:
         """
         Reject a suggestion — no Paperless NGX write.
 
@@ -286,6 +317,22 @@ class ApprovalQueueService:
                 f"Suggestion {suggestion_id} is already 'approved'; cannot reject."
             )
         row.status = "rejected"
+
+        rejection_event = AuditLogORM(
+            id=str(uuid4()),
+            document_id=row.document_id,
+            document_title=document_title or row.title,
+            field_name="_event",
+            previous_value=None,
+            new_value=f"suggestion:{row.id}",
+            change_source=change_source,
+            action_type="rejected",
+            session_id=session_id,
+            changed_at=datetime.now(timezone.utc),
+            suggestion_id=row.id,
+        )
+        self._session.add(rejection_event)
+
         await self._session.commit()
         await self._session.refresh(row)
         logger.info("Rejected suggestion %s for document %d.", row.id, row.document_id)
