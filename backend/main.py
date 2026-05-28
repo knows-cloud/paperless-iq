@@ -3039,16 +3039,22 @@ async def get_my_permissions(request: Request) -> dict:
 @app.get("/api/piq-users", tags=["users"],
          dependencies=[Depends(require_perm("can_settings"))])
 async def list_piq_users(
+    request: Request,
     session: AsyncSession = Depends(get_session),
 ) -> list[dict]:
-    """List all user permission records."""
+    """List all user permission records, merged with all Paperless NGX users.
+
+    Users who have never logged into PIQ appear with deny-all defaults and
+    has_piq_record=false so the UI can distinguish them.
+    """
     result = await session.execute(select(UserPermissionsORM))
     rows = result.scalars().all()
     config = _settings_svc.config
-    out = []
+
+    piq_records: dict[str, dict] = {}
     for row in rows:
         effective_all = row.ng_admin and config.sync_ng_admins
-        out.append({
+        piq_records[row.username] = {
             "username": row.username,
             "ng_admin": row.ng_admin,
             "can_access": effective_all or row.can_access,
@@ -3058,8 +3064,41 @@ async def list_piq_users(
             "can_discover": effective_all or row.can_discover,
             "can_settings": effective_all or row.can_settings,
             "updated_at": row.updated_at.isoformat() if row.updated_at else None,
-        })
-    return out
+            "has_piq_record": True,
+        }
+
+    # Merge with all Paperless NGX users so admins can pre-set permissions
+    # before a user's first login. Gracefully skipped if NG is unavailable.
+    pc: PaperlessNGXClient | None = getattr(request.app.state, "paperless_client", None)
+    if pc:
+        try:
+            async with httpx.AsyncClient(headers=pc._headers, timeout=10) as client:
+                url: str | None = f"{pc._base_url}/api/users/?page_size=200"
+                while url:
+                    r = await client.get(url)
+                    if r.status_code != 200:
+                        break
+                    data = r.json()
+                    for ng_user in data.get("results", []):
+                        uname = ng_user.get("username", "")
+                        if uname and uname not in piq_records:
+                            piq_records[uname] = {
+                                "username": uname,
+                                "ng_admin": bool(ng_user.get("is_superuser") or ng_user.get("is_staff")),
+                                "can_access": False,
+                                "can_view_queue": False,
+                                "can_approve": False,
+                                "can_analyze": False,
+                                "can_discover": False,
+                                "can_settings": False,
+                                "updated_at": None,
+                                "has_piq_record": False,
+                            }
+                    url = data.get("next")
+        except Exception:
+            logger.debug("Could not fetch Paperless NGX user list for merging.", exc_info=True)
+
+    return sorted(piq_records.values(), key=lambda u: u["username"].lower())
 
 
 class PiqUserUpdate(BaseModel):
@@ -3078,10 +3117,11 @@ async def update_piq_user(
     body: PiqUserUpdate,
     session: AsyncSession = Depends(get_session),
 ) -> dict:
-    """Update permission flags for an existing user."""
+    """Create or update permission flags for a user (upsert)."""
     row = await session.get(UserPermissionsORM, username)
     if row is None:
-        raise HTTPException(status_code=404, detail=f"User '{username}' not found.")
+        row = UserPermissionsORM(username=username)
+        session.add(row)
     row.can_access = body.can_access
     row.can_view_queue = body.can_view_queue
     row.can_approve = body.can_approve

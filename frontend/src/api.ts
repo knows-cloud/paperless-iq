@@ -110,6 +110,7 @@ export interface UserPermissions {
   can_discover: boolean;
   can_settings: boolean;
   updated_at?: string | null;
+  has_piq_record?: boolean;
 }
 
 export const api = {
