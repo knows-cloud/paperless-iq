@@ -1,5 +1,6 @@
 import { useQuery } from "@tanstack/react-query";
 import { Group, Tooltip, Box } from "@mantine/core";
+import { useTranslation } from "react-i18next";
 import { api } from "./api";
 
 function Dot({ ok, pulse, label }: { ok: boolean; pulse?: boolean; label: string }) {
@@ -23,6 +24,7 @@ function Dot({ ok, pulse, label }: { ok: boolean; pulse?: boolean; label: string
 }
 
 export default function StatusPanel() {
+  const { t } = useTranslation();
   const { data } = useQuery({
     queryKey: ["status"],
     queryFn: api.getStatus,
@@ -38,6 +40,8 @@ export default function StatusPanel() {
   const embeddingTotal = (proc.embedding_total as number) ?? 0;
   const chunksOk = d.embedded_chunks > 0;
 
+  const statusStr = (online: boolean) => online ? t("processing.online") : t("processing.offline");
+
   return (
     <Group
       px="md"
@@ -45,10 +49,10 @@ export default function StatusPanel() {
       justify="space-around"
       style={{ borderTop: "1px solid var(--mantine-color-default-border)", borderBottom: "1px solid var(--mantine-color-default-border)" }}
     >
-      <Dot ok={d.llm_online} label={`LLM: ${d.llm_online ? "online" : "offline"}`} />
-      <Dot ok={d.embed_online} label={`Embedding: ${d.embed_online ? "online" : "offline"}`} />
-      <Dot ok={queueSize <= 15} label={`Processing queue: ${queueSize} items`} />
-      <Dot ok={chunksOk} pulse={embeddingActive} label={`Vector DB: ${d.embedded_chunks} chunks, ${embeddingDone}/${embeddingTotal} docs indexed`} />
+      <Dot ok={d.llm_online}  label={t("statusPanel.llm",       { status: statusStr(d.llm_online) })} />
+      <Dot ok={d.embed_online} label={t("statusPanel.embedding",  { status: statusStr(d.embed_online) })} />
+      <Dot ok={queueSize <= 15} label={t("statusPanel.queue",     { count: String(queueSize) })} />
+      <Dot ok={chunksOk} pulse={embeddingActive} label={t("statusPanel.vectorDb", { chunks: String(d.embedded_chunks), done: String(embeddingDone), total: String(embeddingTotal) })} />
       <style>{`
         @keyframes statusPulse {
           0%, 100% { opacity: 1; }

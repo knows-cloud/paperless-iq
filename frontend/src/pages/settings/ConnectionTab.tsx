@@ -1,4 +1,5 @@
 import { TextInput, Select, Button, Paper, Text, Divider, Stack, Group } from "@mantine/core";
+import { useTranslation } from "react-i18next";
 import { type PaperlessEntity, type ConnectionTestResult } from "../../api";
 
 interface Props {
@@ -26,21 +27,22 @@ export function ConnectionTab({
   connectionTestResult, testingConnection, onTestConnection,
   webhookResult, registeringWebhook, onRegisterWebhook,
 }: Props) {
+  const { t } = useTranslation();
   return (
     <Paper withBorder p="md" radius="md">
-      <Text fw={600} mb="md">Paperless NGX Connection</Text>
+      <Text fw={600} mb="md">{t("connection.title")}</Text>
       <Stack gap="md">
         <TextInput
-          label="Public URL"
+          label={t("connection.publicUrl.label")}
           type="url"
           value={paperlessPublicUrl}
           onChange={e => setPaperlessPublicUrl(e.target.value)}
-          placeholder="https://paperless.myhome.com or http://192.168.1.10:8000"
-          description="The URL your browser uses to reach Paperless NGX. Used for 'Open in Paperless' links. Leave empty to fall back to the internal PAPERLESS_URL."
+          placeholder={t("connection.publicUrl.placeholder")}
+          description={t("connection.publicUrl.description")}
         />
         <Group align="center" gap="md">
           <Button variant="default" onClick={onTestConnection} loading={testingConnection}>
-            Test Connection
+            {t("connection.testBtn")}
           </Button>
           {connectionTestResult && (
             <Text
@@ -48,39 +50,41 @@ export function ConnectionTab({
               c={connectionTestResult.status === "ok" ? "teal" : "red"}
             >
               {connectionTestResult.status === "ok"
-                ? `✓ Connected${connectionTestResult.version ? ` (Paperless NGX ${connectionTestResult.version})` : ""}`
-                : `✗ ${connectionTestResult.detail ?? "Unknown error"}`}
+                ? (connectionTestResult.version
+                    ? t("connection.okVersion", { version: connectionTestResult.version })
+                    : t("connection.ok"))
+                : `✗ ${connectionTestResult.detail ?? t("connection.unknownError")}`}
             </Text>
           )}
         </Group>
 
-        <Divider label="Inbox Tag" labelPosition="left" />
+        <Divider label={t("connection.inboxTag.divider")} labelPosition="left" />
 
         <Select
-          label="Documents with this tag are picked up for processing"
-          placeholder="— Search for a tag —"
-          data={tagList.map(t => ({ value: String(t.id), label: t.name }))}
+          label={t("connection.inboxTag.label")}
+          placeholder={t("connection.inboxTag.placeholder")}
+          data={tagList.map(tag => ({ value: String(tag.id), label: tag.name }))}
           value={inboxTagId || null}
           onChange={v => setInboxTagId(v ?? "")}
           searchable
           clearable
-          error={tagsError ? "Cannot load tags from Paperless NGX." : undefined}
+          error={tagsError ? t("connection.inboxTag.error") : undefined}
         />
 
-        <Divider label="Live Reindex Webhook" labelPosition="left" />
+        <Divider label={t("connection.webhook.divider")} labelPosition="left" />
 
         <TextInput
-          label="Paperless IQ internal URL"
+          label={t("connection.internalUrl.label")}
           type="url"
           name="paperless_iq_internal_url"
           value={paperlessIqInternalUrl}
           onChange={e => setPaperlessIqInternalUrl(e.target.value)}
-          placeholder="http://paperless-iq:8000"
-          description="How Paperless NGX reaches Paperless IQ on the internal network. Leave empty to use the URL detected from the browser request."
+          placeholder={t("connection.internalUrl.placeholder")}
+          description={t("connection.internalUrl.description")}
         />
         <Group align="center" gap="md">
           <Button variant="default" onClick={onRegisterWebhook} loading={registeringWebhook}>
-            Register Webhook
+            {t("connection.registerWebhook")}
           </Button>
           {webhookResult && (
             <Text size="sm" c={webhookResult.ok ? "teal" : "red"}>

@@ -4,6 +4,7 @@ import {
   Button, Alert, Stack,
 } from "@mantine/core";
 import { IconLogin2 } from "@tabler/icons-react";
+import { useTranslation } from "react-i18next";
 import { api, setStoredToken } from "../api";
 
 interface LoginPageProps {
@@ -11,6 +12,7 @@ interface LoginPageProps {
 }
 
 export default function LoginPage({ onLogin }: LoginPageProps) {
+  const { t } = useTranslation();
   const [username, setUsername] = useState("");
   const [password, setPassword] = useState("");
   const [loading, setLoading] = useState(false);
@@ -26,7 +28,7 @@ export default function LoginPage({ onLogin }: LoginPageProps) {
       setStoredToken(result.token);
       onLogin(result.user);
     } catch (err: unknown) {
-      setError(err instanceof Error ? err.message : "Login failed");
+      setError(err instanceof Error ? err.message : t("login.failed"));
     } finally {
       setLoading(false);
     }
@@ -38,13 +40,13 @@ export default function LoginPage({ onLogin }: LoginPageProps) {
         <Stack align="center" mb="xl" gap={4}>
           <Text size="2.5rem" lh={1}>📄</Text>
           <Title order={2} mt={4}>Paperless IQ</Title>
-          <Text size="sm" c="dimmed">Sign in with your Paperless-NGX account</Text>
+          <Text size="sm" c="dimmed">{t("login.subtitle")}</Text>
         </Stack>
 
         <form onSubmit={handleSubmit}>
           <Stack gap="md">
             <TextInput
-              label="Username"
+              label={t("common.username")}
               placeholder="paperless-username"
               autoComplete="username"
               autoFocus
@@ -53,7 +55,7 @@ export default function LoginPage({ onLogin }: LoginPageProps) {
               disabled={loading}
             />
             <PasswordInput
-              label="Password"
+              label={t("login.password")}
               placeholder="••••••••"
               autoComplete="current-password"
               value={password}
@@ -75,7 +77,7 @@ export default function LoginPage({ onLogin }: LoginPageProps) {
               disabled={!username.trim() || !password.trim()}
               leftSection={<IconLogin2 size={16} />}
             >
-              Sign in
+              {t("login.signIn")}
             </Button>
           </Stack>
         </form>

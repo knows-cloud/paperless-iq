@@ -9,7 +9,7 @@ import TagInput from "../TagInput";
 import AutocompleteInput from "../AutocompleteInput";
 import CfNameEditor from "../CfNameEditor";
 import VisionAnalysisFlow from "../VisionAnalysisFlow";
-import { t } from "../i18n";
+import { useTranslation } from "react-i18next";
 
 interface QueueItem {
   id: string;
@@ -23,6 +23,7 @@ interface QueueItem {
 }
 
 export default function QueuePage() {
+  const { t } = useTranslation();
   const qc = useQueryClient();
   const { data, isLoading } = useQuery({ queryKey: ["queue"], queryFn: () => api.getQueue({ status: "pending" }) });
   const statusQ = useQuery({ queryKey: ["status"], queryFn: api.getStatus, retry: false, staleTime: 60_000 });

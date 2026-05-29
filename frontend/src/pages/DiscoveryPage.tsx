@@ -6,7 +6,7 @@ import {
 } from "@mantine/core";
 import { useDisclosure, useMediaQuery } from "@mantine/hooks";
 import { api } from "../api";
-import { t } from "../i18n";
+import { useTranslation } from "react-i18next";
 import { MarkdownText, Source } from "../components/MarkdownText";
 
 interface Message {
@@ -119,6 +119,7 @@ function SourceCard({ src, index, highlighted }: { src: Source; index: number; h
 // ---------------------------------------------------------------------------
 
 export default function DiscoveryPage() {
+  const { t } = useTranslation();
   const [input, setInput] = useState("");
   const [messages, setMessages] = useState<Message[]>([]);
   const [loading, setLoading] = useState(false);

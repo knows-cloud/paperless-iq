@@ -7,7 +7,7 @@ import {
 } from "@mantine/core";
 import { api, type PaperlessEntity, type PaperlessCustomField, type DocumentItem, type MetadataSuggestionResponse, type VisionAnalysisResult } from "../api";
 import VisionAnalysisFlow from "../VisionAnalysisFlow";
-import { t } from "../i18n";
+import { useTranslation } from "react-i18next";
 
 const FILTERS_KEY = "piq_analysis_filters";
 
@@ -29,6 +29,7 @@ function loadFilters(): AnalysisFilters {
 function saveFilters(f: AnalysisFilters) { try { localStorage.setItem(FILTERS_KEY, JSON.stringify(f)); } catch {} }
 
 export default function ManualPage() {
+  const { t } = useTranslation();
   const [filters, setFilters] = useState<AnalysisFilters>(loadFilters);
   const [page, setPage] = useState(1);
   const [shouldSearch, setShouldSearch] = useState(false);
@@ -144,15 +145,15 @@ export default function ManualPage() {
           <Text size="sm" c="dimmed" fs="italic">{t("analysis.noMetadata")}</Text>
         ) : (
           <Stack gap={4}>
-            {suggestion.title && <Group gap="sm"><Text size="xs" c="dimmed" w={110}>{t("analysis.title_field")}</Text><Text size="sm" fw={500}>{suggestion.title}</Text></Group>}
+            {suggestion.title && <Group gap="sm"><Text size="xs" c="dimmed" w={110}>{t("common.title")}</Text><Text size="sm" fw={500}>{suggestion.title}</Text></Group>}
             {suggestion.tags.length > 0 && (
               <Group gap="sm" align="flex-start">
                 <Text size="xs" c="dimmed" w={110}>{t("analysis.tags_field")}</Text>
                 <Group gap={4}>{suggestion.tags.map((tag, i) => <Badge key={i} size="sm">{tag}</Badge>)}</Group>
               </Group>
             )}
-            {suggestion.correspondent && <Group gap="sm"><Text size="xs" c="dimmed" w={110}>{t("analysis.correspondent_field")}</Text><Text size="sm">{suggestion.correspondent}</Text></Group>}
-            {suggestion.document_type && <Group gap="sm"><Text size="xs" c="dimmed" w={110}>{t("analysis.docType_field")}</Text><Text size="sm">{suggestion.document_type}</Text></Group>}
+            {suggestion.correspondent && <Group gap="sm"><Text size="xs" c="dimmed" w={110}>{t("analysis.correspondent")}</Text><Text size="sm">{suggestion.correspondent}</Text></Group>}
+            {suggestion.document_type && <Group gap="sm"><Text size="xs" c="dimmed" w={110}>{t("analysis.docType")}</Text><Text size="sm">{suggestion.document_type}</Text></Group>}
             {suggestion.storage_path && <Group gap="sm"><Text size="xs" c="dimmed" w={110}>{t("analysis.storagePath_field")}</Text><Text size="sm">{suggestion.storage_path}</Text></Group>}
             {cfEntries.map(([key, val]) => <Group key={key} gap="sm"><Text size="xs" c="dimmed" w={110}>{key}</Text><Text size="sm">{String(val ?? "")}</Text></Group>)}
           </Stack>

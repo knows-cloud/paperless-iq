@@ -2,7 +2,6 @@ import { createContext, useContext, useEffect, useMemo, useState } from "react";
 import { MantineProvider, createTheme, useMantineColorScheme } from "@mantine/core";
 import type { MantineColorScheme } from "@mantine/core";
 import { api } from "./api";
-import { setLang, type Lang } from "./i18n";
 
 interface ThemeConfig {
   mantine_color: string;
@@ -21,7 +20,7 @@ const DEFAULT: ThemeConfig = {
 const ThemeConfigContext = createContext<ThemeConfig>(DEFAULT);
 export function useTheme() { return useContext(ThemeConfigContext); }
 
-// Reads server theme and applies color scheme + language. Runs inside MantineProvider.
+// Reads server theme and applies color scheme. Runs inside MantineProvider.
 function ThemeSync({ onLoad }: { onLoad: (c: ThemeConfig) => void }) {
   const { setColorScheme } = useMantineColorScheme();
 
@@ -34,7 +33,6 @@ function ThemeSync({ onLoad }: { onLoad: (c: ThemeConfig) => void }) {
         nav_icons: t.nav_icons ?? DEFAULT.nav_icons,
       };
       setColorScheme(cfg.color_scheme);
-      if (t.ui_language) setLang(t.ui_language as Lang);
       onLoad(cfg);
     }).catch(() => { /* keep defaults */ });
   // eslint-disable-next-line react-hooks/exhaustive-deps

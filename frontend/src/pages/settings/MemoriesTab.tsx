@@ -1,5 +1,6 @@
 import { Switch, Button, Textarea, ActionIcon, Paper, Text, Group, Stack, Loader, Box } from "@mantine/core";
 import { IconEdit, IconX } from "@tabler/icons-react";
+import { useTranslation } from "react-i18next";
 import { api } from "../../api";
 
 export type MemoryItem = {
@@ -32,50 +33,51 @@ export function MemoriesTab({
   editMemoryText, setEditMemoryText,
   clearMemoriesConfirm, setClearMemoriesConfirm,
 }: Props) {
+  const { t } = useTranslation();
   return (
     <Paper withBorder p="md" radius="md">
-      <Text fw={600} mb="xs">Long-term Memory</Text>
+      <Text fw={600} mb="xs">{t("memories.title")}</Text>
 
       <Switch
-        label="Enable long-term memory"
+        label={t("common.enable")}
         checked={memoryEnabled}
         onChange={e => setMemoryEnabled(e.currentTarget.checked)}
-        description="When enabled, key facts are automatically extracted from Discovery conversations and injected as context in future chats. Facts are deduplicated — similar entries are merged rather than duplicated."
+        description={t("memories.enable.description")}
         mb="lg"
       />
 
       <Group justify="space-between" mb="sm">
         <Text size="xs" fw={500} tt="uppercase" c="dimmed">
-          Learned facts {memories.length > 0 && `(${memories.length})`}
+          {memories.length > 0
+            ? t("memories.learnedFactsCount", { count: String(memories.length) })
+            : t("memories.learnedFacts")}
         </Text>
         {memories.length > 0 && !clearMemoriesConfirm && (
           <Button size="xs" color="red" variant="light" onClick={() => setClearMemoriesConfirm(true)}>
-            Clear all
+            {t("memories.clearAll")}
           </Button>
         )}
         {clearMemoriesConfirm && (
           <Group gap="xs">
-            <Text size="xs">Are you sure?</Text>
+            <Text size="xs">{t("common.areYouSure")}</Text>
             <Button size="xs" color="red" onClick={async () => {
               await api.clearMemories();
               setMemories([]);
               setClearMemoriesConfirm(false);
             }}>
-              Yes, clear
+              {t("memories.yesClears")}
             </Button>
             <Button size="xs" variant="default" onClick={() => setClearMemoriesConfirm(false)}>
-              Cancel
+              {t("common.cancel")}
             </Button>
           </Group>
         )}
       </Group>
 
       {memoriesLoading ? (
-        <Group gap="xs" mt="sm"><Loader size="xs" /><Text size="sm" c="dimmed">Loading…</Text></Group>
+        <Group gap="xs" mt="sm"><Loader size="xs" /><Text size="sm" c="dimmed">{t("common.loading")}</Text></Group>
       ) : memories.length === 0 ? (
-        <Text size="sm" c="dimmed" mt="sm">
-          No memories yet. Facts will appear here after Discovery conversations are closed.
-        </Text>
+        <Text size="sm" c="dimmed" mt="sm">{t("memories.noMemories")}</Text>
       ) : (
         <Stack gap={6}>
           {memories.map(mem => (
@@ -105,10 +107,10 @@ export function MemoriesTab({
                       setEditingMemoryId(null);
                       setMemories(prev => prev.map(m => m.id === mem.id ? { ...m, text: editMemoryText } : m));
                     }}>
-                      Save
+                      {t("common.save")}
                     </Button>
                     <Button size="xs" variant="default" onClick={() => setEditingMemoryId(null)}>
-                      Cancel
+                      {t("common.cancel")}
                     </Button>
                   </Group>
                 </Stack>
@@ -122,14 +124,14 @@ export function MemoriesTab({
                 <Group gap={4} style={{ flexShrink: 0 }}>
                   <ActionIcon
                     size="sm" variant="subtle" color="gray"
-                    title="Edit"
+                    title={t("common.edit")}
                     onClick={() => { setEditingMemoryId(mem.id); setEditMemoryText(mem.text); }}
                   >
                     <IconEdit size={14} />
                   </ActionIcon>
                   <ActionIcon
                     size="sm" variant="subtle" color="red"
-                    title="Delete"
+                    title={t("common.delete")}
                     onClick={async () => {
                       await api.deleteMemory(mem.id);
                       setMemories(prev => prev.filter(m => m.id !== mem.id));
@@ -146,7 +148,7 @@ export function MemoriesTab({
 
       {memories.length > 0 && (
         <Text size="xs" c="dimmed" mt="sm">
-          Most recent: {new Date(memories[0].updated_at).toLocaleDateString()}
+          {t("memories.mostRecent", { date: new Date(memories[0].updated_at).toLocaleDateString() })}
         </Text>
       )}
     </Paper>

@@ -1,4 +1,5 @@
 import { Select, TextInput, PasswordInput, NumberInput, Paper, Text, Divider, Stack, Badge } from "@mantine/core";
+import { useTranslation } from "react-i18next";
 import { LLM_MODEL_DEFAULTS, EMBED_MODEL_DEFAULTS } from "./constants";
 
 interface Props {
@@ -35,13 +36,14 @@ export function AIProviderTab({
   bedrockSecretKey, setBedrockSecretKey,
   bedrockSessionToken, setBedrockSessionToken,
 }: Props) {
+  const { t } = useTranslation();
   return (
     <Stack gap="md">
       <Paper withBorder p="md" radius="md">
-        <Text fw={600} mb="md">Language Model (LLM)</Text>
+        <Text fw={600} mb="md">{t("aiProvider.llm.title")}</Text>
         <Stack gap="md">
           <Select
-            label="Provider"
+            label={t("aiProvider.provider.label")}
             name="llm_provider"
             value={selectedProvider}
             onChange={v => {
@@ -58,7 +60,7 @@ export function AIProviderTab({
             ]}
           />
           <TextInput
-            label="Model"
+            label={t("aiProvider.model.label")}
             name="llm_model"
             value={llmModel}
             onChange={e => {
@@ -66,32 +68,32 @@ export function AIProviderTab({
               localStorage.setItem(`piq_llm_model_${selectedProvider}`, e.target.value);
             }}
             placeholder={
-              selectedProvider === "ollama"  ? "e.g. llama3, mistral, gemma2" :
-              selectedProvider === "bedrock" ? "e.g. anthropic.claude-3-haiku-20240307-v1:0" :
-                                               "e.g. claude-3-5-haiku-20241022, gpt-4o-mini"
+              selectedProvider === "ollama"  ? t("aiProvider.model.placeholderOllama") :
+              selectedProvider === "bedrock" ? t("aiProvider.model.placeholderBedrock") :
+                                               t("aiProvider.model.placeholderOther")
             }
           />
 
           {selectedProvider === "ollama" && (
             <TextInput
-              label="Ollama Server URL"
+              label={t("aiProvider.ollama.url.label")}
               value={ollamaUrl}
               onChange={e => setOllamaUrl(e.target.value)}
               placeholder="http://localhost:11434"
-              description="The URL of your Ollama instance. No API key needed."
+              description={t("aiProvider.ollama.url.description")}
             />
           )}
 
           {selectedProvider === "bedrock" && (
             <>
               <TextInput
-                label="AWS Region"
+                label={t("aiProvider.bedrock.region.label")}
                 value={bedrockRegion}
                 onChange={e => setBedrockRegion(e.target.value)}
                 placeholder="e.g. eu-central-1, us-east-1"
               />
               <TextInput
-                label="Access Key ID"
+                label={t("aiProvider.bedrock.accessKeyId.label")}
                 value={bedrockAccessKeyId}
                 onChange={e => setBedrockAccessKeyId(e.target.value)}
                 placeholder="AKIA..."
@@ -100,70 +102,70 @@ export function AIProviderTab({
               <PasswordInput
                 label={
                   <span>
-                    Secret Access Key{" "}
+                    {t("aiProvider.bedrock.secretKey.label")}{" "}
                     {Boolean(s?.bedrock_has_secret) && (
-                      <Badge size="xs" color="teal" variant="light" ml={6}>✓ stored</Badge>
+                      <Badge size="xs" color="teal" variant="light" ml={6}>{t("common.credential.stored")}</Badge>
                     )}
                   </span>
                 }
                 value={bedrockSecretKey}
                 onChange={e => setBedrockSecretKey(e.target.value)}
-                placeholder={s?.bedrock_has_secret ? "Leave blank to keep existing" : "Enter secret access key"}
+                placeholder={s?.bedrock_has_secret ? t("common.credential.keepExisting") : t("aiProvider.bedrock.secretKey.placeholder")}
               />
               <PasswordInput
                 label={
                   <span>
-                    Session Token{" "}
-                    <Text span size="xs" c="dimmed">(optional — only for temporary STS credentials)</Text>
+                    {t("aiProvider.bedrock.sessionToken.label")}{" "}
+                    <Text span size="xs" c="dimmed">{t("aiProvider.bedrock.sessionToken.optional")}</Text>
                     {Boolean(s?.bedrock_has_session_token) && (
-                      <Badge size="xs" color="teal" variant="light" ml={6}>✓ stored</Badge>
+                      <Badge size="xs" color="teal" variant="light" ml={6}>{t("common.credential.stored")}</Badge>
                     )}
                   </span>
                 }
                 value={bedrockSessionToken}
                 onChange={e => setBedrockSessionToken(e.target.value)}
-                placeholder={s?.bedrock_has_session_token ? "Leave blank to keep existing" : "Leave blank for permanent IAM user keys"}
-                description="Permanent IAM access keys don't need this. Required only when keys came from AWS SSO / sts assume-role / sts get-session-token. Encrypted at rest using SECRET_KEY."
+                placeholder={s?.bedrock_has_session_token ? t("common.credential.keepExisting") : t("aiProvider.bedrock.sessionToken.placeholder")}
+                description={t("aiProvider.bedrock.sessionToken.description")}
               />
             </>
           )}
 
           {selectedProvider !== "ollama" && selectedProvider !== "bedrock" && (
             <PasswordInput
-              label="API Key"
+              label={t("aiProvider.apiKey.label")}
               name="llm_credentials"
               defaultValue=""
-              placeholder="Leave blank to keep current"
-              description="Encrypted at rest. Leave empty to keep existing credentials."
+              placeholder={t("common.credential.keepExisting")}
+              description={t("aiProvider.apiKey.description")}
             />
           )}
 
-          <Divider label="Context" labelPosition="left" />
+          <Divider label={t("aiProvider.context.divider")} labelPosition="left" />
           <div style={{ display: "flex", gap: "1rem", flexWrap: "wrap" }}>
             <NumberInput
-              label="Context Window (characters)"
+              label={t("aiProvider.contextWindow.label")}
               name="context_window_chars"
               min={1000}
               defaultValue={Number(s.context_window_chars ?? 128000)}
-              description="Maximum characters sent to the LLM. Default: 128,000."
+              description={t("aiProvider.contextWindow.description")}
               style={{ flex: 2, minWidth: "200px" }}
             />
             <Select
-              label="Default Analysis Mode"
+              label={t("aiProvider.analysisMode.label")}
               name="default_analysis_mode"
               defaultValue={String(s.default_analysis_mode ?? "ocr")}
               data={[
-                { value: "ocr", label: "OCR Text" },
-                { value: "full_document", label: "Full Document (Vision)" },
+                { value: "ocr", label: t("aiProvider.analysisMode.ocr") },
+                { value: "full_document", label: t("aiProvider.analysisMode.vision") },
               ]}
               style={{ flex: 1, minWidth: "160px" }}
             />
             <NumberInput
-              label="Vision Page Warning Threshold"
+              label={t("aiProvider.visionThreshold.label")}
               name="vision_max_pages_warning"
               min={1}
               defaultValue={Number(s.vision_max_pages_warning ?? 5)}
-              description="Show a cost warning when a document has more pages than this before vision analysis."
+              description={t("aiProvider.visionThreshold.description")}
               style={{ flex: 1, minWidth: "160px" }}
             />
           </div>
@@ -171,13 +173,11 @@ export function AIProviderTab({
       </Paper>
 
       <Paper withBorder p="md" radius="md">
-        <Text fw={600} mb="xs">Embeddings</Text>
-        <Text size="sm" c="dimmed" mb="md">
-          Used for semantic search and smart entity selection. Can use a different provider than the LLM.
-        </Text>
+        <Text fw={600} mb="xs">{t("aiProvider.embeddings.title")}</Text>
+        <Text size="sm" c="dimmed" mb="md">{t("aiProvider.embeddings.subtitle")}</Text>
         <Stack gap="md">
           <Select
-            label="Embedding Provider"
+            label={t("aiProvider.embeddings.provider.label")}
             name="embed_provider"
             value={selectedEmbedProvider}
             onChange={v => {
@@ -186,10 +186,10 @@ export function AIProviderTab({
               const stored = localStorage.getItem(`piq_embed_model_${p}`);
               setEmbedModel(stored ?? EMBED_MODEL_DEFAULTS[p] ?? "");
             }}
-            description="Provider used to generate document embeddings."
+            description={t("aiProvider.embeddings.provider.description")}
             data={[
               { value: "ollama", label: "Ollama" },
-              { value: "bedrock", label: "Amazon Bedrock (Titan / Cohere)" },
+              { value: "bedrock", label: t("aiProvider.embeddings.bedrockOption") },
               { value: "openai", label: "OpenAI" },
             ]}
           />
@@ -197,10 +197,10 @@ export function AIProviderTab({
           {selectedEmbedProvider === "ollama" && (
             <>
               <Text size="sm" p="sm" style={{ background: "var(--mantine-color-teal-0)", borderRadius: "var(--mantine-radius-sm)" }}>
-                Make sure the model is pulled: <code>ollama pull nomic-embed-text</code>. Embedding models are small and fast — independent of the LLM.
+                {t("aiProvider.embeddings.ollama.hintPre")} <code>ollama pull nomic-embed-text</code>. {t("aiProvider.embeddings.ollama.hintPost")}
               </Text>
               <TextInput
-                label="Embedding Model"
+                label={t("aiProvider.embeddings.model.label")}
                 name="embedding_model"
                 value={embedModel}
                 onChange={e => {
@@ -208,15 +208,15 @@ export function AIProviderTab({
                   localStorage.setItem(`piq_embed_model_${selectedEmbedProvider}`, e.target.value);
                 }}
                 placeholder="nomic-embed-text"
-                description="Ollama model used for document embeddings. Must support the embed API."
+                description={t("aiProvider.embeddings.model.description")}
               />
               {selectedProvider !== "ollama" && (
                 <TextInput
-                  label="Ollama Server URL (for embeddings)"
+                  label={t("aiProvider.embeddings.ollama.urlEmbed.label")}
                   value={ollamaUrl}
                   onChange={e => setOllamaUrl(e.target.value)}
                   placeholder="http://localhost:11434"
-                  description="URL of your Ollama instance for embedding generation."
+                  description={t("aiProvider.embeddings.ollama.urlEmbed.description")}
                 />
               )}
             </>
@@ -224,49 +224,48 @@ export function AIProviderTab({
 
           {selectedEmbedProvider === "bedrock" && (
             <Select
-              label="Bedrock Embedding Model"
+              label={t("aiProvider.embeddings.bedrock.model.label")}
               name="embedding_model"
               value={embedModel || "amazon.titan-embed-text-v1"}
               onChange={v => {
                 setEmbedModel(v ?? "amazon.titan-embed-text-v1");
                 localStorage.setItem(`piq_embed_model_${selectedEmbedProvider}`, v ?? "");
               }}
-              description="Uses the same AWS credentials as your Bedrock LLM. Changing the model requires re-indexing — use Re-index on the Processing page after saving."
+              description={t("aiProvider.embeddings.bedrock.model.description")}
               data={[
-                { value: "amazon.titan-embed-text-v2:0", label: "Titan Embed Text v2 — 1024-dim, better quality (recommended)" },
-                { value: "cohere.embed-multilingual-v3", label: "Cohere Embed Multilingual v3 — best for non-English documents" },
-                { value: "cohere.embed-english-v3", label: "Cohere Embed English v3 — best for English-only archives" },
-                { value: "amazon.titan-embed-text-v1", label: "Titan Embed Text v1 — 1536-dim, legacy (keep if already indexed)" },
+                { value: "amazon.titan-embed-text-v2:0", label: t("aiProvider.embeddings.bedrock.titanV2") },
+                { value: "cohere.embed-multilingual-v3", label: t("aiProvider.embeddings.bedrock.cohereMulti") },
+                { value: "cohere.embed-english-v3",      label: t("aiProvider.embeddings.bedrock.cohereEn") },
+                { value: "amazon.titan-embed-text-v1",   label: t("aiProvider.embeddings.bedrock.titanV1") },
               ]}
             />
           )}
 
           {selectedEmbedProvider === "openai" && (
             <Text size="sm" c="dimmed" p="sm" style={{ background: "var(--mantine-color-teal-0)", borderRadius: "var(--mantine-radius-sm)" }}>
-              Embeddings are generated using OpenAI's <code>text-embedding-3-small</code> (1536-dimensional vectors).
-              Uses the same API key as your OpenAI LLM.
+              {t("aiProvider.embeddings.openai.hint")}
             </Text>
           )}
         </Stack>
       </Paper>
 
       <Paper withBorder p="md" radius="md">
-        <Text fw={600} mb="md">Vector Store</Text>
+        <Text fw={600} mb="md">{t("aiProvider.vectorStore.title")}</Text>
         <Stack gap="md">
           <Select
-            label="Backend"
+            label={t("aiProvider.vectorStore.backend.label")}
             name="vector_store_backend"
             defaultValue={String(s.vector_store_backend ?? "local")}
             data={[
-              { value: "local", label: "Local (ChromaDB)" },
-              { value: "bedrock_kb", label: "Amazon Bedrock Knowledge Base" },
+              { value: "local",      label: t("aiProvider.vectorStore.local") },
+              { value: "bedrock_kb", label: t("aiProvider.vectorStore.bedrockKb") },
             ]}
           />
           <TextInput
-            label="Bedrock Knowledge Base ID"
+            label={t("aiProvider.vectorStore.kbId.label")}
             name="bedrock_kb_id"
             defaultValue={String(s.bedrock_kb_id ?? "")}
-            placeholder="Only needed for Bedrock KB backend"
+            placeholder={t("aiProvider.vectorStore.kbId.placeholder")}
           />
         </Stack>
       </Paper>

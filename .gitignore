@@ -9,3 +9,4 @@ frontend/dist
 data/
 *.db
 .DS_Store
+docs/*_PLAN.md

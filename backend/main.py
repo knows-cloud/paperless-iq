@@ -3175,7 +3175,6 @@ async def get_theme() -> dict:
         "card_alt_hex": config.theme_card_alt_hex,
         "card_alt_opacity": config.theme_card_alt_opacity,
         "nav_icons": nav_icons,
-        "ui_language": config.ui_language,
         "chip_color": config.theme_chip_color,
         "mantine_color": config.mantine_color,
         "color_scheme": config.color_scheme,
