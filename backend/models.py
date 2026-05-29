@@ -6,7 +6,7 @@ from datetime import datetime
 from typing import Any, Literal
 from uuid import UUID
 
-from pydantic import BaseModel, ConfigDict, field_validator
+from pydantic import BaseModel, ConfigDict, field_validator, model_validator
 
 # Type alias for encrypted credential blobs
 EncryptedBlob = bytes
@@ -103,8 +103,38 @@ class PaperlessIQConfig(BaseModel):
     ollama_url: str = "http://localhost:11434"  # Ollama server URL (only used when provider is ollama)
 
     # Vector store
-    vector_store_backend: Literal["local", "bedrock_kb"] = "local"
+    vector_store_backend: Literal["local", "bedrock_kb", "qdrant"] = "local"
     bedrock_kb_id: str | None = None
+
+    # Qdrant backend
+    qdrant_mode: Literal["local", "cloud"] = "local"
+    qdrant_url: str = "http://qdrant:6333"  # default = compose service DNS
+    qdrant_api_key: EncryptedBlob = b""  # Fernet-encrypted; never returned to UI
+    qdrant_collection: str = "paperless_iq_chunks"
+    qdrant_memory_collection: str = "piq_memories"
+
+    # --- Search tuning: COMMON (apply to every backend) ---
+    search_overfetch_multiplier: int = 5  # candidates fetched = top_n * this
+    search_min_score: float = 0.0  # drop results below this normalized score (0 = off)
+    chunk_size: int = 1000  # chars per chunk
+    chunk_overlap: int = 200  # overlap between chunks
+    chunk_strategy: Literal["char", "sentence"] = "char"
+    rerank_enabled: bool = False  # master switch (ships OFF)
+    rerank_method: Literal["llm", "local", "api"] = "llm"  # which reranker when enabled
+    rerank_top_k: int = 20  # how many candidates to rerank
+    rerank_model: str = "BAAI/bge-reranker-v2-m3"  # default local cross-encoder (multilingual)
+    rerank_api_key: EncryptedBlob = b""  # ONLY for standalone-SaaS api method; else unused
+
+    # --- Search tuning: CHROMA-specific ---
+    chroma_hnsw_search_ef: int = 100  # recall vs latency at query time
+    chroma_hnsw_m: int = 16  # graph connectivity (index build)
+    chroma_hnsw_construction_ef: int = 100  # index build quality
+
+    # --- Search tuning: QDRANT-specific ---
+    qdrant_hnsw_ef: int = 128
+    qdrant_hnsw_m: int = 16
+    qdrant_quantization: Literal["none", "scalar", "binary"] = "none"
+    qdrant_hybrid_search: bool = False  # dense + sparse (named vectors)
 
     # Analysis defaults
     default_analysis_mode: Literal["ocr", "full_document"] = "ocr"
@@ -217,3 +247,22 @@ class PaperlessIQConfig(BaseModel):
         if v < 1:
             raise ValueError("batch_size must be at least 1")
         return v
+
+    @model_validator(mode="after")
+    def validate_search_ef(self) -> "PaperlessIQConfig":
+        """The active backend's HNSW query candidate list (search_ef) must be
+        large enough to serve the requested + overfetched results, or recall
+        silently caps. Only the active backend's ef field is enforced."""
+        needed = self.similar_docs_count * self.search_overfetch_multiplier
+        if self.vector_store_backend == "local":
+            ef, field = self.chroma_hnsw_search_ef, "chroma_hnsw_search_ef"
+        elif self.vector_store_backend == "qdrant":
+            ef, field = self.qdrant_hnsw_ef, "qdrant_hnsw_ef"
+        else:
+            return self  # bedrock_kb manages its own retrieval
+        if ef < needed:
+            raise ValueError(
+                f"{field} ({ef}) must be ≥ similar_docs_count × overfetch "
+                f"({self.similar_docs_count} × {self.search_overfetch_multiplier} = {needed})"
+            )
+        return self

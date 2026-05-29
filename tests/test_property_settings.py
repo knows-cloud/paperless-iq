@@ -234,3 +234,44 @@ def test_property_3_settings_round_trip(
     assert svc.config.field_descriptions == field_descriptions
     assert svc.config.per_field_prompt_templates == per_field_prompts
     assert svc.config.per_doctype_prompt_templates == per_doctype_prompts
+
+
+# ---------------------------------------------------------------------------
+# Cross-field validation: HNSW search_ef must cover overfetched candidates
+# (QDRANT_PLAN §3.4)
+# ---------------------------------------------------------------------------
+
+
+def test_search_ef_rejected_below_needed_local() -> None:
+    """Local (Chroma) backend: chroma_hnsw_search_ef < count×overfetch is rejected."""
+    svc = SettingsService()
+    # defaults: similar_docs_count=10, overfetch=5 → needed=50
+    with pytest.raises(ValueError, match="must be ≥ similar_docs_count"):
+        svc.update({"chroma_hnsw_search_ef": 49})
+    # unchanged after failure
+    assert svc.config.chroma_hnsw_search_ef == 100
+
+
+def test_search_ef_accepted_at_boundary_local() -> None:
+    """Boundary (ef == needed) is accepted."""
+    svc = SettingsService()
+    svc.update({"chroma_hnsw_search_ef": 50})  # == 10×5
+    assert svc.config.chroma_hnsw_search_ef == 50
+
+
+def test_search_ef_validates_active_backend_qdrant() -> None:
+    """Qdrant backend enforces qdrant_hnsw_ef, not the Chroma field."""
+    svc = SettingsService()
+    with pytest.raises(ValueError, match="qdrant_hnsw_ef"):
+        svc.update({"vector_store_backend": "qdrant", "qdrant_hnsw_ef": 10})
+    # boundary accepted
+    svc.update({"vector_store_backend": "qdrant", "qdrant_hnsw_ef": 50})
+    assert svc.config.qdrant_hnsw_ef == 50
+
+
+def test_search_ef_skipped_for_bedrock_kb() -> None:
+    """bedrock_kb manages its own retrieval — ef check does not apply."""
+    svc = SettingsService()
+    # low chroma ef is irrelevant once backend is bedrock_kb
+    svc.update({"vector_store_backend": "bedrock_kb", "chroma_hnsw_search_ef": 1})
+    assert svc.config.vector_store_backend == "bedrock_kb"
