@@ -23,8 +23,8 @@ from backend.settings_service import SettingsService
 # ---------------------------------------------------------------------------
 
 _invalid_settings = st.one_of(
-    # Negative retention days
-    st.fixed_dictionaries({"audit_retention_days": st.integers(max_value=89)}),
+    # Retention days below minimum (30)
+    st.fixed_dictionaries({"audit_retention_days": st.integers(max_value=29)}),
     # Unknown provider
     st.fixed_dictionaries({"llm_provider": st.just("unknown_provider")}),
     # Invalid analysis mode

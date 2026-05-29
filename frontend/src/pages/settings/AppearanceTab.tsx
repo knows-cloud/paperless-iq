@@ -1,6 +1,6 @@
 import {
   Select, Paper, Text, Divider, Stack, Group, ColorSwatch, Tooltip,
-  SegmentedControl, SimpleGrid, NumberInput, Autocomplete, Anchor,
+  SegmentedControl, SimpleGrid, Autocomplete, Anchor,
 } from "@mantine/core";
 import { NAV_ICON_PALETTE, NAV_ICON_NAMES, toPascal } from "./nav-icon-palette";
 
@@ -166,29 +166,20 @@ export function AppearanceTab({
       </Paper>
 
       <Paper withBorder p="md" radius="md">
-        <Text fw={600} mb="md">Language &amp; System</Text>
-        <Stack gap="md">
-          <Select
-            label="Interface Language"
-            name="ui_language"
-            defaultValue={String(s.ui_language ?? "en")}
-            description="Language for the Paperless IQ user interface. Refresh the page after saving."
-            data={[
-              { value: "en", label: "English"  },
-              { value: "de", label: "Deutsch"  },
-              { value: "fr", label: "Français" },
-              { value: "es", label: "Español"  },
-              { value: "it", label: "Italiano" },
-            ]}
-          />
-          <NumberInput
-            label="Audit Log Retention (days, min 90)"
-            name="audit_retention_days"
-            min={90}
-            defaultValue={Number(s.audit_retention_days ?? 365)}
-            description="Audit log entries older than this are automatically deleted."
-          />
-        </Stack>
+        <Text fw={600} mb="md">Language</Text>
+        <Select
+          label="Interface Language"
+          name="ui_language"
+          defaultValue={String(s.ui_language ?? "en")}
+          description="Language for the Paperless IQ user interface. Refresh the page after saving."
+          data={[
+            { value: "en", label: "English"  },
+            { value: "de", label: "Deutsch"  },
+            { value: "fr", label: "Français" },
+            { value: "es", label: "Español"  },
+            { value: "it", label: "Italiano" },
+          ]}
+        />
       </Paper>
     </Stack>
   );

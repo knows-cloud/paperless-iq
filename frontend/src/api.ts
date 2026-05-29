@@ -110,6 +110,7 @@ export interface UserPermissions {
   can_discover: boolean;
   can_settings: boolean;
   updated_at?: string | null;
+  has_piq_record?: boolean;
 }
 
 export const api = {
@@ -161,7 +162,22 @@ export const api = {
 
   getAuditLog: (params?: Record<string, string>) => {
     const qs = params ? "?" + new URLSearchParams(params).toString() : "";
-    return request<{ items: unknown[]; total: number }>(`/audit${qs}`);
+    return request<{ items: unknown[]; total: number; page: number; page_size: number }>(`/audit${qs}`);
+  },
+
+  exportAuditLog: (params?: Record<string, string>, fmt: "csv" | "json" = "csv") => {
+    const p = { ...(params ?? {}), fmt };
+    // Strip empty values so they don't become spurious filter params
+    const filtered: Record<string, string> = {};
+    for (const [k, v] of Object.entries(p)) { if (v) filtered[k] = v; }
+    const qs = "?" + new URLSearchParams(filtered).toString();
+    const token = getStoredToken();
+    const authHeaders: Record<string, string> = token ? { Authorization: `Bearer ${token}` } : {};
+    return fetch(`${BASE}/audit/export${qs}`, { headers: authHeaders })
+      .then(async r => {
+        if (!r.ok) throw new Error(`Export failed: ${r.statusText}`);
+        return r.blob();
+      });
   },
 
   search: (q: string, topN = 5) =>

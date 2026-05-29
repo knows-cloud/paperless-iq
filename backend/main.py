@@ -27,14 +27,14 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, Response
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
-from sqlalchemy import delete as sa_delete, func, select, update as sa_update
+from sqlalchemy import delete as sa_delete, func, select, text, update as sa_update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from backend.analyzer import PaperlessNGXClient
 from backend.models import VisionAnalysisResult
 from backend.pdf_utils import get_page_count
 from backend.approval_queue import ApprovalQueueService
-from backend.audit_log import AuditLogService
+from backend.audit_log import AuditLogService, rows_to_csv
 from backend.auth import (
     check_login_rate_limit,
     check_webhook_secret,
@@ -428,6 +428,24 @@ async def _background_index(
         logger.warning("Background indexing failed.", exc_info=True)
 
 
+async def _audit_cleanup_loop() -> None:
+    """Delete audit log entries older than the configured retention period.
+
+    Runs once at startup and then every 24 hours. Honours the
+    ``audit_retention_days`` setting (default 180 days).
+    """
+    while True:
+        try:
+            retention = _settings_svc.config.audit_retention_days
+            async with AsyncSessionLocal() as db:
+                deleted = await AuditLogService(db).cleanup(retention)
+                if deleted:
+                    logger.info("Audit log cleanup: removed %d entries older than %d days.", deleted, retention)
+        except Exception:
+            logger.warning("Audit log cleanup loop error", exc_info=True)
+        await asyncio.sleep(86400)  # once per day
+
+
 async def _session_expiry_loop(app: FastAPI) -> None:
     """Extract memories from sessions older than 24 hours, then delete them.
 
@@ -486,6 +504,16 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
 
     async with engine.begin() as conn:
         await conn.run_sync(Base.metadata.create_all)
+        # Add columns introduced in audit log overhaul — safe for existing DBs.
+        for col_ddl in [
+            "ALTER TABLE audit_log ADD COLUMN document_title TEXT",
+            "ALTER TABLE audit_log ADD COLUMN action_type VARCHAR(50) DEFAULT 'field_change'",
+            "ALTER TABLE audit_log ADD COLUMN session_id VARCHAR(36)",
+        ]:
+            try:
+                await conn.execute(text(col_ddl))
+            except Exception:
+                pass  # Column already exists — SQLite raises OperationalError
 
     # Load persisted settings from DB (seeds from env vars on first run)
     await _settings_svc.load_from_db()
@@ -603,10 +631,13 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     # Always run the session expiry loop — extracts memories then deletes expired sessions
     app.state.session_expiry_task = asyncio.create_task(_session_expiry_loop(app))
 
+    # Audit log cleanup loop — runs daily, honours audit_retention_days setting
+    app.state.audit_cleanup_task = asyncio.create_task(_audit_cleanup_loop())
+
     yield
 
     # Shutdown: cancel automation tasks
-    for task_name in ("inbox_task", "scheduler_task", "session_expiry_task"):
+    for task_name in ("inbox_task", "scheduler_task", "session_expiry_task", "audit_cleanup_task"):
         task: asyncio.Task[Any] | None = getattr(app.state, task_name, None)
         if task is not None and not task.done():
             task.cancel()
@@ -910,12 +941,15 @@ async def approve_suggestion(
     body: ApproveBody = Body(default_factory=ApproveBody),
 ) -> MetadataSuggestion:
     """Approve a suggestion, optionally with field edits."""
+    actor = getattr(request.state, "user", None)
+    change_source = f"user:{actor}" if actor else "human"
     try:
         result = await svc.approve(
             suggestion_id,
             edits=body.edits,
             merge_tags=False,    # frontend computes the complete final tag set
             create_missing=True, # user reviewed and approved — always create missing entities
+            change_source=change_source,
         )
     except ValueError as exc:
         raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(exc))
@@ -947,11 +981,14 @@ async def approve_suggestion(
           dependencies=[Depends(require_perm("can_approve"))])
 async def reject_suggestion(
     suggestion_id: UUID,
+    request: Request,
     svc: Annotated[ApprovalQueueService, Depends(_queue_service)],
 ) -> MetadataSuggestion:
     """Reject a suggestion."""
+    actor = getattr(request.state, "user", None)
+    change_source = f"user:{actor}" if actor else "human"
     try:
-        return await svc.reject(suggestion_id)
+        return await svc.reject(suggestion_id, change_source=change_source)
     except ValueError as exc:
         raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(exc))
 
@@ -1247,6 +1284,9 @@ async def query_audit_log(
     date_from: datetime | None = Query(default=None),
     date_to: datetime | None = Query(default=None),
     change_source: str | None = Query(default=None),
+    action_type: str | None = Query(default=None),
+    field_name: str | None = Query(default=None),
+    document_title: str | None = Query(default=None, description="Substring match on document title"),
     page: int = Query(default=1, ge=1),
     page_size: int = Query(default=50, ge=1, le=200),
 ) -> dict:
@@ -1256,6 +1296,9 @@ async def query_audit_log(
         date_from=date_from,
         date_to=date_to,
         change_source=change_source,
+        action_type=action_type,
+        field_name=field_name,
+        document_title_pattern=document_title,
         page=page,
         page_size=page_size,
     )
@@ -1265,6 +1308,45 @@ async def query_audit_log(
         "page": page,
         "page_size": page_size,
     }
+
+
+@app.get("/api/audit/export", tags=["audit"],
+         dependencies=[Depends(require_perm("can_settings"))])
+async def export_audit_log(
+    svc: Annotated[AuditLogService, Depends(_audit_service)],
+    document_id: int | None = Query(default=None),
+    date_from: datetime | None = Query(default=None),
+    date_to: datetime | None = Query(default=None),
+    change_source: str | None = Query(default=None),
+    action_type: str | None = Query(default=None),
+    field_name: str | None = Query(default=None),
+    document_title: str | None = Query(default=None),
+    fmt: str = Query(default="csv", pattern="^(csv|json)$"),
+) -> Response:
+    """Export filtered audit log entries as CSV or JSON."""
+    rows = await svc.export_rows(
+        document_id=document_id,
+        date_from=date_from,
+        date_to=date_to,
+        change_source=change_source,
+        action_type=action_type,
+        field_name=field_name,
+        document_title_pattern=document_title,
+    )
+    if fmt == "csv":
+        content = rows_to_csv(rows)
+        return Response(
+            content=content,
+            media_type="text/csv",
+            headers={"Content-Disposition": "attachment; filename=audit_log.csv"},
+        )
+    import json as _json_mod
+    content_json = _json_mod.dumps([e.model_dump(mode="json") for e in rows], indent=2, default=str)
+    return Response(
+        content=content_json,
+        media_type="application/json",
+        headers={"Content-Disposition": "attachment; filename=audit_log.json"},
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -1892,6 +1974,21 @@ async def manual_analyze(body: AnalyzeBody, request: Request) -> dict:
     except Exception:
         logger.warning("Failed to auto-enqueue suggestion for doc %d", body.document_id, exc_info=True)
 
+    # Audit: record analysis trigger
+    async def _audit_analyze() -> None:
+        try:
+            async with AsyncSessionLocal() as _db:
+                actor = getattr(request.state, "user", None)
+                await AuditLogService(_db).record_event(
+                    action_type="analysis_triggered",
+                    change_source=f"user:{actor}" if actor else "manual_analysis",
+                    document_id=body.document_id,
+                    new_value=f"ocr analysis via {suggestion.llm_provider}/{suggestion.llm_model}",
+                )
+        except Exception:
+            logger.debug("Analyze audit log failed", exc_info=True)
+    asyncio.create_task(_audit_analyze())
+
     return suggestion.model_dump(mode="json")
 
 
@@ -2487,7 +2584,10 @@ async def get_status(request: Request) -> dict:
 
 @app.post("/api/reindex", tags=["system"],
           dependencies=[Depends(require_perm("can_settings"))])
-async def trigger_reindex(request: Request) -> dict:
+async def trigger_reindex(
+    request: Request,
+    svc: Annotated[AuditLogService, Depends(_audit_service)],
+) -> dict:
     """Wipe the vector store and re-embed all documents from scratch.
 
     Always resets the collection first — this is required when the embedding
@@ -2497,6 +2597,14 @@ async def trigger_reindex(request: Request) -> dict:
     pc = getattr(request.app.state, "paperless_client", None)
     if not vs or not pc:
         raise HTTPException(status_code=503, detail="Vector store or Paperless client not available.")
+
+    actor = getattr(request.state, "user", None)
+    change_source = f"user:{actor}" if actor else "system"
+    await svc.record_event(
+        action_type="reindex",
+        change_source=change_source,
+        new_value="full reindex started",
+    )
 
     # Reset the collection so the new embedding model can set a fresh dimension
     await vs.reset()
@@ -2513,7 +2621,11 @@ class ReindexSinceRequest(BaseModel):
 
 @app.post("/api/reindex/since", tags=["system"],
           dependencies=[Depends(require_perm("can_settings"))])
-async def trigger_reindex_since(request: Request, body: ReindexSinceRequest) -> dict:
+async def trigger_reindex_since(
+    request: Request,
+    body: ReindexSinceRequest,
+    svc: Annotated[AuditLogService, Depends(_audit_service)],
+) -> dict:
     """Re-embed only documents modified on or after the given date.
 
     Useful for catching up after a period without live webhook re-indexing.
@@ -2548,6 +2660,14 @@ async def trigger_reindex_since(request: Request, body: ReindexSinceRequest) -> 
 
     if not doc_ids:
         return {"detail": f"No documents modified on or after {modified_after}.", "count": 0}
+
+    actor = getattr(request.state, "user", None)
+    change_source = f"user:{actor}" if actor else "system"
+    await svc.record_event(
+        action_type="reindex",
+        change_source=change_source,
+        new_value=f"reindex-since {modified_after} ({len(doc_ids)} docs)",
+    )
 
     oq: OllamaQueue | None = getattr(request.app.state, "ollama_queue", None)
 
@@ -2844,6 +2964,21 @@ async def paperless_webhook(request: Request) -> dict:
 
     logger.info("Webhook queuing reindex of document %s.", doc_id)
     asyncio.create_task(_reindex_document(doc_id, vs, pc))
+
+    # Fire-and-forget audit event — uses its own session to avoid coupling with request lifecycle.
+    async def _audit_webhook() -> None:
+        try:
+            async with AsyncSessionLocal() as _db:
+                await AuditLogService(_db).record_event(
+                    action_type="webhook_received",
+                    change_source="webhook",
+                    document_id=doc_id,
+                    new_value="reindex queued",
+                )
+        except Exception:
+            logger.debug("Webhook audit log failed", exc_info=True)
+    asyncio.create_task(_audit_webhook())
+
     return {"detail": f"Reindex of document {doc_id} queued."}
 
 
@@ -2904,16 +3039,22 @@ async def get_my_permissions(request: Request) -> dict:
 @app.get("/api/piq-users", tags=["users"],
          dependencies=[Depends(require_perm("can_settings"))])
 async def list_piq_users(
+    request: Request,
     session: AsyncSession = Depends(get_session),
 ) -> list[dict]:
-    """List all user permission records."""
+    """List all user permission records, merged with all Paperless NGX users.
+
+    Users who have never logged into PIQ appear with deny-all defaults and
+    has_piq_record=false so the UI can distinguish them.
+    """
     result = await session.execute(select(UserPermissionsORM))
     rows = result.scalars().all()
     config = _settings_svc.config
-    out = []
+
+    piq_records: dict[str, dict] = {}
     for row in rows:
         effective_all = row.ng_admin and config.sync_ng_admins
-        out.append({
+        piq_records[row.username] = {
             "username": row.username,
             "ng_admin": row.ng_admin,
             "can_access": effective_all or row.can_access,
@@ -2923,8 +3064,41 @@ async def list_piq_users(
             "can_discover": effective_all or row.can_discover,
             "can_settings": effective_all or row.can_settings,
             "updated_at": row.updated_at.isoformat() if row.updated_at else None,
-        })
-    return out
+            "has_piq_record": True,
+        }
+
+    # Merge with all Paperless NGX users so admins can pre-set permissions
+    # before a user's first login. Gracefully skipped if NG is unavailable.
+    pc: PaperlessNGXClient | None = getattr(request.app.state, "paperless_client", None)
+    if pc:
+        try:
+            async with httpx.AsyncClient(headers=pc._headers, timeout=10) as client:
+                url: str | None = f"{pc._base_url}/api/users/?page_size=200"
+                while url:
+                    r = await client.get(url)
+                    if r.status_code != 200:
+                        break
+                    data = r.json()
+                    for ng_user in data.get("results", []):
+                        uname = ng_user.get("username", "")
+                        if uname and uname not in piq_records:
+                            piq_records[uname] = {
+                                "username": uname,
+                                "ng_admin": bool(ng_user.get("is_superuser") or ng_user.get("is_staff")),
+                                "can_access": False,
+                                "can_view_queue": False,
+                                "can_approve": False,
+                                "can_analyze": False,
+                                "can_discover": False,
+                                "can_settings": False,
+                                "updated_at": None,
+                                "has_piq_record": False,
+                            }
+                    url = data.get("next")
+        except Exception:
+            logger.debug("Could not fetch Paperless NGX user list for merging.", exc_info=True)
+
+    return sorted(piq_records.values(), key=lambda u: u["username"].lower())
 
 
 class PiqUserUpdate(BaseModel):
@@ -2943,10 +3117,11 @@ async def update_piq_user(
     body: PiqUserUpdate,
     session: AsyncSession = Depends(get_session),
 ) -> dict:
-    """Update permission flags for an existing user."""
+    """Create or update permission flags for a user (upsert)."""
     row = await session.get(UserPermissionsORM, username)
     if row is None:
-        raise HTTPException(status_code=404, detail=f"User '{username}' not found.")
+        row = UserPermissionsORM(username=username)
+        session.add(row)
     row.can_access = body.can_access
     row.can_view_queue = body.can_view_queue
     row.can_approve = body.can_approve

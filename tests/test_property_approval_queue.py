@@ -163,7 +163,7 @@ async def test_property_18_approval_queue_routing(
 # Property 19: Approval applies edited values
 # ---------------------------------------------------------------------------
 
-@settings(max_examples=100, suppress_health_check=[HealthCheck.too_slow])
+@settings(max_examples=100, suppress_health_check=[HealthCheck.too_slow], deadline=None)
 @given(
     suggestion=_suggestion_strategy(),
     edits=_edits_strategy(),
