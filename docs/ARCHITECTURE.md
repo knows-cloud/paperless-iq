@@ -114,7 +114,8 @@ Loads `PaperlessIQConfig` from the database; falls back to `PIQ_*` env vars on f
 ```
 frontend/src/
 ├── api.ts                   # All API calls (single module, typed return values)
-├── i18n.ts                  # Translation lookup (t("key"))
+├── i18n.ts                  # react-i18next init (LanguageDetector → localStorage "piq_lang")
+├── locales/{en,de,fr,es,it}/translation.json  # Translation resources (single namespace)
 ├── App.tsx                  # Router, layout, nav sidebar; fetches + applies permissions
 ├── ThemeProvider.tsx        # MantineProvider + createTheme driven by /api/theme settings
 ├── PermissionsContext.tsx   # React context + usePermissions() hook
@@ -165,6 +166,12 @@ Tab components (`settings/*.tsx`):
 - `useState` for all form/UI state that needs to survive tab switches (the form is a single `<form>` element wrapping all 8 tab views; switching tabs shows/hides — not unmounts — the content)
 - `PermissionsContext` provides the current user's effective permissions to all pages; populated from `GET /api/piq-users/me` after login
 - No Redux or Zustand — the query cache + local component state is sufficient
+
+### Internationalisation (react-i18next)
+- `i18n.ts` initialises **react-i18next** with `i18next-browser-languagedetector`. Resources are the per-language JSON files under `locales/<lang>/translation.json` (single `translation` namespace, 5 languages, identical key sets).
+- Components consume strings via the `useTranslation()` hook (`const { t } = useTranslation()`) — never a module-level `t` import. Interpolation uses single braces (`t("key", { name })`) via `interpolation: { prefix: "{", suffix: "}" }`.
+- Language is **client-side only**: the detector reads/writes localStorage key `piq_lang` (falls back to browser locale, then `en`). There is no backend language field — switching via `i18n.changeLanguage` re-renders live, no reload, no API round-trip.
+- Adding a string means adding the key to **all 5** locale files; `npm run check:i18n` (`scripts/check-i18n.mjs`) enforces key parity in CI.
 
 ---
 

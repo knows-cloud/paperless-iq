@@ -1,6 +1,8 @@
-import { Textarea, TextInput, Select, Button, Checkbox, Paper, Text, Stack, Group } from "@mantine/core";
+import { Textarea, TextInput, Select, Button, Paper, Text, Stack, Group } from "@mantine/core";
+import { useTranslation } from "react-i18next";
 import { api, type PaperlessCustomField } from "../../api";
 import { METADATA_FIELDS } from "./constants";
+import { Checkbox } from "@mantine/core";
 
 interface Props {
   s: Record<string, unknown>;
@@ -27,13 +29,14 @@ export function PromptsFieldsTab({
   selectedCustomFields, toggleCustomField,
   cfList, customFieldsIsError,
 }: Props) {
+  const { t } = useTranslation();
   return (
     <Stack gap="md">
       <Paper withBorder p="md" radius="md">
-        <Text fw={600} mb="md">System Prompt</Text>
+        <Text fw={600} mb="md">{t("prompts.title")}</Text>
         <Stack gap="md">
           <Textarea
-            label="Global prompt — system instruction sent to the LLM with every document"
+            label={t("prompts.global.label")}
             name="global_prompt_template"
             rows={10}
             value={promptText}
@@ -41,7 +44,7 @@ export function PromptsFieldsTab({
             styles={{ input: { fontFamily: "monospace", fontSize: "0.85rem" } }}
           />
           <Group gap="xs" align="flex-end">
-            <Text size="xs" c="dimmed" style={{ flex: 1 }}>Use {"{{content}}"} as placeholder for document text.</Text>
+            <Text size="xs" c="dimmed" style={{ flex: 1 }}>{t("prompts.global.hint")}</Text>
             <Select
               size="xs"
               style={{ width: "auto" }}
@@ -69,24 +72,22 @@ export function PromptsFieldsTab({
                 setTranslating(false);
               }}
             >
-              Translate
+              {t("prompts.translate")}
             </Button>
           </Group>
           <TextInput
-            label="LLM Output Language"
+            label={t("prompts.outputLang.label")}
             name="target_language"
             defaultValue={String(s.target_language ?? "")}
-            placeholder="e.g. de, fr, es (leave empty for English)"
-            description="Language the LLM should use for metadata values (title, tags, etc.). Leave empty for English."
+            placeholder={t("prompts.outputLang.placeholder")}
+            description={t("prompts.outputLang.description")}
           />
         </Stack>
       </Paper>
 
       <Paper withBorder p="md" radius="md">
-        <Text fw={600} mb="xs">Field Instructions</Text>
-        <Text size="sm" c="dimmed" mb="md">
-          Give the LLM specific instructions for each metadata field. Leave blank to let it decide based on the system prompt alone.
-        </Text>
+        <Text fw={600} mb="xs">{t("prompts.fields.title")}</Text>
+        <Text size="sm" c="dimmed" mb="md">{t("prompts.fields.description")}</Text>
         <Stack gap="sm">
           {METADATA_FIELDS.map(f => (
             <Textarea
@@ -100,10 +101,10 @@ export function PromptsFieldsTab({
             />
           ))}
 
-          <Text fw={500} size="sm" mt="sm">Custom Fields</Text>
+          <Text fw={500} size="sm" mt="sm">{t("analysis.customFields")}</Text>
           {cfList.length === 0 && (
             <Text size="sm" c="dimmed">
-              {customFieldsIsError ? "Cannot load custom fields from Paperless NGX." : "No custom fields found."}
+              {customFieldsIsError ? t("prompts.fields.customFieldsError") : t("prompts.fields.noCustomFields")}
             </Text>
           )}
           {cfList.map(cf => {
@@ -122,7 +123,7 @@ export function PromptsFieldsTab({
                     rows={2}
                     value={fieldDescs[`cf:${cf.id}`] ?? ""}
                     onChange={e => setFieldDescs(prev => ({ ...prev, [`cf:${cf.id}`]: e.target.value }))}
-                    placeholder={`Instructions for custom field "${cf.name}"`}
+                    placeholder={t("prompts.fields.customPlaceholder", { name: cf.name })}
                   />
                 )}
               </div>

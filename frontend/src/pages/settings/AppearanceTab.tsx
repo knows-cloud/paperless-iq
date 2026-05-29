@@ -12,12 +12,12 @@ const MANTINE_COLORS = [
 ] as const;
 
 const NAV_ITEMS = [
-  { id: "manual",     label: "Analysis",   placeholder: "file-search"    },
-  { id: "queue",      label: "Queue",      placeholder: "list-check"     },
-  { id: "discovery",  label: "Discovery",  placeholder: "sparkles"       },
-  { id: "processing", label: "Processing", placeholder: "activity"       },
-  { id: "audit",      label: "Audit",      placeholder: "clipboard-list" },
-  { id: "settings",   label: "Settings",   placeholder: "settings"       },
+  { id: "manual",     key: "nav.analysis",   placeholder: "file-search"    },
+  { id: "queue",      key: "nav.queue",      placeholder: "list-check"     },
+  { id: "discovery",  key: "nav.discovery",  placeholder: "sparkles"       },
+  { id: "processing", key: "nav.processing", placeholder: "activity"       },
+  { id: "audit",      key: "nav.audit",      placeholder: "clipboard-list" },
+  { id: "settings",   key: "nav.settings",   placeholder: "settings"       },
 ];
 
 interface Props {
@@ -42,20 +42,21 @@ function NavIconInput({
   value: string;      // stored as kebab-case
   onChange: (v: string) => void;
 }) {
+  const { t } = useTranslation();
   const paletteName = toPascal(value || item.placeholder);
   const Icon = NAV_ICON_PALETTE[paletteName];
   const isUnknown = value !== "" && !NAV_ICON_PALETTE[toPascal(value)];
 
   return (
     <Autocomplete
-      label={item.label}
+      label={t(item.key)}
       placeholder={item.placeholder}
       value={value}
       onChange={onChange}
       data={NAV_ICON_NAMES}
       limit={8}
       size="sm"
-      error={isUnknown ? "Unknown icon" : undefined}
+      error={isUnknown ? t("appearance.navIconUnknown") : undefined}
       leftSection={Icon ? <Icon size={16} /> : null}
     />
   );
@@ -68,27 +69,27 @@ export function AppearanceTab({
   themeFontSize, setThemeFontSize,
   themeNavIcons, setThemeNavIcons,
 }: Props) {
-  const { i18n } = useTranslation();
+  const { t, i18n } = useTranslation();
   return (
     <Stack gap="md">
       <Paper withBorder p="md" radius="md">
-        <Text fw={600} mb="md">Theme</Text>
+        <Text fw={600} mb="md">{t("appearance.theme")}</Text>
         <Stack gap="md">
           <div>
-            <Text size="sm" fw={500} mb="xs">Color Scheme</Text>
+            <Text size="sm" fw={500} mb="xs">{t("appearance.colorScheme")}</Text>
             <SegmentedControl
               value={colorScheme}
               onChange={setColorScheme}
               data={[
-                { label: "Light", value: "light" },
-                { label: "Dark",  value: "dark"  },
-                { label: "Auto",  value: "auto"  },
+                { label: t("appearance.light"), value: "light" },
+                { label: t("appearance.dark"),  value: "dark"  },
+                { label: t("appearance.auto"),  value: "auto"  },
               ]}
             />
           </div>
 
           <div>
-            <Text size="sm" fw={500} mb="xs">Primary Color</Text>
+            <Text size="sm" fw={500} mb="xs">{t("appearance.primaryColor")}</Text>
             <Group gap="xs">
               {MANTINE_COLORS.map(color => (
                 <Tooltip key={color} label={color} withArrow>
@@ -106,14 +107,14 @@ export function AppearanceTab({
                 </Tooltip>
               ))}
             </Group>
-            <Text size="xs" c="dimmed" mt="xs">Selected: {mantineColor}</Text>
+            <Text size="xs" c="dimmed" mt="xs">{t("appearance.selected", { color: mantineColor })}</Text>
           </div>
 
-          <Divider label="Typography" labelPosition="left" />
+          <Divider label={t("appearance.typography")} labelPosition="left" />
 
           <SimpleGrid cols={2}>
             <Select
-              label="Font"
+              label={t("appearance.font")}
               value={themeFont}
               onChange={v => setThemeFont(v ?? "Roboto")}
               data={[
@@ -130,26 +131,23 @@ export function AppearanceTab({
               ]}
             />
             <Select
-              label="Size"
+              label={t("appearance.size")}
               value={themeFontSize}
               onChange={v => setThemeFontSize(v ?? "14px")}
               data={["12px", "13px", "14px", "15px", "16px"].map(v => ({ value: v, label: v }))}
             />
           </SimpleGrid>
 
-          <Divider label="Navigation Icons" labelPosition="left" />
+          <Divider label={t("appearance.navIcons")} labelPosition="left" />
           <Group justify="space-between" mt={-8}>
-            <Text size="xs" c="dimmed">
-              Type a Tabler icon name (e.g. <strong>file-text</strong>, <strong>bell</strong>).
-              Leave blank to keep the default.
-            </Text>
+            <Text size="xs" c="dimmed">{t("appearance.navIconsHint")}</Text>
             <Anchor
               href="https://tabler.io/icons"
               target="_blank"
               rel="noopener noreferrer"
               size="xs"
             >
-              Browse icons ↗
+              {t("appearance.browseIcons")}
             </Anchor>
           </Group>
 
@@ -167,11 +165,11 @@ export function AppearanceTab({
       </Paper>
 
       <Paper withBorder p="md" radius="md">
-        <Text fw={600} mb="md">Language</Text>
+        <Text fw={600} mb="md">{t("appearance.language")}</Text>
         <Select
-          label="Interface Language"
+          label={t("appearance.interfaceLanguage")}
           value={i18n.language}
-          description="Changes apply immediately."
+          description={t("appearance.languageImmediate")}
           data={AVAILABLE_LANGS.map(l => ({ value: l.code, label: l.label }))}
           onChange={v => { if (v) i18n.changeLanguage(v); }}
         />

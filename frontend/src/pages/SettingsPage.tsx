@@ -15,19 +15,18 @@ import { METADATA_FIELDS, LLM_MODEL_DEFAULTS, EMBED_MODEL_DEFAULTS } from "./set
 
 type SettingsTab = "connection" | "aiProvider" | "promptsFields" | "metadataRules" | "automation" | "appearance" | "memories" | "accessControl";
 
-const SETTINGS_TABS: Array<{ id: SettingsTab; label: string }> = [
-  { id: "connection",    label: "Connection" },
-  { id: "aiProvider",    label: "AI Provider" },
-  { id: "promptsFields", label: "Prompts & Fields" },
-  { id: "metadataRules", label: "Metadata Rules" },
-  { id: "automation",    label: "Automation" },
-  { id: "appearance",    label: "Appearance" },
-  { id: "memories",      label: "Memories" },
-  { id: "accessControl", label: "Access Control" },
-];
-
 export default function SettingsPage() {
   const { t } = useTranslation();
+  const SETTINGS_TABS: Array<{ id: SettingsTab; label: string }> = [
+    { id: "connection",    label: t("settings.tabs.connection") },
+    { id: "aiProvider",    label: t("settings.tabs.aiProvider") },
+    { id: "promptsFields", label: t("settings.tabs.promptsFields") },
+    { id: "metadataRules", label: t("settings.tabs.metadataRules") },
+    { id: "automation",    label: t("settings.tabs.automation") },
+    { id: "appearance",    label: t("settings.tabs.appearance") },
+    { id: "memories",      label: t("settings.tabs.memories") },
+    { id: "accessControl", label: t("settings.tabs.accessControl") },
+  ];
   const qc = useQueryClient();
   const { data, isLoading, error } = useQuery({ queryKey: ["settings"], queryFn: api.getSettings });
   const tags = useQuery({ queryKey: ["tags"], queryFn: api.getTags, retry: false });
