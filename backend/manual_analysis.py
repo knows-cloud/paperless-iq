@@ -9,10 +9,10 @@ Validates: Requirements 6.1, 6.2, 6.3, 6.4
 from __future__ import annotations
 
 import logging
-from typing import Literal
+from typing import Any, Literal
 
 from backend.analyzer import DocumentAnalyzer, PaperlessNGXClient
-from backend.models import MetadataSuggestion, PaperlessIQConfig
+from backend.models import MetadataSuggestion, PaperlessIQConfig, VisionAnalysisResult
 from backend.protocols import LLMProvider
 
 logger = logging.getLogger(__name__)
@@ -80,5 +80,35 @@ class ManualAnalysisService:
         suggestion = await analyzer.analyze(document_id)
 
         return suggestion
+
+    async def analyze_vision(
+        self,
+        document_id: int,
+        include_content: bool = False,
+        max_pages: int | None = None,
+    ) -> VisionAnalysisResult:
+        """Run vision-based analysis for a single document.
+
+        Downloads and renders the document pages as images and sends them to the LLM.
+        """
+        provider_name = self._config.llm_provider
+        provider = self._providers.get(provider_name)
+        if provider is None:
+            raise ValueError(f"Provider '{provider_name}' is not configured.")
+
+        analyzer = DocumentAnalyzer(
+            provider=provider,
+            paperless_client=self._paperless,
+            config=self._config,
+            provider_name=provider_name,
+            context_window_chars=self._config.context_window_chars,
+            vector_store=self._vector_store,
+        )
+
+        return await analyzer.analyze_vision(
+            document_id=document_id,
+            include_content=include_content,
+            max_pages=max_pages,
+        )
 
 

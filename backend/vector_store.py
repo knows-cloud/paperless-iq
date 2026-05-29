@@ -267,6 +267,7 @@ class ChromaVectorStore:
         all_tags: set[str] = set()
         all_correspondents: set[str] = set()
         all_document_types: set[str] = set()
+        all_custom_fields: dict[str, set[str]] = {}
         seen_doc_ids: set[int] = set()
 
         if results["metadatas"] and results["metadatas"][0]:
@@ -292,11 +293,19 @@ class ChromaVectorStore:
                 dt = meta.get("document_type", "")
                 if dt:
                     all_document_types.add(dt)
+                try:
+                    cf_dict = json.loads(meta.get("custom_fields_json") or "{}")
+                except (json.JSONDecodeError, TypeError):
+                    cf_dict = {}
+                for cf_name, cf_value in cf_dict.items():
+                    if cf_value is not None and str(cf_value).strip():
+                        all_custom_fields.setdefault(cf_name, set()).add(str(cf_value))
 
         return {
             "tags": all_tags,
             "correspondents": all_correspondents,
             "document_types": all_document_types,
+            "custom_fields": all_custom_fields,
         }
 
     def count(self) -> int:

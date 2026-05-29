@@ -2,7 +2,12 @@
 
 from __future__ import annotations
 
+import base64
+import logging
+
 import ollama
+
+logger = logging.getLogger(__name__)
 
 
 class OllamaProvider:
@@ -24,29 +29,70 @@ class OllamaProvider:
             self._client_instance = ollama.AsyncClient(host=self._base_url)
         return self._client_instance
 
-    async def chat(self, messages: list[dict], max_tokens: int) -> str:
+    async def chat(
+        self,
+        messages: list[dict],
+        max_tokens: int,
+        output_schema: dict | None = None,
+        images: list[bytes] | None = None,
+    ) -> str:
         """Send a multi-turn chat request to Ollama.
 
-        Ollama's chat API accepts a ``system`` role natively, so messages are
-        passed through as-is.
+        When ``output_schema`` is provided, passes it as the ``format``
+        option for native structured JSON output (Ollama ≥0.5).
+        When ``images`` are provided, injects them as base64 strings into
+        the last user message.
         """
         client = self._client()
-        response = await client.chat(
+        if images:
+            messages = _inject_images_ollama(messages, images)
+
+        kwargs: dict = dict(
             model=self._model,
             messages=messages,
             options={"num_predict": max_tokens},
         )
+        if output_schema:
+            kwargs["format"] = output_schema
+
+        response = await client.chat(**kwargs)
         return response["message"]["content"]
 
-    async def complete(self, prompt: str, max_tokens: int) -> str:
+    async def complete(
+        self,
+        prompt: str,
+        max_tokens: int,
+        output_schema: dict | None = None,
+        images: list[bytes] | None = None,
+    ) -> str:
         """Single-turn convenience wrapper around chat()."""
-        return await self.chat([{"role": "user", "content": prompt}], max_tokens)
+        return await self.chat(
+            [{"role": "user", "content": prompt}],
+            max_tokens,
+            output_schema=output_schema,
+            images=images,
+        )
 
     async def embed(self, text: str) -> list[float]:
         """Generate embeddings via Ollama."""
         client = self._client()
         response = await client.embeddings(model=self._model, prompt=text)
         return response["embedding"]
+
+    async def supports_vision(self) -> bool:
+        """Return True if the configured model reports vision capability.
+
+        Uses the local /api/show endpoint — no external network call needed.
+        Falls back to False on any error (model not pulled, Ollama unreachable).
+        """
+        try:
+            client = self._client()
+            info = await client.show(self._model)
+            capabilities = getattr(info, "capabilities", None) or info.get("capabilities", [])
+            return "vision" in capabilities
+        except Exception:
+            logger.debug("supports_vision(): could not determine capabilities for %s", self._model)
+            return False
 
     async def health_check(self) -> bool:
         """Return True if the Ollama instance is reachable."""
@@ -56,3 +102,17 @@ class OllamaProvider:
             return True
         except Exception:
             return False
+
+
+def _inject_images_ollama(messages: list[dict], images: list[bytes]) -> list[dict]:
+    """Return a copy of messages with base64 image strings in the last user message."""
+    if not messages:
+        return messages
+    messages = [m.copy() for m in messages]
+    for i in reversed(range(len(messages))):
+        if messages[i].get("role") == "user":
+            existing_images: list[str] = list(messages[i].get("images", []))
+            new_images = [base64.b64encode(img).decode() for img in images]
+            messages[i] = {**messages[i], "images": new_images + existing_images}
+            break
+    return messages

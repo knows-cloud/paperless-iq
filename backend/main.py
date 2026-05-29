@@ -3,8 +3,10 @@
 from __future__ import annotations
 
 import asyncio
+import json as _json
 import logging
 import os
+import re as _re
 
 # Configure application logging so INFO messages from all backend modules appear
 # in the container log alongside uvicorn's own access log.
@@ -29,6 +31,8 @@ from sqlalchemy import delete as sa_delete, func, select, update as sa_update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from backend.analyzer import PaperlessNGXClient
+from backend.models import VisionAnalysisResult
+from backend.pdf_utils import get_page_count
 from backend.approval_queue import ApprovalQueueService
 from backend.audit_log import AuditLogService
 from backend.auth import (
@@ -1891,6 +1895,150 @@ async def manual_analyze(body: AnalyzeBody, request: Request) -> dict:
     return suggestion.model_dump(mode="json")
 
 
+# ---------------------------------------------------------------------------
+# Vision analysis endpoints
+# ---------------------------------------------------------------------------
+
+class VisionAnalyzeBody(BaseModel):
+    document_id: int
+    include_content: bool = False
+    max_pages: int | None = None
+
+
+@app.post("/api/analyze/vision", tags=["analyze"],
+          dependencies=[Depends(require_perm("can_analyze"))])
+async def vision_analyze(body: VisionAnalyzeBody, request: Request) -> dict:
+    """Analyze a document by rendering its pages as images and sending them to the LLM.
+
+    When ``include_content`` is True, the LLM also extracts the full text and
+    returns it in ``extracted_content`` alongside the original OCR text for
+    the diff modal.
+    """
+    svc: ManualAnalysisService | None = request.app.state.manual_analysis_svc
+    if svc is None:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="Analysis service not configured. Configure an LLM provider in settings.",
+        )
+
+    pc = getattr(request.app.state, "paperless_client", None)
+    if not pc:
+        raise HTTPException(status_code=503, detail="Paperless NGX not configured.")
+
+    try:
+        queue: OllamaQueue | None = getattr(request.app.state, "ollama_queue", None)
+        if queue:
+            result: VisionAnalysisResult = await queue.submit(
+                Priority.ANALYSIS,
+                lambda: svc.analyze_vision(
+                    document_id=body.document_id,
+                    include_content=body.include_content,
+                    max_pages=body.max_pages,
+                ),
+                label=f"Vision analysis doc {body.document_id}",
+            )
+        else:
+            result = await svc.analyze_vision(
+                document_id=body.document_id,
+                include_content=body.include_content,
+                max_pages=body.max_pages,
+            )
+    except ConnectionError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_502_BAD_GATEWAY,
+            detail=f"Could not connect to LLM provider: {exc}",
+        )
+    except Exception as exc:
+        logger.exception("Vision analysis failed for document %d", body.document_id)
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Vision analysis failed: {exc}",
+        )
+
+    # Persist the suggestion to the approval queue
+    try:
+        async with AsyncSessionLocal() as session:
+            queue_svc = ApprovalQueueService(session)
+            enqueued = await queue_svc.enqueue(result.suggestion)
+            result = VisionAnalysisResult(
+                suggestion=enqueued,
+                extracted_content=result.extracted_content,
+                original_ocr_content=result.original_ocr_content,
+                page_count=result.page_count,
+            )
+    except Exception:
+        logger.warning(
+            "Failed to enqueue vision suggestion for doc %d", body.document_id, exc_info=True
+        )
+
+    return {
+        "suggestion": result.suggestion.model_dump(mode="json"),
+        "extracted_content": result.extracted_content,
+        "original_ocr_content": result.original_ocr_content,
+        "page_count": result.page_count,
+    }
+
+
+@app.get("/api/documents/{document_id}/page-count", tags=["documents"],
+         dependencies=[Depends(require_perm("can_analyze"))])
+async def get_document_page_count(document_id: int, request: Request) -> dict:
+    """Return the number of pages in a document without rendering it."""
+    pc = getattr(request.app.state, "paperless_client", None)
+    if not pc:
+        raise HTTPException(status_code=503, detail="Paperless NGX not configured.")
+    try:
+        pdf_bytes = await pc.get_document_bytes(document_id)
+        return {"page_count": get_page_count(pdf_bytes)}
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=str(exc))
+
+
+class UpdateContentBody(BaseModel):
+    content: str
+
+
+@app.patch("/api/documents/{document_id}/content", tags=["documents"],
+           dependencies=[Depends(require_perm("can_analyze"))])
+async def update_document_content(
+    document_id: int, body: UpdateContentBody, request: Request
+) -> dict:
+    """Update the content (OCR text) field of a document in Paperless NGX."""
+    pc = getattr(request.app.state, "paperless_client", None)
+    if not pc:
+        raise HTTPException(status_code=503, detail="Paperless NGX not configured.")
+    try:
+        async with httpx.AsyncClient(headers=pc._headers, timeout=30) as client:
+            resp = await client.patch(
+                f"{pc._base_url}/api/documents/{document_id}/",
+                json={"content": body.content},
+            )
+            resp.raise_for_status()
+        return {"ok": True}
+    except httpx.HTTPStatusError as exc:
+        raise HTTPException(
+            status_code=exc.response.status_code,
+            detail="Failed to update document content in Paperless NGX.",
+        )
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=str(exc))
+
+
+@app.get("/api/ollama/vision-support", tags=["analyze"],
+         dependencies=[Depends(require_perm("can_analyze"))])
+async def ollama_vision_support(request: Request) -> dict:
+    """Return whether the configured Ollama model supports vision."""
+    from backend.providers.ollama_provider import OllamaProvider
+    providers: dict = getattr(request.app.state, "providers", {})
+    provider = providers.get("ollama")
+    if not isinstance(provider, OllamaProvider):
+        return {"supported": None, "reason": "Ollama not configured"}
+    try:
+        supported = await provider.supports_vision()
+        return {"supported": supported}
+    except Exception:
+        return {"supported": None, "reason": "Could not check model capabilities"}
+
+
 @app.get("/api/documents", tags=["documents"])
 async def list_documents(
     request: Request,
@@ -2359,6 +2507,69 @@ async def trigger_reindex(request: Request) -> dict:
     return {"detail": "Vector store cleared. Full reindex started in the background."}
 
 
+class ReindexSinceRequest(BaseModel):
+    modified_after: str  # ISO date string, e.g. "2025-01-15"
+
+
+@app.post("/api/reindex/since", tags=["system"],
+          dependencies=[Depends(require_perm("can_settings"))])
+async def trigger_reindex_since(request: Request, body: ReindexSinceRequest) -> dict:
+    """Re-embed only documents modified on or after the given date.
+
+    Useful for catching up after a period without live webhook re-indexing.
+    Does NOT wipe the existing vector store — only updates changed docs.
+    """
+    vs: ChromaVectorStore | None = getattr(request.app.state, "vector_store", None)
+    pc: PaperlessNGXClient | None = getattr(request.app.state, "paperless_client", None)
+    if not vs or not pc:
+        raise HTTPException(status_code=503, detail="Vector store or Paperless client not available.")
+
+    modified_after = body.modified_after
+    base = pc._base_url
+    headers = pc._headers
+
+    # Collect matching document IDs from Paperless NGX
+    doc_ids: list[int] = []
+    url: str | None = (
+        f"{base}/api/documents/?page_size=100&ordering=-modified"
+        f"&modified__date__gte={modified_after}"
+    )
+    async with httpx.AsyncClient(headers=headers, timeout=30) as client:
+        while url:
+            r = await client.get(url)
+            if r.status_code != 200:
+                raise HTTPException(
+                    status_code=502,
+                    detail=f"Paperless NGX returned {r.status_code} when listing documents.",
+                )
+            data = r.json()
+            doc_ids.extend(d["id"] for d in data.get("results", []))
+            url = data.get("next")
+
+    if not doc_ids:
+        return {"detail": f"No documents modified on or after {modified_after}.", "count": 0}
+
+    oq: OllamaQueue | None = getattr(request.app.state, "ollama_queue", None)
+
+    async def _reindex_batch() -> None:
+        total = len(doc_ids)
+        if oq:
+            oq.set_embedding_progress(total, 0)
+        for i, doc_id in enumerate(doc_ids, 1):
+            await _reindex_document(doc_id, vs, pc)
+            if oq:
+                oq.set_embedding_progress(total, i)
+        if oq:
+            oq.set_embedding_progress(total, total)
+        logger.info("Reindex-since %s complete: %d documents re-indexed.", modified_after, total)
+
+    asyncio.create_task(_reindex_batch())
+    return {
+        "detail": f"Re-indexing {len(doc_ids)} documents modified since {modified_after} in the background.",
+        "count": len(doc_ids),
+    }
+
+
 # ---------------------------------------------------------------------------
 # Webhook: Paperless NGX live re-index on document update
 # ---------------------------------------------------------------------------
@@ -2478,6 +2689,7 @@ async def register_webhook(request: Request) -> dict:
                     "include_document": False,
                     "use_params": False,
                     "as_json": True,
+                    "body": '{"doc_url": "{{doc_url}}"}',
                 },
             }
         ]
@@ -2502,6 +2714,8 @@ async def register_webhook(request: Request) -> dict:
             "actions": actions,
         }
 
+        logger.info("Webhook register — sending payload: %s", payload)
+
         if existing_id is not None:
             r = await client.put(
                 f"{paperless_base}/api/workflows/{existing_id}/",
@@ -2513,15 +2727,31 @@ async def register_webhook(request: Request) -> dict:
             verb = "created"
 
         if r.status_code not in (200, 201):
+            logger.error(
+                "Webhook register — Paperless NGX responded HTTP %d: %s",
+                r.status_code, r.text[:2000],
+            )
             raise HTTPException(
                 status_code=502,
                 detail=f"Paperless NGX workflow {verb} failed: HTTP {r.status_code} — {r.text[:300]}",
             )
 
+        stored = r.json()
+        # Log the stored action/webhook data specifically so we can verify the URL was saved.
+        for action in stored.get("actions", []):
+            logger.info(
+                "Webhook register — stored action id=%s type=%s webhook=%s",
+                action.get("id"), action.get("type"), action.get("webhook"),
+            )
+
     logger.info(
         "Webhook workflow %s (callback: %s).", verb, callback_url
     )
-    return {"detail": f"Workflow '{_PAPERLESS_IQ_WORKFLOW_NAME}' {verb}.", "callback_url": callback_url}
+    return {
+        "detail": f"Workflow '{_PAPERLESS_IQ_WORKFLOW_NAME}' {verb}.",
+        "callback_url": callback_url,
+        "stored_workflow": stored,
+    }
 
 
 @app.post("/api/webhook/paperless", tags=["system"])
@@ -2532,8 +2762,15 @@ async def paperless_webhook(request: Request) -> dict:
     without a Paperless IQ session token. Configure a webhook secret in
     Settings → Automation → Webhook Security to restrict access.
     """
+    logger.info("Webhook received from %s", request.client)
+
     expected = _settings_svc.config.webhook_secret or os.environ.get("WEBHOOK_SECRET", "")
-    if not check_webhook_secret(request, expected):  # checks ?key= param (or X-Webhook-Secret for env-var compat)
+    if not check_webhook_secret(request, expected):
+        logger.warning(
+            "Webhook rejected — key mismatch. URL key=%r, expected length=%d",
+            request.query_params.get("key", "")[:8] + "…",
+            len(expected),
+        )
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
             detail="Invalid or missing webhook secret.",
@@ -2542,20 +2779,71 @@ async def paperless_webhook(request: Request) -> dict:
     vs: ChromaVectorStore | None = getattr(request.app.state, "vector_store", None)
     pc: PaperlessNGXClient | None = getattr(request.app.state, "paperless_client", None)
     if not vs or not pc:
-        # Respond 200 so Paperless NGX doesn't keep retrying
+        logger.warning("Webhook received but vector store or paperless client not available; skipped.")
         return {"detail": "Vector store not available; skipped."}
 
-    try:
-        body = await request.json()
-    except Exception:
-        return {"detail": "Invalid JSON; skipped."}
+    content_type = request.headers.get("content-type", "")
+    doc_id: int | None = None
 
-    doc_id = body.get("document_id") or body.get("id")
+    if "multipart/form-data" in content_type:
+        # Paperless NGX sends multipart when include_document=True.
+        # Parse all form fields and log them; look for a document ID in any field.
+        try:
+            form = await request.form()
+            fields: dict[str, str] = {}
+            for key, val in form.multi_items():
+                if hasattr(val, "read"):
+                    fields[key] = f"<file: {getattr(val, 'filename', '?')}>"
+                else:
+                    fields[key] = str(val)[:500]
+            logger.info("Webhook multipart fields: %s", fields)
+
+            for key in ("document_id", "id", "pk"):
+                if key in form and not hasattr(form[key], "read"):
+                    doc_id = int(form[key])
+                    break
+            if doc_id is None:
+                doc_json_str = form.get("document")
+                if doc_json_str and not hasattr(doc_json_str, "read"):
+                    try:
+                        doc_data = _json.loads(doc_json_str)
+                        doc_id = doc_data.get("id") or doc_data.get("document_id")
+                    except Exception:
+                        pass
+        except Exception:
+            logger.warning("Webhook: failed to parse multipart form.", exc_info=True)
+    else:
+        raw = await request.body()
+        logger.info(
+            "Webhook raw body (%d bytes) Content-Type=%r: %r",
+            len(raw), content_type, raw[:500],
+        )
+        try:
+            body = _json.loads(raw) if raw else {}
+            # Paperless NGX double-encodes the body template as a JSON string.
+            if isinstance(body, str):
+                body = _json.loads(body)
+        except Exception:
+            logger.warning("Webhook received but body is not valid JSON.")
+            return {"detail": "Invalid JSON; skipped."}
+        if not isinstance(body, dict):
+            logger.warning("Webhook body parsed to unexpected type %s: %r", type(body), body)
+            return {"detail": "Unexpected payload type; skipped."}
+        logger.info("Webhook payload: %s", body)
+        raw_id = body.get("document_id") or body.get("id")
+        if raw_id:
+            doc_id = int(raw_id)
+        elif body.get("doc_url"):
+            m = _re.search(r"/documents/(\d+)", body["doc_url"])
+            doc_id = int(m.group(1)) if m else None
+            logger.info("Webhook extracted doc_id=%s from doc_url=%r", doc_id, body["doc_url"])
+
     if not doc_id:
-        logger.warning("Webhook received but no document_id in payload: %s", body)
+        logger.warning("Webhook received but could not extract document_id.")
         return {"detail": "No document_id; skipped."}
 
-    asyncio.create_task(_reindex_document(int(doc_id), vs, pc))
+    logger.info("Webhook queuing reindex of document %s.", doc_id)
+    asyncio.create_task(_reindex_document(doc_id, vs, pc))
     return {"detail": f"Reindex of document {doc_id} queued."}
 
 

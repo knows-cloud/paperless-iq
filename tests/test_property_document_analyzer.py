@@ -16,7 +16,7 @@ import json
 import logging
 from datetime import datetime, timezone
 from typing import Any
-from unittest.mock import AsyncMock, MagicMock
+from unittest.mock import AsyncMock, MagicMock, patch
 from uuid import uuid4
 
 import pytest
@@ -131,16 +131,15 @@ async def test_property_1_llm_input_mode_selection(
     # Feature: paperless-iq, Property 1: LLM input mode selection
 
     For any document submitted for analysis, the content sent to the LLM must be
-    the Full_Document bytes when full-document mode is enabled for that document's
-    type, and the OCR_Text otherwise. The two modes must never be mixed.
+    the Full_Document pages (as rendered images) when full-document mode is enabled
+    for that document's type, and the OCR_Text otherwise.  The two modes must never
+    be mixed.
 
     Validates: Requirements 1.1, 1.2
     """
     config = _config_strategy(default_mode=default_mode)
     provider = _make_mock_provider()
     paperless = _make_mock_paperless(ocr_text=ocr_text, doc_bytes=doc_bytes)
-    # Metadata response includes the content field so analyze() can avoid a
-    # second API call in OCR mode.
     paperless.get_document_metadata = AsyncMock(
         return_value={"document_type": doctype_id, "content": ocr_text}
     )
@@ -152,19 +151,25 @@ async def test_property_1_llm_input_mode_selection(
         provider_name="openai",
     )
 
-    await analyzer.analyze(document_id)
+    # full_document mode now uses vision (PDF → images).  Mock the rendering
+    # layer so arbitrary bytes don't cause pypdfium2 parse errors.
+    _fake_page = b"\xff\xd8\xff" + b"\x00" * 16  # minimal JPEG-like bytes
+    with (
+        patch("backend.analyzer.get_page_count", return_value=1),
+        patch("backend.analyzer.render_pages", return_value=[_fake_page]),
+    ):
+        await analyzer.analyze(document_id)
 
     # Determine expected mode
     expected_mode = config.per_doctype_analysis_mode.get(doctype_id, default_mode) if doctype_id else default_mode
 
     if expected_mode == "full_document":
+        # Vision path: document bytes downloaded and rendered as images.
         paperless.get_document_bytes.assert_called_once_with(document_id)
-        # get_document_ocr_text must NOT be called — bytes mode fetches the file directly
         paperless.get_document_ocr_text.assert_not_called()
-        # The prompt passed to the LLM must contain the decoded bytes content
-        call_args = provider.complete.call_args
-        prompt_sent = call_args[0][0]
-        assert doc_bytes.decode("utf-8", errors="replace") in prompt_sent or len(doc_bytes) == 0
+        # The provider must have been called with images (not decoded text).
+        call_kwargs = provider.complete.call_args[1] if provider.complete.call_args else {}
+        assert call_kwargs.get("images"), "full_document mode must pass images to the provider"
     else:
         # OCR mode: content comes from get_document_metadata(), NOT a separate
         # get_document_ocr_text() call.
@@ -217,9 +222,15 @@ async def test_property_1_per_doctype_mode_overrides_default(
         provider_name="openai",
     )
 
-    await analyzer.analyze(document_id)
+    _fake_page = b"\xff\xd8\xff" + b"\x00" * 16
+    with (
+        patch("backend.analyzer.get_page_count", return_value=1),
+        patch("backend.analyzer.render_pages", return_value=[_fake_page]),
+    ):
+        await analyzer.analyze(document_id)
 
     if per_doctype_mode == "full_document":
+        # Vision path: bytes are downloaded and rendered as images.
         paperless.get_document_bytes.assert_called_once()
         paperless.get_document_ocr_text.assert_not_called()
     else:

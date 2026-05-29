@@ -12,16 +12,31 @@ if TYPE_CHECKING:
 class LLMProvider(Protocol):
     """Unified interface for all LLM provider implementations."""
 
-    async def chat(self, messages: list[dict], max_tokens: int) -> str:
+    async def chat(
+        self,
+        messages: list[dict],
+        max_tokens: int,
+        output_schema: dict | None = None,
+        images: list[bytes] | None = None,
+    ) -> str:
         """Send a multi-turn chat request and return the response text.
 
         ``messages`` is a list of ``{role, content}`` dicts.  A leading entry
         with ``role == "system"`` is extracted and forwarded correctly for each
         provider's API.
+
+        ``output_schema``: JSON Schema dict — enables native structured output.
+        ``images``: JPEG bytes for each page — enables multimodal/vision input.
         """
         ...
 
-    async def complete(self, prompt: str, max_tokens: int) -> str:
+    async def complete(
+        self,
+        prompt: str,
+        max_tokens: int,
+        output_schema: dict | None = None,
+        images: list[bytes] | None = None,
+    ) -> str:
         """Single-turn convenience wrapper — equivalent to chat([user_msg])."""
         ...
 
