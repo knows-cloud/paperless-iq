@@ -7,7 +7,7 @@ import {
 } from "@mantine/core";
 import { api, type PaperlessEntity, type PaperlessCustomField, type DocumentItem, type MetadataSuggestionResponse, type VisionAnalysisResult } from "../api";
 import VisionAnalysisFlow from "../VisionAnalysisFlow";
-import { t } from "../i18n";
+import { useTranslation } from "react-i18next";
 
 const FILTERS_KEY = "piq_analysis_filters";
 
@@ -29,6 +29,7 @@ function loadFilters(): AnalysisFilters {
 function saveFilters(f: AnalysisFilters) { try { localStorage.setItem(FILTERS_KEY, JSON.stringify(f)); } catch {} }
 
 export default function ManualPage() {
+  const { t } = useTranslation();
   const [filters, setFilters] = useState<AnalysisFilters>(loadFilters);
   const [page, setPage] = useState(1);
   const [shouldSearch, setShouldSearch] = useState(false);

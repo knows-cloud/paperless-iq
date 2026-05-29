@@ -2,6 +2,8 @@ import {
   Select, Paper, Text, Divider, Stack, Group, ColorSwatch, Tooltip,
   SegmentedControl, SimpleGrid, Autocomplete, Anchor,
 } from "@mantine/core";
+import { useTranslation } from "react-i18next";
+import { AVAILABLE_LANGS } from "../../i18n";
 import { NAV_ICON_PALETTE, NAV_ICON_NAMES, toPascal } from "./nav-icon-palette";
 
 const MANTINE_COLORS = [
@@ -19,7 +21,6 @@ const NAV_ITEMS = [
 ];
 
 interface Props {
-  s: Record<string, unknown>;
   mantineColor: string;
   setMantineColor: (v: string) => void;
   colorScheme: string;
@@ -61,13 +62,13 @@ function NavIconInput({
 }
 
 export function AppearanceTab({
-  s,
   mantineColor, setMantineColor,
   colorScheme, setColorScheme,
   themeFont, setThemeFont,
   themeFontSize, setThemeFontSize,
   themeNavIcons, setThemeNavIcons,
 }: Props) {
+  const { i18n } = useTranslation();
   return (
     <Stack gap="md">
       <Paper withBorder p="md" radius="md">
@@ -169,16 +170,10 @@ export function AppearanceTab({
         <Text fw={600} mb="md">Language</Text>
         <Select
           label="Interface Language"
-          name="ui_language"
-          defaultValue={String(s.ui_language ?? "en")}
-          description="Language for the Paperless IQ user interface. Refresh the page after saving."
-          data={[
-            { value: "en", label: "English"  },
-            { value: "de", label: "Deutsch"  },
-            { value: "fr", label: "Français" },
-            { value: "es", label: "Español"  },
-            { value: "it", label: "Italiano" },
-          ]}
+          value={i18n.language}
+          description="Changes apply immediately."
+          data={AVAILABLE_LANGS.map(l => ({ value: l.code, label: l.label }))}
+          onChange={v => { if (v) i18n.changeLanguage(v); }}
         />
       </Paper>
     </Stack>

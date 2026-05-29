@@ -4,9 +4,10 @@ import {
   Box,
 } from "@mantine/core";
 import { api } from "../api";
-import { t } from "../i18n";
+import { useTranslation } from "react-i18next";
 
 export default function ProcessingPage() {
+  const { t } = useTranslation();
   const status = useQuery({ queryKey: ["status"], queryFn: api.getStatus, refetchInterval: 3000, retry: false });
   const tracking = useQuery({ queryKey: ["tracking"], queryFn: api.getTrackingStats, refetchInterval: 10000, retry: false });
   const d = status.data;

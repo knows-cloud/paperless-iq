@@ -2,7 +2,7 @@ import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { useState, useEffect } from "react";
 import { Title, Stack, Group, Button, Text, Tabs, Center, Loader, Alert } from "@mantine/core";
 import { api, type PaperlessEntity, type PaperlessCustomField, type ConnectionTestResult } from "../api";
-import { t } from "../i18n";
+import { useTranslation } from "react-i18next";
 import { ConnectionTab } from "./settings/ConnectionTab";
 import { AIProviderTab } from "./settings/AIProviderTab";
 import { PromptsFieldsTab } from "./settings/PromptsFieldsTab";
@@ -27,6 +27,7 @@ const SETTINGS_TABS: Array<{ id: SettingsTab; label: string }> = [
 ];
 
 export default function SettingsPage() {
+  const { t } = useTranslation();
   const qc = useQueryClient();
   const { data, isLoading, error } = useQuery({ queryKey: ["settings"], queryFn: api.getSettings });
   const tags = useQuery({ queryKey: ["tags"], queryFn: api.getTags, retry: false });
@@ -431,7 +432,6 @@ export default function SettingsPage() {
 
           <Tabs.Panel value="appearance" keepMounted={false}>
             <AppearanceTab
-              s={s}
               mantineColor={mantineColor}
               setMantineColor={setMantineColor}
               colorScheme={colorScheme}

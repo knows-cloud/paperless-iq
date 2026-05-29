@@ -5,7 +5,7 @@ import {
   TextInput, Select, Table, Box, Pagination, Alert,
 } from "@mantine/core";
 import { api } from "../api";
-import { t } from "../i18n";
+import { useTranslation } from "react-i18next";
 
 const PAGE_SIZE = 50;
 
@@ -41,6 +41,7 @@ function actionBadgeColor(action: string): string {
 }
 
 export default function AuditPage() {
+  const { t } = useTranslation();
   const [page, setPage] = useState(1);
   const [docId, setDocId] = useState("");
   const [docTitle, setDocTitle] = useState("");

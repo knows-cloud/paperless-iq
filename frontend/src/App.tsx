@@ -9,7 +9,7 @@ import { NAV_ICON_PALETTE, toPascal } from "./pages/settings/nav-icon-palette";
 import { useTheme } from "./ThemeProvider";
 import { PiqLogo } from "./PiqLogo";
 import StatusPanel from "./StatusPanel";
-import { t } from "./i18n";
+import { useTranslation } from "react-i18next";
 import SettingsPage from "./pages/SettingsPage";
 import QueuePage from "./pages/QueuePage";
 import ManualPage from "./pages/ManualPage";
@@ -40,6 +40,7 @@ function getPageFromHash(): Page {
 }
 
 export default function App() {
+  const { t } = useTranslation();
   const [page, setPage] = useState<Page>(getPageFromHash);
   const [mobileOpened, { toggle: toggleMobile, close: closeMobile }] = useDisclosure();
   const theme = useTheme();

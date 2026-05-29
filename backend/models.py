@@ -169,7 +169,6 @@ class PaperlessIQConfig(BaseModel):
 
     # Localization
     target_language: str | None = None
-    ui_language: str = "en"
 
     # Vision analysis
     vision_max_pages_warning: int = 5  # warn user (Keep/Limit/Cancel) when page count exceeds this

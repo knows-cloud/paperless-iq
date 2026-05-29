@@ -14,7 +14,7 @@ import {
   Box, Alert,
 } from "@mantine/core";
 import { api, type VisionAnalysisResult } from "./api";
-import { t } from "./i18n";
+import { useTranslation } from "react-i18next";
 
 interface Props {
   documentId: number;
@@ -44,6 +44,7 @@ export default function VisionAnalysisFlow({
   disabled = false,
   ollamaVisionWarning = false,
 }: Props) {
+  const { t } = useTranslation();
   const [step, setStep] = useState<FlowStep>("idle");
   const [includeContent, setIncludeContent] = useState(false);
   const [pageCount, setPageCount] = useState<number | null>(null);

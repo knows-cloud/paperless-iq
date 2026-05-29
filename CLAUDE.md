@@ -65,6 +65,7 @@ frontend/src/
   pages/settings/*.tsx            — 8 tab components (pure display; exceptions: MemoriesTab + AccessControlTab own their CRUD)
   components/MarkdownText.tsx     — markdown + citation renderer (used by DiscoveryPage)
   PermissionsContext.tsx          — React context + usePermissions() hook; populated from /api/piq-users/me
+  locales/{en,de,fr,es,it}/translation.json — i18n strings (react-i18next)
 ```
 
 ### Key invariants
@@ -85,6 +86,8 @@ frontend/src/
 | `AsyncSessionLocal()` in a route handler | `Depends(get_session)` |
 | Define `METADATA_FIELDS` in a tab component | Import from `settings/constants.ts` |
 | `useQuery` / `useMutation` in a tab component | Lift to `SettingsPage.tsx` (except MemoriesTab and AccessControlTab CRUD) |
+| `import { t } from "../i18n"` | `const { t } = useTranslation()` (react-i18next hook) |
+| Add a new UI string in one language | Add to **all 5** `locales/<lang>/translation.json` files; run `npm run check:i18n` |
 | Two separate automation loops | `_automation_loop(batch_size=None|N)` |
 | Duplicate pagination loop for Paperless NGX lists | `_paperless_list(entity, extra_fields=None)` |
 | `get_document_ocr_text()` inside `analyze()` | `doc_meta.get("content", "")` |
@@ -95,6 +98,7 @@ frontend/src/
 ## Before You Commit
 
 1. `npx tsc --noEmit` from `frontend/` — zero errors required
-2. `uv run pytest` — must not introduce new failures 
-3. If you changed a design decision, update `docs/DECISIONS.md`
-4. If you changed the module structure, update `docs/ARCHITECTURE.md` 
+2. `uv run pytest` — must not introduce new failures
+3. `npm run check:i18n` from `frontend/` — all 5 locale files must have identical key sets
+4. If you changed a design decision, update `docs/DECISIONS.md`
+5. If you changed the module structure, update `docs/ARCHITECTURE.md`
