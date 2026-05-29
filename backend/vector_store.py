@@ -312,6 +312,49 @@ class ChromaVectorStore:
         """Return the number of chunks in the store."""
         return self._collection.count()
 
+    @property
+    def embed_concurrency(self) -> int:
+        """The current embedding concurrency limit (read-only)."""
+        return self._embed_concurrency
+
+    def set_embed_provider(self, provider: LLMProvider, concurrency: int) -> None:
+        """Swap the embedding provider and rebuild the semaphore if the
+        concurrency limit changed (e.g. switching Ollama ↔ Bedrock)."""
+        self._llm = provider
+        if self._embed_concurrency != concurrency:
+            self._embed_sem = asyncio.Semaphore(concurrency)
+            self._embed_concurrency = concurrency
+
+    async def embed_health_check(self) -> bool:
+        """Return True if the embedding provider is reachable."""
+        return await self._llm.health_check()
+
+    async def get_indexed_chunk_counts(self) -> tuple[dict[int, int], dict[int, int]]:
+        """Enumerate stored chunks and return per-document counts.
+
+        Returns ``(per_doc_chunk_count, per_doc_expected_total)`` where the
+        expected total comes from each chunk's ``total_chunks`` metadata. Used
+        to detect partially-indexed documents that need re-embedding.
+        """
+        loop = asyncio.get_running_loop()
+        existing = await loop.run_in_executor(
+            None,
+            lambda: self._collection.get(include=["metadatas"]),
+        )
+        doc_chunk_counts: dict[int, int] = {}
+        doc_expected_chunks: dict[int, int] = {}
+        metadatas = existing.get("metadatas") or []
+        for i, chunk_id in enumerate(existing.get("ids", [])):
+            try:
+                doc_id_part = int(str(chunk_id).split("_")[0])
+                doc_chunk_counts[doc_id_part] = doc_chunk_counts.get(doc_id_part, 0) + 1
+                meta = metadatas[i] if i < len(metadatas) else {}
+                if meta and "total_chunks" in meta:
+                    doc_expected_chunks[doc_id_part] = int(meta["total_chunks"])
+            except (ValueError, IndexError):
+                pass
+        return doc_chunk_counts, doc_expected_chunks
+
     async def query_chunks(self, text: str, top_n_chunks: int) -> list[dict[str, Any]]:
         """Return the top-N most relevant chunks (not grouped by document).
 

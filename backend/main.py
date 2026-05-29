@@ -314,23 +314,8 @@ async def _background_index(
         # Also checks chunk completeness: if a doc has fewer chunks than expected, re-index it
         already_indexed: set[int] = set()
         try:
-            loop = asyncio.get_running_loop()
-            existing = await loop.run_in_executor(
-                None,
-                lambda: vector_store._collection.get(include=["metadatas"])
-            )
             # Count chunks per document and check against expected total
-            doc_chunk_counts: dict[int, int] = {}
-            doc_expected_chunks: dict[int, int] = {}
-            for i, chunk_id in enumerate(existing.get("ids", [])):
-                try:
-                    doc_id_part = int(str(chunk_id).split("_")[0])
-                    doc_chunk_counts[doc_id_part] = doc_chunk_counts.get(doc_id_part, 0) + 1
-                    meta = existing.get("metadatas", [])[i] if existing.get("metadatas") else {}
-                    if meta and "total_chunks" in meta:
-                        doc_expected_chunks[doc_id_part] = int(meta["total_chunks"])
-                except (ValueError, IndexError):
-                    pass
+            doc_chunk_counts, doc_expected_chunks = await vector_store.get_indexed_chunk_counts()
 
             incomplete = 0
             for doc_id_part, count in doc_chunk_counts.items():
@@ -583,7 +568,7 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
             app.state.vector_store = vector_store
             logger.info(
                 "Vector store initialized (ChromaDB, embed_provider: %s, concurrency: %d).",
-                ep_name, vector_store._embed_concurrency,
+                ep_name, vector_store.embed_concurrency,
             )
         except Exception:
             logger.warning("Could not initialize vector store — smart entity selection disabled.", exc_info=True)
@@ -2346,11 +2331,9 @@ async def update_settings(request: Request, body: dict[str, Any] = Body(...)) ->
                     new_ep_name = getattr(new_config, "embed_provider", "ollama")
                     new_concurrency = _embed_concurrency_for(new_ep_name)
                     if vs is not None:
-                        vs._llm = new_embed
-                        # Update semaphore if concurrency changed (e.g. Ollama ↔ Bedrock)
-                        if vs._embed_concurrency != new_concurrency:
-                            vs._embed_sem = asyncio.Semaphore(new_concurrency)
-                            vs._embed_concurrency = new_concurrency
+                        # Swap embed provider; rebuilds the semaphore if the
+                        # concurrency limit changed (e.g. Ollama ↔ Bedrock)
+                        vs.set_embed_provider(new_embed, new_concurrency)
                     else:
                         vs = ChromaVectorStore(
                             llm_provider=new_embed,
@@ -2519,9 +2502,9 @@ async def get_status(request: Request) -> dict:
             queue.update_health_cache("llm", llm_online)
 
         vs = getattr(request.app.state, "vector_store", None)
-        if vs and hasattr(vs, "_llm"):
+        if vs is not None:
             try:
-                embed_online = await asyncio.wait_for(vs._llm.health_check(), timeout=3.0)
+                embed_online = await asyncio.wait_for(vs.embed_health_check(), timeout=3.0)
             except Exception:
                 pass
         if queue:
