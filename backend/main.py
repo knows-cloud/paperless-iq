@@ -569,6 +569,9 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
                 chunk_strategy=config.chunk_strategy,
                 overfetch_multiplier=config.search_overfetch_multiplier,
                 min_score=config.search_min_score,
+                hnsw_search_ef=config.chroma_hnsw_search_ef,
+                hnsw_m=config.chroma_hnsw_m,
+                hnsw_construction_ef=config.chroma_hnsw_construction_ef,
             )
             app.state.vector_store = vector_store
             logger.info(
@@ -2349,6 +2352,9 @@ async def update_settings(request: Request, body: dict[str, Any] = Body(...)) ->
                             chunk_strategy=new_config.chunk_strategy,
                             overfetch_multiplier=new_config.search_overfetch_multiplier,
                             min_score=new_config.search_min_score,
+                            hnsw_search_ef=new_config.chroma_hnsw_search_ef,
+                            hnsw_m=new_config.chroma_hnsw_m,
+                            hnsw_construction_ef=new_config.chroma_hnsw_construction_ef,
                         )
                         request.app.state.vector_store = vs
                     logger.info(

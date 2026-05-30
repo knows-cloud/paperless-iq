@@ -81,12 +81,13 @@ def _make_store() -> ChromaVectorStore:
     store._chunk_strategy = "char"
     store._overfetch_multiplier = 5
     store._min_score = 0.0
+    store._collection_config = {"hnsw": {"space": "cosine"}}
     store._embed_sem = asyncio.Semaphore(1)
     store._embed_concurrency = 1
     store._client = chromadb.EphemeralClient()
     store._collection = store._client.get_or_create_collection(
-        name="test",
-        metadata={"hnsw:space": "cosine"},
+        name="test_collection",
+        configuration=store._collection_config,
     )
     return store
 

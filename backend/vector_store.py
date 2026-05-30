@@ -124,6 +124,9 @@ class ChromaVectorStore:
         chunk_strategy: str = "char",
         overfetch_multiplier: int = 5,
         min_score: float = 0.0,
+        hnsw_search_ef: int = 100,
+        hnsw_m: int = 16,
+        hnsw_construction_ef: int = 100,
     ) -> None:
         self._llm = llm_provider
         self._chunk_size = chunk_size
@@ -131,12 +134,23 @@ class ChromaVectorStore:
         self._chunk_strategy = chunk_strategy
         self._overfetch_multiplier = overfetch_multiplier
         self._min_score = min_score
+        # HNSW index configuration. ef_search is query-time; max_neighbors (M)
+        # and ef_construction are build-time — they only take effect on a fresh
+        # collection, so changing them requires reset()/reindex.
+        self._collection_config = {
+            "hnsw": {
+                "space": "cosine",
+                "ef_search": hnsw_search_ef,
+                "max_neighbors": hnsw_m,
+                "ef_construction": hnsw_construction_ef,
+            }
+        }
         self._embed_sem = asyncio.Semaphore(embed_concurrency)
         self._embed_concurrency = embed_concurrency
         self._client = chromadb.PersistentClient(path=persist_directory)
         self._collection = self._client.get_or_create_collection(
             name=collection_name,
-            metadata={"hnsw:space": "cosine"},
+            configuration=self._collection_config,
         )
 
     async def _embed(self, text: str) -> list[float]:
@@ -488,7 +502,7 @@ class ChromaVectorStore:
             None,
             lambda: self._client.get_or_create_collection(
                 name=collection_name,
-                metadata={"hnsw:space": "cosine"},
+                configuration=self._collection_config,
             ),
         )
         logger.info("Vector store collection '%s' reset (all vectors cleared).", collection_name)
