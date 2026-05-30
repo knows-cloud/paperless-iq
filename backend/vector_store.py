@@ -10,6 +10,7 @@ import asyncio
 import json
 import logging
 import os
+import re
 from typing import Any
 
 import chromadb
@@ -31,8 +32,11 @@ def _deeplink(doc_id: int) -> str:
     return f"{base}/documents/{doc_id}/details"
 
 
+_SENTENCE_BOUNDARY = re.compile(r"(?<=[.!?])\s+")
+
+
 def _chunk_text(text: str, chunk_size: int, overlap: int) -> list[str]:
-    """Split text into overlapping chunks.
+    """Split text into overlapping character chunks.
 
     Returns at least one chunk (the full text if shorter than chunk_size).
     """
@@ -47,6 +51,57 @@ def _chunk_text(text: str, chunk_size: int, overlap: int) -> list[str]:
         chunks.append(text[start:end])
         start += chunk_size - overlap
     return chunks
+
+
+def _chunk_text_sentences(text: str, chunk_size: int, overlap: int) -> list[str]:
+    """Split on sentence boundaries, then pack sentences up to chunk_size.
+
+    Avoids mid-word/mid-sentence cuts. Consecutive chunks overlap by carrying
+    trailing sentences totalling up to ``overlap`` characters. A single
+    sentence longer than chunk_size falls back to character splitting.
+    """
+    if not text:
+        return []
+    if len(text) <= chunk_size:
+        return [text]
+
+    sentences = [s.strip() for s in _SENTENCE_BOUNDARY.split(text) if s.strip()]
+    chunks: list[str] = []
+    current: list[str] = []
+    current_len = 0
+
+    for sent in sentences:
+        if len(sent) > chunk_size:
+            # Oversized single sentence — flush, then char-split it.
+            if current:
+                chunks.append(" ".join(current))
+                current, current_len = [], 0
+            chunks.extend(_chunk_text(sent, chunk_size, overlap))
+            continue
+        if current and current_len + len(sent) + 1 > chunk_size:
+            chunks.append(" ".join(current))
+            # Carry trailing sentences (up to `overlap` chars) into the next chunk.
+            carry: list[str] = []
+            carry_len = 0
+            for prev in reversed(current):
+                if carry_len + len(prev) + 1 > overlap:
+                    break
+                carry.insert(0, prev)
+                carry_len += len(prev) + 1
+            current, current_len = carry, carry_len
+        current.append(sent)
+        current_len += len(sent) + 1
+
+    if current:
+        chunks.append(" ".join(current))
+    return chunks
+
+
+def _chunk(text: str, chunk_size: int, overlap: int, strategy: str) -> list[str]:
+    """Dispatch to the configured chunking strategy."""
+    if strategy == "sentence":
+        return _chunk_text_sentences(text, chunk_size, overlap)
+    return _chunk_text(text, chunk_size, overlap)
 
 
 class ChromaVectorStore:
@@ -66,10 +121,16 @@ class ChromaVectorStore:
         chunk_size: int = DEFAULT_CHUNK_SIZE,
         chunk_overlap: int = DEFAULT_CHUNK_OVERLAP,
         embed_concurrency: int = 1,
+        chunk_strategy: str = "char",
+        overfetch_multiplier: int = 5,
+        min_score: float = 0.0,
     ) -> None:
         self._llm = llm_provider
         self._chunk_size = chunk_size
         self._chunk_overlap = chunk_overlap
+        self._chunk_strategy = chunk_strategy
+        self._overfetch_multiplier = overfetch_multiplier
+        self._min_score = min_score
         self._embed_sem = asyncio.Semaphore(embed_concurrency)
         self._embed_concurrency = embed_concurrency
         self._client = chromadb.PersistentClient(path=persist_directory)
@@ -87,7 +148,7 @@ class ChromaVectorStore:
         # First delete any existing chunks for this document
         await self.delete(doc_id)
 
-        chunks = _chunk_text(text, self._chunk_size, self._chunk_overlap)
+        chunks = _chunk(text, self._chunk_size, self._chunk_overlap, self._chunk_strategy)
         if not chunks:
             return
 
@@ -181,7 +242,7 @@ class ChromaVectorStore:
             return []
 
         # Fetch more chunks than needed to ensure we get top_n unique documents
-        n_chunks = min(top_n * 5, count)
+        n_chunks = min(top_n * self._overfetch_multiplier, count)
         results = await loop.run_in_executor(
             None,
             lambda: self._collection.query(
@@ -227,6 +288,8 @@ class ChromaVectorStore:
         search_results: list[SearchResult] = []
         for doc_id, info in sorted(seen_docs.items(), key=lambda x: x[1]["distance"]):
             score = 1.0 - (info["distance"] / 2.0)
+            if score < self._min_score:
+                continue
             search_results.append(SearchResult(
                 document_id=doc_id,
                 document_title=info["title"],
@@ -254,7 +317,7 @@ class ChromaVectorStore:
         if count == 0:
             return {"tags": set(), "correspondents": set(), "document_types": set()}
 
-        n_chunks = min(top_n * 5, count)
+        n_chunks = min(top_n * self._overfetch_multiplier, count)
         results = await loop.run_in_executor(
             None,
             lambda: self._collection.query(
@@ -390,6 +453,8 @@ class ChromaVectorStore:
             doc_id = meta.get("document_id", 0)
             dist = distances[i] if i < len(distances) else 1.0
             score = 1.0 - (dist / 2.0)
+            if score < self._min_score:
+                continue
             chunks.append({
                 "document_id": doc_id,
                 "title": meta.get("title", ""),

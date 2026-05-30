@@ -564,6 +564,11 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
                 llm_provider=embed_provider,
                 persist_directory="/data/chroma",
                 embed_concurrency=_embed_concurrency_for(ep_name),
+                chunk_size=config.chunk_size,
+                chunk_overlap=config.chunk_overlap,
+                chunk_strategy=config.chunk_strategy,
+                overfetch_multiplier=config.search_overfetch_multiplier,
+                min_score=config.search_min_score,
             )
             app.state.vector_store = vector_store
             logger.info(
@@ -2339,6 +2344,11 @@ async def update_settings(request: Request, body: dict[str, Any] = Body(...)) ->
                             llm_provider=new_embed,
                             persist_directory="/data/chroma",
                             embed_concurrency=new_concurrency,
+                            chunk_size=new_config.chunk_size,
+                            chunk_overlap=new_config.chunk_overlap,
+                            chunk_strategy=new_config.chunk_strategy,
+                            overfetch_multiplier=new_config.search_overfetch_multiplier,
+                            min_score=new_config.search_min_score,
                         )
                         request.app.state.vector_store = vs
                     logger.info(
