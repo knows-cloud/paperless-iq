@@ -602,14 +602,14 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
         if vector_store and paperless_client:
             asyncio.create_task(_background_index(paperless_client, vector_store, config, ollama_queue))
 
-        # Initialise long-term memory store (same embed provider + Chroma dir as vector store)
+        # Initialise long-term memory store (matches the configured vector backend)
         try:
-            from backend.memory_store import MemoryStore
-            app.state.memory_store = MemoryStore(
-                llm_provider=embed_provider,
-                persist_directory="/data/chroma",
+            from backend.memory_store import make_memory_store
+            app.state.memory_store = make_memory_store(config, embed_provider)
+            logger.info(
+                "Memory store initialised (backend: %s, embed_provider: %s).",
+                config.vector_store_backend, ep_name,
             )
-            logger.info("Memory store initialised (embed_provider: %s).", ep_name)
         except Exception:
             logger.warning("Could not initialise memory store.", exc_info=True)
 
