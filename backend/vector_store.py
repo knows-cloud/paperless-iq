@@ -16,7 +16,7 @@ from typing import Any
 import chromadb
 
 from backend.models import SearchResult
-from backend.protocols import LLMProvider
+from backend.protocols import LLMProvider, Reranker
 
 logger = logging.getLogger(__name__)
 
@@ -127,6 +127,8 @@ class ChromaVectorStore:
         hnsw_search_ef: int = 100,
         hnsw_m: int = 16,
         hnsw_construction_ef: int = 100,
+        reranker: Reranker | None = None,
+        rerank_top_k: int = 20,
     ) -> None:
         self._llm = llm_provider
         self._chunk_size = chunk_size
@@ -134,6 +136,8 @@ class ChromaVectorStore:
         self._chunk_strategy = chunk_strategy
         self._overfetch_multiplier = overfetch_multiplier
         self._min_score = min_score
+        self._reranker = reranker
+        self._rerank_top_k = rerank_top_k
         # HNSW index configuration. ef_search is query-time; max_neighbors (M)
         # and ef_construction are build-time — they only take effect on a fresh
         # collection, so changing them requires reset()/reindex.
@@ -244,10 +248,28 @@ class ChromaVectorStore:
             except Exception:
                 pass
 
+    def _candidate_count(self, top_n: int) -> int:
+        """How many chunks to fetch from the vector index before post-processing.
+
+        With a reranker, pull the top rerank_top_k candidates; otherwise
+        over-fetch to surface enough unique documents.
+        """
+        if self._reranker is not None:
+            return max(self._rerank_top_k, top_n)
+        return top_n * self._overfetch_multiplier
+
+    async def _maybe_rerank(self, query: str, passages: list[str]) -> list[float] | None:
+        """Return per-passage rerank scores in [0, 1], or None when no reranker
+        is configured (callers then fall back to distance-derived scores)."""
+        if self._reranker is None or not passages:
+            return None
+        return await self._reranker.rerank(query, passages)
+
     async def query(self, text: str, top_n: int) -> list[SearchResult]:
         """Find the most relevant document chunks and group by document.
 
         Returns up to top_n documents, each with the best matching passage.
+        When a reranker is configured, candidates are re-scored before grouping.
         """
         embedding = await self._embed(text)
         loop = asyncio.get_running_loop()
@@ -255,8 +277,7 @@ class ChromaVectorStore:
         if count == 0:
             return []
 
-        # Fetch more chunks than needed to ensure we get top_n unique documents
-        n_chunks = min(top_n * self._overfetch_multiplier, count)
+        n_chunks = min(self._candidate_count(top_n), count)
         results = await loop.run_in_executor(
             None,
             lambda: self._collection.query(
@@ -269,13 +290,18 @@ class ChromaVectorStore:
         if not results["ids"] or not results["ids"][0]:
             return []
 
-        # Group chunks by document, keeping the best (lowest distance) chunk per doc
-        seen_docs: dict[int, dict[str, Any]] = {}
         ids = results["ids"][0]
         documents = results["documents"][0] if results["documents"] else []
         metadatas = results["metadatas"][0] if results["metadatas"] else []
         distances = results["distances"][0] if results["distances"] else []
+        passages = [documents[i] if i < len(documents) else "" for i in range(len(ids))]
 
+        # Per-chunk relevance in [0, 1]: from the reranker when enabled, else
+        # derived from the vector distance (1 - dist/2).
+        rerank_scores = await self._maybe_rerank(text, passages)
+
+        # Group chunks by document, keeping the highest-scoring chunk per doc.
+        seen_docs: dict[int, dict[str, Any]] = {}
         for i, chunk_id in enumerate(ids):
             meta = metadatas[i] if i < len(metadatas) else {}
             doc_id = meta.get("document_id", 0)
@@ -286,29 +312,30 @@ class ChromaVectorStore:
                 except (ValueError, IndexError):
                     continue
 
-            dist = distances[i] if i < len(distances) else 1.0
-            passage = documents[i] if i < len(documents) else ""
+            if rerank_scores is not None:
+                score = rerank_scores[i]
+            else:
+                dist = distances[i] if i < len(distances) else 1.0
+                score = 1.0 - (dist / 2.0)
 
-            # Keep the best (lowest distance) chunk per document.
             # Process all fetched chunks — don't break early — so every unique
             # document gets its best chunk recorded before we rank and slice.
-            if doc_id not in seen_docs or dist < seen_docs[doc_id]["distance"]:
+            if doc_id not in seen_docs or score > seen_docs[doc_id]["score"]:
                 seen_docs[doc_id] = {
-                    "distance": dist,
-                    "passage": passage,
+                    "score": score,
+                    "passage": passages[i],
                     "title": meta.get("title", ""),
                 }
 
         search_results: list[SearchResult] = []
-        for doc_id, info in sorted(seen_docs.items(), key=lambda x: x[1]["distance"]):
-            score = 1.0 - (info["distance"] / 2.0)
-            if score < self._min_score:
+        for doc_id, info in sorted(seen_docs.items(), key=lambda x: x[1]["score"], reverse=True):
+            if info["score"] < self._min_score:
                 continue
             search_results.append(SearchResult(
                 document_id=doc_id,
                 document_title=info["title"],
                 passage=info["passage"] or "",
-                score=score,
+                score=info["score"],
                 deeplink_url=_deeplink(doc_id),
             ))
 
@@ -461,22 +488,33 @@ class ChromaVectorStore:
         documents = results["documents"][0] if results["documents"] else []
         metadatas = results["metadatas"][0] if results["metadatas"] else []
         distances = results["distances"][0] if results["distances"] else []
+        passages = [documents[i] if i < len(documents) else "" for i in range(len(ids))]
+
+        rerank_scores = await self._maybe_rerank(text, passages)
 
         for i, chunk_id in enumerate(ids):
             meta = metadatas[i] if i < len(metadatas) else {}
             doc_id = meta.get("document_id", 0)
-            dist = distances[i] if i < len(distances) else 1.0
-            score = 1.0 - (dist / 2.0)
+            if rerank_scores is not None:
+                score = rerank_scores[i]
+            else:
+                dist = distances[i] if i < len(distances) else 1.0
+                score = 1.0 - (dist / 2.0)
             if score < self._min_score:
                 continue
             chunks.append({
                 "document_id": doc_id,
                 "title": meta.get("title", ""),
-                "passage": documents[i] if i < len(documents) else "",
+                "passage": passages[i],
                 "score": score,
                 "deeplink_url": _deeplink(doc_id),
                 "chunk_index": meta.get("chunk_index", 0),
             })
+
+        # Reranking reorders relevance, so sort by score; vector order is already
+        # distance-sorted, so leave it untouched when no reranker is active.
+        if rerank_scores is not None:
+            chunks.sort(key=lambda c: c["score"], reverse=True)
 
         return chunks
 

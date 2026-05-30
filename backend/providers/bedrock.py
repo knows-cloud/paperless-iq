@@ -71,6 +71,16 @@ class BedrockProvider:
     def _bedrock_client(self) -> Any:
         return boto3.client("bedrock", **self._boto_kwargs())
 
+    @property
+    def region(self) -> str:
+        """The configured AWS region (used to build Rerank model ARNs)."""
+        return self._region
+
+    def rerank_client(self) -> Any:
+        """Return a bedrock-agent-runtime client for the Rerank API, built from
+        the same credentials as the runtime client."""
+        return boto3.client("bedrock-agent-runtime", **self._boto_kwargs())
+
     async def chat(
         self,
         messages: list[dict],

@@ -60,6 +60,7 @@ from backend.orm_models import (
     UserPermissionsORM,
 )
 from backend.provider_registry import build_providers
+from backend.rerankers import build_reranker
 from backend.rate_limiter import RateLimiter
 from backend.settings_service import SettingsService
 from backend.vector_store import ChromaVectorStore
@@ -572,6 +573,8 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
                 hnsw_search_ef=config.chroma_hnsw_search_ef,
                 hnsw_m=config.chroma_hnsw_m,
                 hnsw_construction_ef=config.chroma_hnsw_construction_ef,
+                reranker=build_reranker(config, providers),
+                rerank_top_k=config.rerank_top_k,
             )
             app.state.vector_store = vector_store
             logger.info(
@@ -2355,6 +2358,8 @@ async def update_settings(request: Request, body: dict[str, Any] = Body(...)) ->
                             hnsw_search_ef=new_config.chroma_hnsw_search_ef,
                             hnsw_m=new_config.chroma_hnsw_m,
                             hnsw_construction_ef=new_config.chroma_hnsw_construction_ef,
+                            reranker=build_reranker(new_config, providers),
+                            rerank_top_k=new_config.rerank_top_k,
                         )
                         request.app.state.vector_store = vs
                     logger.info(

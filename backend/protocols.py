@@ -50,6 +50,15 @@ class LLMProvider(Protocol):
 
 
 @runtime_checkable
+class Reranker(Protocol):
+    """Re-scores (query, passage) pairs after the vector store returns candidates."""
+
+    async def rerank(self, query: str, passages: list[str]) -> list[float]:
+        """Return a relevance score in ``[0, 1]`` per passage, in input order."""
+        ...
+
+
+@runtime_checkable
 class VectorStore(Protocol):
     """Unified interface for vector store backends."""
 
