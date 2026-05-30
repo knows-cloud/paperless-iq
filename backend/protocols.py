@@ -97,7 +97,7 @@ class VectorStore(Protocol):
         omit documents carrying a given tag (e.g. the inbox tag)."""
         ...
 
-    def count(self) -> int:
+    async def count(self) -> int:
         """Return the number of stored vectors (chunks)."""
         ...
 

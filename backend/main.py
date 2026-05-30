@@ -273,7 +273,7 @@ async def _background_index(
     and upserts those not already in the store.
     """
     try:
-        existing_count = vector_store.count()
+        existing_count = await vector_store.count()
         logger.info("Vector store has %d chunks. Starting background index...", existing_count)
 
         base = paperless_client._base_url
@@ -2549,7 +2549,7 @@ async def get_status(request: Request) -> dict:
     vs_store = getattr(request.app.state, "vector_store", None)
     if vs_store:
         try:
-            embedded_count = vs_store.count()
+            embedded_count = await vs_store.count()
         except Exception:
             pass
     # Count total documents in Paperless NGX (excluding inbox tag)

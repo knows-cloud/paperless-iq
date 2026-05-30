@@ -13,6 +13,8 @@ import os
 import re
 from typing import Any
 
+import uuid
+
 import chromadb
 
 from backend.models import SearchResult
@@ -21,6 +23,9 @@ from backend.protocols import LLMProvider, Reranker
 logger = logging.getLogger(__name__)
 
 PAPERLESS_URL = os.getenv("PAPERLESS_URL", "http://localhost:8000")
+
+# Stable namespace for deriving Qdrant point UUIDs from "{doc_id}_{chunk_index}".
+_QDRANT_POINT_NAMESPACE = uuid.UUID("6f9619ff-8b86-d011-b42d-00cf4fc964ff")
 
 # Chunking defaults
 DEFAULT_CHUNK_SIZE = 1000  # characters per chunk
@@ -104,6 +109,104 @@ def _chunk(text: str, chunk_size: int, overlap: int, strategy: str) -> list[str]
     return _chunk_text(text, chunk_size, overlap)
 
 
+def _build_embed_prefix(metadata: dict) -> str:
+    """Build the metadata prefix prepended to every chunk before embedding.
+
+    Captures WHO/WHAT the document is (title, type, correspondent, tags,
+    custom fields) so the vector reflects identity, not just raw OCR content.
+    Shared by every backend so the embedded text is identical across stores.
+    """
+    prefix_parts: list[str] = []
+    if metadata.get("title"):
+        prefix_parts.append(f"Title: {metadata['title']}")
+    if metadata.get("document_type"):
+        prefix_parts.append(f"Type: {metadata['document_type']}")
+    if metadata.get("correspondent"):
+        prefix_parts.append(f"From: {metadata['correspondent']}")
+    tags = metadata.get("tags") or []
+    if isinstance(tags, list) and any(tags):
+        prefix_parts.append(f"Tags: {', '.join(t for t in tags if t)}")
+    for cf_name, cf_value in (metadata.get("custom_fields") or {}).items():
+        if cf_value is not None and str(cf_value).strip():
+            prefix_parts.append(f"{cf_name}: {cf_value}")
+    return "\n".join(prefix_parts) + "\n\n" if prefix_parts else ""
+
+
+def _build_base_meta(doc_id: int, metadata: dict) -> dict[str, Any]:
+    """Per-chunk payload fields stored by every backend (shared shape)."""
+    return {
+        "document_id": doc_id,
+        "title": metadata.get("title", ""),
+        "tags_json": json.dumps(metadata.get("tags", [])),
+        "correspondent": metadata.get("correspondent") or "",
+        "document_type": metadata.get("document_type") or "",
+        "custom_fields_json": json.dumps(metadata.get("custom_fields") or {}),
+    }
+
+
+async def _maybe_rerank(
+    reranker: Reranker | None, query: str, passages: list[str]
+) -> list[float] | None:
+    """Per-passage rerank scores in [0,1], or None when no reranker is set."""
+    if reranker is None or not passages:
+        return None
+    return await reranker.rerank(query, passages)
+
+
+def _assemble_doc_results(
+    candidates: list[dict[str, Any]],
+    rerank_scores: list[float] | None,
+    min_score: float,
+    top_n: int,
+) -> list[SearchResult]:
+    """Group candidate chunks by document (best score per doc), drop those
+    below min_score, sort by score desc, and return up to top_n results.
+
+    Each candidate carries ``document_id``, ``title``, ``passage`` and a
+    normalised ``score`` in [0,1]; ``rerank_scores`` (aligned to ``candidates``)
+    overrides the score when present. Shared by every backend.
+    """
+    seen: dict[int, dict[str, Any]] = {}
+    for i, c in enumerate(candidates):
+        doc_id = c["document_id"]
+        if not doc_id:
+            continue
+        score = rerank_scores[i] if rerank_scores is not None else c["score"]
+        if doc_id not in seen or score > seen[doc_id]["score"]:
+            seen[doc_id] = {"score": score, "passage": c["passage"], "title": c["title"]}
+
+    results: list[SearchResult] = []
+    for doc_id, info in sorted(seen.items(), key=lambda x: x[1]["score"], reverse=True):
+        if info["score"] < min_score:
+            continue
+        results.append(SearchResult(
+            document_id=doc_id,
+            document_title=info["title"],
+            passage=info["passage"] or "",
+            score=info["score"],
+            deeplink_url=_deeplink(doc_id),
+        ))
+    return results[:top_n]
+
+
+def _assemble_chunk_results(
+    candidates: list[dict[str, Any]],
+    rerank_scores: list[float] | None,
+    min_score: float,
+) -> list[dict[str, Any]]:
+    """Filter ungrouped chunk candidates by min_score; when reranked, override
+    the score and re-sort by it (vector order is already distance-sorted)."""
+    out: list[dict[str, Any]] = []
+    for i, c in enumerate(candidates):
+        score = rerank_scores[i] if rerank_scores is not None else c["score"]
+        if score < min_score:
+            continue
+        out.append({**c, "score": score})
+    if rerank_scores is not None:
+        out.sort(key=lambda c: c["score"], reverse=True)
+    return out
+
+
 class ChromaVectorStore:
     """Local persistent vector store backed by ChromaDB with chunked embeddings.
 
@@ -170,34 +273,11 @@ class ChromaVectorStore:
         if not chunks:
             return
 
-        # Build a metadata prefix that is prepended to every chunk before embedding.
-        # This means the vector captures WHO and WHAT the document is (title, type,
-        # correspondent, tags, custom fields) in addition to the raw OCR content —
-        # preventing a salary-slip chunk that merely mentions "Lebensversicherung"
-        # from outranking an actual life-insurance document.
-        prefix_parts: list[str] = []
-        if metadata.get("title"):
-            prefix_parts.append(f"Title: {metadata['title']}")
-        if metadata.get("document_type"):
-            prefix_parts.append(f"Type: {metadata['document_type']}")
-        if metadata.get("correspondent"):
-            prefix_parts.append(f"From: {metadata['correspondent']}")
-        tags = metadata.get("tags") or []
-        if isinstance(tags, list) and any(tags):
-            prefix_parts.append(f"Tags: {', '.join(t for t in tags if t)}")
-        for cf_name, cf_value in (metadata.get("custom_fields") or {}).items():
-            if cf_value is not None and str(cf_value).strip():
-                prefix_parts.append(f"{cf_name}: {cf_value}")
-        embed_prefix = "\n".join(prefix_parts) + "\n\n" if prefix_parts else ""
-
-        base_meta: dict[str, Any] = {
-            "document_id": doc_id,
-            "title": metadata.get("title", ""),
-            "tags_json": json.dumps(metadata.get("tags", [])),
-            "correspondent": metadata.get("correspondent") or "",
-            "document_type": metadata.get("document_type") or "",
-            "custom_fields_json": json.dumps(metadata.get("custom_fields") or {}),
-        }
+        # Prefix captures WHO/WHAT the document is (title, type, correspondent,
+        # tags, custom fields) so a salary-slip chunk that merely mentions
+        # "Lebensversicherung" doesn't outrank an actual life-insurance document.
+        embed_prefix = _build_embed_prefix(metadata)
+        base_meta = _build_base_meta(doc_id, metadata)
         total = len(chunks)
         loop = asyncio.get_running_loop()
         succeeded = 0
@@ -258,13 +338,6 @@ class ChromaVectorStore:
             return max(self._rerank_top_k, top_n)
         return top_n * self._overfetch_multiplier
 
-    async def _maybe_rerank(self, query: str, passages: list[str]) -> list[float] | None:
-        """Return per-passage rerank scores in [0, 1], or None when no reranker
-        is configured (callers then fall back to distance-derived scores)."""
-        if self._reranker is None or not passages:
-            return None
-        return await self._reranker.rerank(query, passages)
-
     async def query(self, text: str, top_n: int) -> list[SearchResult]:
         """Find the most relevant document chunks and group by document.
 
@@ -294,52 +367,30 @@ class ChromaVectorStore:
         documents = results["documents"][0] if results["documents"] else []
         metadatas = results["metadatas"][0] if results["metadatas"] else []
         distances = results["distances"][0] if results["distances"] else []
-        passages = [documents[i] if i < len(documents) else "" for i in range(len(ids))]
 
-        # Per-chunk relevance in [0, 1]: from the reranker when enabled, else
-        # derived from the vector distance (1 - dist/2).
-        rerank_scores = await self._maybe_rerank(text, passages)
-
-        # Group chunks by document, keeping the highest-scoring chunk per doc.
-        seen_docs: dict[int, dict[str, Any]] = {}
+        # Build candidates with a normalised score (1 - dist/2 ∈ [0,1]),
+        # resolving doc_id from metadata or the "docid_chunkidx" id format.
+        candidates: list[dict[str, Any]] = []
         for i, chunk_id in enumerate(ids):
             meta = metadatas[i] if i < len(metadatas) else {}
             doc_id = meta.get("document_id", 0)
             if not doc_id:
-                # Try parsing from chunk_id format "docid_chunkidx"
                 try:
                     doc_id = int(chunk_id.split("_")[0])
                 except (ValueError, IndexError):
                     continue
+            dist = distances[i] if i < len(distances) else 1.0
+            candidates.append({
+                "document_id": doc_id,
+                "title": meta.get("title", ""),
+                "passage": documents[i] if i < len(documents) else "",
+                "score": 1.0 - (dist / 2.0),
+            })
 
-            if rerank_scores is not None:
-                score = rerank_scores[i]
-            else:
-                dist = distances[i] if i < len(distances) else 1.0
-                score = 1.0 - (dist / 2.0)
-
-            # Process all fetched chunks — don't break early — so every unique
-            # document gets its best chunk recorded before we rank and slice.
-            if doc_id not in seen_docs or score > seen_docs[doc_id]["score"]:
-                seen_docs[doc_id] = {
-                    "score": score,
-                    "passage": passages[i],
-                    "title": meta.get("title", ""),
-                }
-
-        search_results: list[SearchResult] = []
-        for doc_id, info in sorted(seen_docs.items(), key=lambda x: x[1]["score"], reverse=True):
-            if info["score"] < self._min_score:
-                continue
-            search_results.append(SearchResult(
-                document_id=doc_id,
-                document_title=info["title"],
-                passage=info["passage"] or "",
-                score=info["score"],
-                deeplink_url=_deeplink(doc_id),
-            ))
-
-        return search_results[:top_n]
+        rerank_scores = await _maybe_rerank(
+            self._reranker, text, [c["passage"] for c in candidates]
+        )
+        return _assemble_doc_results(candidates, rerank_scores, self._min_score, top_n)
 
     async def query_similar_metadata(
         self,
@@ -412,7 +463,7 @@ class ChromaVectorStore:
             "custom_fields": all_custom_fields,
         }
 
-    def count(self) -> int:
+    async def count(self) -> int:
         """Return the number of chunks in the store."""
         return self._collection.count()
 
@@ -483,40 +534,29 @@ class ChromaVectorStore:
         if not results["ids"] or not results["ids"][0]:
             return []
 
-        chunks: list[dict[str, Any]] = []
         ids = results["ids"][0]
         documents = results["documents"][0] if results["documents"] else []
         metadatas = results["metadatas"][0] if results["metadatas"] else []
         distances = results["distances"][0] if results["distances"] else []
-        passages = [documents[i] if i < len(documents) else "" for i in range(len(ids))]
 
-        rerank_scores = await self._maybe_rerank(text, passages)
-
+        candidates: list[dict[str, Any]] = []
         for i, chunk_id in enumerate(ids):
             meta = metadatas[i] if i < len(metadatas) else {}
             doc_id = meta.get("document_id", 0)
-            if rerank_scores is not None:
-                score = rerank_scores[i]
-            else:
-                dist = distances[i] if i < len(distances) else 1.0
-                score = 1.0 - (dist / 2.0)
-            if score < self._min_score:
-                continue
-            chunks.append({
+            dist = distances[i] if i < len(distances) else 1.0
+            candidates.append({
                 "document_id": doc_id,
                 "title": meta.get("title", ""),
-                "passage": passages[i],
-                "score": score,
+                "passage": documents[i] if i < len(documents) else "",
+                "score": 1.0 - (dist / 2.0),
                 "deeplink_url": _deeplink(doc_id),
                 "chunk_index": meta.get("chunk_index", 0),
             })
 
-        # Reranking reorders relevance, so sort by score; vector order is already
-        # distance-sorted, so leave it untouched when no reranker is active.
-        if rerank_scores is not None:
-            chunks.sort(key=lambda c: c["score"], reverse=True)
-
-        return chunks
+        rerank_scores = await _maybe_rerank(
+            self._reranker, text, [c["passage"] for c in candidates]
+        )
+        return _assemble_chunk_results(candidates, rerank_scores, self._min_score)
 
     async def reindex_all(self, documents: list[dict[str, Any]]) -> None:
         """Re-index all documents with chunking. Clears existing data first."""
@@ -544,6 +584,371 @@ class ChromaVectorStore:
             ),
         )
         logger.info("Vector store collection '%s' reset (all vectors cleared).", collection_name)
+
+
+class QdrantVectorStore:
+    """Vector store backed by Qdrant with chunked embeddings.
+
+    Mirrors ChromaVectorStore semantics (same chunking, embed prefix, payload
+    shape, and SearchResult.score convention) so results are comparable across
+    backends. Uses the async client (D-06: never get_event_loop()).
+    """
+
+    def __init__(
+        self,
+        llm_provider: LLMProvider,
+        url: str = "http://qdrant:6333",
+        api_key: str = "",
+        collection_name: str = "paperless_iq_chunks",
+        chunk_size: int = DEFAULT_CHUNK_SIZE,
+        chunk_overlap: int = DEFAULT_CHUNK_OVERLAP,
+        embed_concurrency: int = 1,
+        chunk_strategy: str = "char",
+        overfetch_multiplier: int = 5,
+        min_score: float = 0.0,
+        reranker: Reranker | None = None,
+        rerank_top_k: int = 20,
+        hnsw_ef: int = 128,
+        hnsw_m: int = 16,
+        quantization: str = "none",
+        hybrid_search: bool = False,
+    ) -> None:
+        from qdrant_client import AsyncQdrantClient
+
+        self._llm = llm_provider
+        self._chunk_size = chunk_size
+        self._chunk_overlap = chunk_overlap
+        self._chunk_strategy = chunk_strategy
+        self._overfetch_multiplier = overfetch_multiplier
+        self._min_score = min_score
+        self._reranker = reranker
+        self._rerank_top_k = rerank_top_k
+        self._hnsw_ef = hnsw_ef
+        self._hnsw_m = hnsw_m
+        self._quantization = quantization
+        if hybrid_search:
+            # Dense + sparse (RRF) needs a sparse encoder we don't ship yet;
+            # fall back to dense-only so the flag never silently breaks search.
+            logger.warning("qdrant_hybrid_search is not yet implemented; using dense search.")
+        self._hybrid_search = False
+        self._embed_sem = asyncio.Semaphore(embed_concurrency)
+        self._embed_concurrency = embed_concurrency
+        self._collection = collection_name
+        if url == ":memory:":
+            self._client = AsyncQdrantClient(location=":memory:")
+        else:
+            self._client = AsyncQdrantClient(url=url, api_key=api_key or None)
+        self._ready = False
+        self._init_lock = asyncio.Lock()
+
+    async def _embed(self, text: str) -> list[float]:
+        return await self._llm.embed(text)
+
+    @staticmethod
+    def _point_id(doc_id: int, chunk_index: int) -> str:
+        return str(uuid.uuid5(_QDRANT_POINT_NAMESPACE, f"{doc_id}_{chunk_index}"))
+
+    def _quantization_config(self):
+        from qdrant_client import models
+
+        if self._quantization == "scalar":
+            return models.ScalarQuantization(
+                scalar=models.ScalarQuantizationConfig(type=models.ScalarType.INT8, always_ram=True)
+            )
+        if self._quantization == "binary":
+            return models.BinaryQuantization(
+                binary=models.BinaryQuantizationConfig(always_ram=True)
+            )
+        return None
+
+    async def _collection_present(self) -> bool:
+        """True if the collection exists (cached once seen)."""
+        if self._ready:
+            return True
+        try:
+            exists = await self._client.collection_exists(self._collection)
+        except Exception:
+            return False
+        self._ready = exists
+        return exists
+
+    async def _ensure_collection(self, dim: int) -> None:
+        """Create the collection (with HNSW + quantization config) on first use."""
+        from qdrant_client import models
+
+        async with self._init_lock:
+            if self._ready:
+                return
+            if not await self._client.collection_exists(self._collection):
+                await self._client.create_collection(
+                    collection_name=self._collection,
+                    vectors_config=models.VectorParams(size=dim, distance=models.Distance.COSINE),
+                    hnsw_config=models.HnswConfigDiff(m=self._hnsw_m, ef_construct=self._hnsw_ef),
+                    quantization_config=self._quantization_config(),
+                )
+                # Payload indexes speed up filtering (server only; no-op locally).
+                for field, schema in (
+                    ("document_id", models.PayloadSchemaType.INTEGER),
+                    ("document_type", models.PayloadSchemaType.KEYWORD),
+                    ("correspondent", models.PayloadSchemaType.KEYWORD),
+                ):
+                    try:
+                        await self._client.create_payload_index(
+                            self._collection, field_name=field, field_schema=schema
+                        )
+                    except Exception:
+                        logger.debug("Qdrant payload index on %s skipped.", field, exc_info=True)
+            self._ready = True
+
+    def _doc_filter(self, doc_id: int):
+        from qdrant_client import models
+
+        return models.Filter(
+            must=[models.FieldCondition(key="document_id", match=models.MatchValue(value=doc_id))]
+        )
+
+    async def upsert(self, doc_id: int, text: str, metadata: dict) -> None:
+        """Chunk, embed in parallel under the semaphore, and bulk-upsert points."""
+        from qdrant_client import models
+
+        chunks = _chunk(text, self._chunk_size, self._chunk_overlap, self._chunk_strategy)
+        if not chunks:
+            await self.delete(doc_id)
+            return
+
+        embed_prefix = _build_embed_prefix(metadata)
+        base_meta = _build_base_meta(doc_id, metadata)
+        total = len(chunks)
+
+        async def _embed_chunk(i: int, chunk: str) -> tuple[int, list[float] | None, str]:
+            async with self._embed_sem:
+                try:
+                    return i, await self._embed(embed_prefix + chunk), chunk
+                except Exception:
+                    logger.debug("Failed to embed chunk %d of doc %d", i, doc_id, exc_info=True)
+                    return i, None, chunk
+
+        embedded = await asyncio.gather(*[_embed_chunk(i, c) for i, c in enumerate(chunks)])
+
+        points: list[Any] = []
+        dim: int | None = None
+        for i, emb, chunk in embedded:
+            if emb is None:
+                continue
+            dim = dim or len(emb)
+            payload = {
+                **base_meta,
+                "chunk_index": i,
+                "total_chunks": total,
+                "passage": chunk,
+                "chunk_id": f"{doc_id}_{i}",
+            }
+            points.append(models.PointStruct(id=self._point_id(doc_id, i), vector=emb, payload=payload))
+
+        if not points or dim is None:
+            return
+
+        await self._ensure_collection(dim)
+        await self.delete(doc_id)  # replace any existing chunks for this document
+        await self._client.upsert(collection_name=self._collection, points=points)
+        logger.info("Upserted %d/%d chunks for document %d.", len(points), total, doc_id)
+
+    async def delete(self, doc_id: int) -> None:
+        """Remove all points for a document."""
+        if not await self._collection_present():
+            return
+        try:
+            await self._client.delete(
+                collection_name=self._collection, points_selector=self._doc_filter(doc_id)
+            )
+        except Exception:
+            logger.debug("Qdrant delete failed for doc %d", doc_id, exc_info=True)
+
+    def _candidate_count(self, top_n: int) -> int:
+        if self._reranker is not None:
+            return max(self._rerank_top_k, top_n)
+        return top_n * self._overfetch_multiplier
+
+    @staticmethod
+    def _norm_score(similarity: float) -> float:
+        """Qdrant returns cosine similarity in [-1,1]; map to the same [0,1]
+        SearchResult.score convention Chroma uses ((cos+1)/2)."""
+        return max(0.0, min(1.0, (similarity + 1.0) / 2.0))
+
+    async def query(self, text: str, top_n: int) -> list[SearchResult]:
+        if not await self._collection_present():
+            return []
+        embedding = await self._embed(text)
+        res = await self._client.query_points(
+            collection_name=self._collection,
+            query=embedding,
+            limit=self._candidate_count(top_n),
+            with_payload=True,
+        )
+        candidates: list[dict[str, Any]] = []
+        for p in res.points:
+            payload = p.payload or {}
+            candidates.append({
+                "document_id": payload.get("document_id", 0),
+                "title": payload.get("title", ""),
+                "passage": payload.get("passage", ""),
+                "score": self._norm_score(p.score),
+            })
+        rerank_scores = await _maybe_rerank(
+            self._reranker, text, [c["passage"] for c in candidates]
+        )
+        return _assemble_doc_results(candidates, rerank_scores, self._min_score, top_n)
+
+    async def query_chunks(self, text: str, top_n_chunks: int) -> list[dict[str, Any]]:
+        if not await self._collection_present():
+            return []
+        embedding = await self._embed(text)
+        res = await self._client.query_points(
+            collection_name=self._collection,
+            query=embedding,
+            limit=top_n_chunks,
+            with_payload=True,
+        )
+        candidates: list[dict[str, Any]] = []
+        for p in res.points:
+            payload = p.payload or {}
+            doc_id = payload.get("document_id", 0)
+            candidates.append({
+                "document_id": doc_id,
+                "title": payload.get("title", ""),
+                "passage": payload.get("passage", ""),
+                "score": self._norm_score(p.score),
+                "deeplink_url": _deeplink(doc_id),
+                "chunk_index": payload.get("chunk_index", 0),
+            })
+        rerank_scores = await _maybe_rerank(
+            self._reranker, text, [c["passage"] for c in candidates]
+        )
+        return _assemble_chunk_results(candidates, rerank_scores, self._min_score)
+
+    async def query_similar_metadata(
+        self,
+        text: str,
+        top_n: int,
+        exclude_tag_id: int | None = None,
+    ) -> dict[str, set[str]]:
+        empty = {
+            "tags": set(),
+            "correspondents": set(),
+            "document_types": set(),
+            "custom_fields": {},
+        }
+        if not await self._collection_present():
+            return empty
+        embedding = await self._embed(text)
+        res = await self._client.query_points(
+            collection_name=self._collection,
+            query=embedding,
+            limit=top_n * self._overfetch_multiplier,
+            with_payload=True,
+        )
+
+        all_tags: set[str] = set()
+        all_correspondents: set[str] = set()
+        all_document_types: set[str] = set()
+        all_custom_fields: dict[str, set[str]] = {}
+        seen_doc_ids: set[int] = set()
+
+        for p in res.points:
+            payload = p.payload or {}
+            doc_id = payload.get("document_id", 0)
+            if doc_id in seen_doc_ids:
+                continue
+            seen_doc_ids.add(doc_id)
+            if len(seen_doc_ids) > top_n:
+                break
+            try:
+                tag_list = json.loads(payload.get("tags_json") or "[]")
+            except (json.JSONDecodeError, TypeError):
+                tag_list = []
+            for t in tag_list:
+                if t:
+                    all_tags.add(t)
+            corr = payload.get("correspondent", "")
+            if corr:
+                all_correspondents.add(corr)
+            dt = payload.get("document_type", "")
+            if dt:
+                all_document_types.add(dt)
+            try:
+                cf_dict = json.loads(payload.get("custom_fields_json") or "{}")
+            except (json.JSONDecodeError, TypeError):
+                cf_dict = {}
+            for cf_name, cf_value in cf_dict.items():
+                if cf_value is not None and str(cf_value).strip():
+                    all_custom_fields.setdefault(cf_name, set()).add(str(cf_value))
+
+        return {
+            "tags": all_tags,
+            "correspondents": all_correspondents,
+            "document_types": all_document_types,
+            "custom_fields": all_custom_fields,
+        }
+
+    async def count(self) -> int:
+        if not await self._collection_present():
+            return 0
+        result = await self._client.count(collection_name=self._collection)
+        return result.count
+
+    async def get_indexed_chunk_counts(self) -> tuple[dict[int, int], dict[int, int]]:
+        doc_chunk_counts: dict[int, int] = {}
+        doc_expected_chunks: dict[int, int] = {}
+        if not await self._collection_present():
+            return doc_chunk_counts, doc_expected_chunks
+        offset = None
+        while True:
+            points, offset = await self._client.scroll(
+                collection_name=self._collection,
+                limit=256,
+                offset=offset,
+                with_payload=True,
+                with_vectors=False,
+            )
+            for p in points:
+                payload = p.payload or {}
+                doc_id = payload.get("document_id")
+                if not isinstance(doc_id, int):
+                    continue
+                doc_chunk_counts[doc_id] = doc_chunk_counts.get(doc_id, 0) + 1
+                if "total_chunks" in payload:
+                    doc_expected_chunks[doc_id] = int(payload["total_chunks"])
+            if offset is None:
+                break
+        return doc_chunk_counts, doc_expected_chunks
+
+    async def reindex_all(self, documents: list[dict[str, Any]]) -> None:
+        await self.reset()
+        for doc in documents:
+            await self.upsert(doc["doc_id"], doc["text"], doc.get("metadata", {}))
+
+    async def reset(self) -> None:
+        """Delete the collection; it is recreated lazily on the next upsert."""
+        try:
+            if await self._client.collection_exists(self._collection):
+                await self._client.delete_collection(self._collection)
+        except Exception:
+            logger.debug("Qdrant reset: delete_collection failed.", exc_info=True)
+        self._ready = False
+        logger.info("Qdrant collection '%s' reset (all vectors cleared).", self._collection)
+
+    @property
+    def embed_concurrency(self) -> int:
+        return self._embed_concurrency
+
+    def set_embed_provider(self, provider: LLMProvider, concurrency: int) -> None:
+        self._llm = provider
+        if self._embed_concurrency != concurrency:
+            self._embed_sem = asyncio.Semaphore(concurrency)
+            self._embed_concurrency = concurrency
+
+    async def embed_health_check(self) -> bool:
+        return await self._llm.health_check()
 
 
 class BedrockKnowledgeBaseStore:
