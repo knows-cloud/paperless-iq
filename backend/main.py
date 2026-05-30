@@ -59,11 +59,12 @@ from backend.orm_models import (
     UserMemoryORM,
     UserPermissionsORM,
 )
+from backend.memory_store import make_memory_store
 from backend.provider_registry import build_providers
-from backend.rerankers import build_reranker
+from backend.vector_factory import make_vector_store
 from backend.rate_limiter import RateLimiter
 from backend.settings_service import SettingsService
-from backend.vector_store import ChromaVectorStore
+from backend.protocols import VectorStore
 
 logger = logging.getLogger(__name__)
 
@@ -263,7 +264,7 @@ async def _automation_loop(
 
 async def _background_index(
     paperless_client: PaperlessNGXClient,
-    vector_store: ChromaVectorStore,
+    vector_store: VectorStore,
     config: Any,
     queue: OllamaQueue | None = None,
 ) -> None:
@@ -561,26 +562,19 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
                     "smart entity selection disabled."
                 )
             ep_name = getattr(config, "embed_provider", "ollama")
-            vector_store = ChromaVectorStore(
-                llm_provider=embed_provider,
-                persist_directory="/data/chroma",
-                embed_concurrency=_embed_concurrency_for(ep_name),
-                chunk_size=config.chunk_size,
-                chunk_overlap=config.chunk_overlap,
-                chunk_strategy=config.chunk_strategy,
-                overfetch_multiplier=config.search_overfetch_multiplier,
-                min_score=config.search_min_score,
-                hnsw_search_ef=config.chroma_hnsw_search_ef,
-                hnsw_m=config.chroma_hnsw_m,
-                hnsw_construction_ef=config.chroma_hnsw_construction_ef,
-                reranker=build_reranker(config, providers),
-                rerank_top_k=config.rerank_top_k,
+            vector_store = make_vector_store(
+                config, embed_provider, _embed_concurrency_for(ep_name), providers
             )
             app.state.vector_store = vector_store
-            logger.info(
-                "Vector store initialized (ChromaDB, embed_provider: %s, concurrency: %d).",
-                ep_name, vector_store.embed_concurrency,
-            )
+            if vector_store is not None:
+                logger.info(
+                    "Vector store initialized (backend: %s, embed_provider: %s).",
+                    config.vector_store_backend, ep_name,
+                )
+            else:
+                logger.warning(
+                    "Vector store not initialized for backend '%s'.", config.vector_store_backend
+                )
         except Exception:
             logger.warning("Could not initialize vector store — smart entity selection disabled.", exc_info=True)
             vector_store = None
@@ -604,7 +598,6 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
 
         # Initialise long-term memory store (matches the configured vector backend)
         try:
-            from backend.memory_store import make_memory_store
             app.state.memory_store = make_memory_store(config, embed_provider)
             logger.info(
                 "Memory store initialised (backend: %s, embed_provider: %s).",
@@ -2310,7 +2303,11 @@ async def update_settings(request: Request, body: dict[str, Any] = Body(...)) ->
     - Starts or stops inbox/scheduler automation tasks when automation_enabled changes.
     - Rate limiter config could be extended here in the future.
     """
-    old_automation = _settings_svc.config.automation_enabled
+    _old = _settings_svc.config
+    old_automation = _old.automation_enabled
+    old_backend = _old.vector_store_backend
+    old_qdrant_url = _old.qdrant_url
+    old_qdrant_mode = _old.qdrant_mode
 
     try:
         await _settings_svc.update_and_persist(body)
@@ -2335,43 +2332,29 @@ async def update_settings(request: Request, body: dict[str, Any] = Body(...)) ->
         )
         if paperless_client is not None:
             vs = getattr(request.app.state, "vector_store", None)
-            # Update the embed provider in the vector store to match the new config
+            # Rebuild the vector + memory stores so EVERY setting takes effect
+            # live: backend choice, search tuning, reranker, and embed provider.
             try:
                 new_embed = _resolve_embed_provider(new_config, providers)
                 if new_embed is not None:
                     new_ep_name = getattr(new_config, "embed_provider", "ollama")
                     new_concurrency = _embed_concurrency_for(new_ep_name)
-                    if vs is not None:
-                        # Swap embed provider; rebuilds the semaphore if the
-                        # concurrency limit changed (e.g. Ollama ↔ Bedrock)
-                        vs.set_embed_provider(new_embed, new_concurrency)
-                    else:
-                        vs = ChromaVectorStore(
-                            llm_provider=new_embed,
-                            persist_directory="/data/chroma",
-                            embed_concurrency=new_concurrency,
-                            chunk_size=new_config.chunk_size,
-                            chunk_overlap=new_config.chunk_overlap,
-                            chunk_strategy=new_config.chunk_strategy,
-                            overfetch_multiplier=new_config.search_overfetch_multiplier,
-                            min_score=new_config.search_min_score,
-                            hnsw_search_ef=new_config.chroma_hnsw_search_ef,
-                            hnsw_m=new_config.chroma_hnsw_m,
-                            hnsw_construction_ef=new_config.chroma_hnsw_construction_ef,
-                            reranker=build_reranker(new_config, providers),
-                            rerank_top_k=new_config.rerank_top_k,
-                        )
-                        request.app.state.vector_store = vs
+                    vs = make_vector_store(new_config, new_embed, new_concurrency, providers)
+                    request.app.state.vector_store = vs
+                    request.app.state.memory_store = make_memory_store(new_config, new_embed)
                     logger.info(
-                        "Embed provider updated to '%s' (concurrency: %d) after settings change.",
-                        new_ep_name, new_concurrency,
+                        "Vector + memory stores rebuilt after settings change "
+                        "(backend: %s, embed_provider: %s).",
+                        new_config.vector_store_backend, new_ep_name,
                     )
                 else:
                     logger.info("Provider '%s' has no embedding support; vector store disabled.", new_config.llm_provider)
                     request.app.state.vector_store = None
+                    request.app.state.memory_store = None
                     vs = None
             except Exception:
-                logger.warning("Could not update embed provider after settings change.", exc_info=True)
+                logger.warning("Could not rebuild vector store after settings change.", exc_info=True)
+                vs = getattr(request.app.state, "vector_store", None)
             request.app.state.manual_analysis_svc = ManualAnalysisService(
                 new_config, providers, paperless_client, vector_store=vs
             )
@@ -2422,7 +2405,26 @@ async def update_settings(request: Request, body: dict[str, Any] = Body(...)) ->
     # Rate limiter: currently uses default 60/60. Could be extended here
     # if rate limit fields are added to PaperlessIQConfig.
 
-    return _settings_svc.get_masked()
+    result = _settings_svc.get_masked()
+
+    # Signal the UI when the embeddings can't follow the config change. Switching
+    # backend (or the Qdrant target) points at a different, empty store; existing
+    # embeddings are not migrated automatically yet, so a re-index is needed.
+    backend_changed = (
+        new_config.vector_store_backend != old_backend
+        or (
+            new_config.vector_store_backend == "qdrant"
+            and (new_config.qdrant_url != old_qdrant_url or new_config.qdrant_mode != old_qdrant_mode)
+        )
+    )
+    if backend_changed:
+        result["needs_reindex"] = True
+        result["reindex_reason"] = (
+            f"Vector backend is now '{new_config.vector_store_backend}'. Existing embeddings "
+            "are not migrated automatically — re-index to populate the new store."
+        )
+
+    return result
 
 
 # ---------------------------------------------------------------------------
@@ -2597,7 +2599,7 @@ async def trigger_reindex(
     Always resets the collection first — this is required when the embedding
     model (or its output dimension) has changed since the last index run.
     """
-    vs: ChromaVectorStore | None = getattr(request.app.state, "vector_store", None)
+    vs: VectorStore | None = getattr(request.app.state, "vector_store", None)
     pc = getattr(request.app.state, "paperless_client", None)
     if not vs or not pc:
         raise HTTPException(status_code=503, detail="Vector store or Paperless client not available.")
@@ -2635,7 +2637,7 @@ async def trigger_reindex_since(
     Useful for catching up after a period without live webhook re-indexing.
     Does NOT wipe the existing vector store — only updates changed docs.
     """
-    vs: ChromaVectorStore | None = getattr(request.app.state, "vector_store", None)
+    vs: VectorStore | None = getattr(request.app.state, "vector_store", None)
     pc: PaperlessNGXClient | None = getattr(request.app.state, "paperless_client", None)
     if not vs or not pc:
         raise HTTPException(status_code=503, detail="Vector store or Paperless client not available.")
@@ -2701,7 +2703,7 @@ async def trigger_reindex_since(
 _PAPERLESS_IQ_WORKFLOW_NAME = "Paperless IQ — Live Reindex"
 
 
-async def _reindex_document(doc_id: int, vs: ChromaVectorStore, pc: PaperlessNGXClient) -> None:
+async def _reindex_document(doc_id: int, vs: VectorStore, pc: PaperlessNGXClient) -> None:
     """Fetch current document metadata from Paperless NGX and upsert into the vector store."""
     base = pc._base_url
     headers = pc._headers
@@ -2900,7 +2902,7 @@ async def paperless_webhook(request: Request) -> dict:
             detail="Invalid or missing webhook secret.",
         )
 
-    vs: ChromaVectorStore | None = getattr(request.app.state, "vector_store", None)
+    vs: VectorStore | None = getattr(request.app.state, "vector_store", None)
     pc: PaperlessNGXClient | None = getattr(request.app.state, "paperless_client", None)
     if not vs or not pc:
         logger.warning("Webhook received but vector store or paperless client not available; skipped.")
