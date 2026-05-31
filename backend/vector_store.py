@@ -585,6 +585,48 @@ class ChromaVectorStore:
         )
         logger.info("Vector store collection '%s' reset (all vectors cleared).", collection_name)
 
+    async def dump_points(self) -> list[dict[str, Any]]:
+        """Export all stored points (id, vector, document, metadata) for
+        backend-agnostic migration. No re-embedding."""
+        loop = asyncio.get_running_loop()
+        data = await loop.run_in_executor(
+            None,
+            lambda: self._collection.get(include=["embeddings", "documents", "metadatas"]),
+        )
+        ids = data.get("ids", []) or []
+        embeddings = data.get("embeddings")
+        embeddings = embeddings if embeddings is not None else []
+        documents = data.get("documents") or []
+        metadatas = data.get("metadatas") or []
+        points: list[dict[str, Any]] = []
+        for i, pid in enumerate(ids):
+            if i >= len(embeddings) or embeddings[i] is None:
+                continue
+            points.append({
+                "id": str(pid),
+                "vector": [float(x) for x in embeddings[i]],
+                "document": documents[i] if i < len(documents) else "",
+                "metadata": dict(metadatas[i]) if i < len(metadatas) and metadatas[i] else {},
+            })
+        return points
+
+    async def load_points(self, points: list[dict[str, Any]]) -> int:
+        """Bulk-insert points from dump_points() preserving ids/vectors/metadata."""
+        if not points:
+            return 0
+        loop = asyncio.get_running_loop()
+        ids = [p["id"] for p in points]
+        embeddings = [p["vector"] for p in points]
+        documents = [p.get("document", "") for p in points]
+        metadatas = [p.get("metadata") or {} for p in points]
+        await loop.run_in_executor(
+            None,
+            lambda: self._collection.upsert(
+                ids=ids, embeddings=embeddings, documents=documents, metadatas=metadatas
+            ),
+        )
+        return len(points)
+
 
 class QdrantVectorStore:
     """Vector store backed by Qdrant with chunked embeddings.
@@ -949,6 +991,60 @@ class QdrantVectorStore:
 
     async def embed_health_check(self) -> bool:
         return await self._llm.health_check()
+
+    async def dump_points(self) -> list[dict[str, Any]]:
+        """Export all points (id, vector, document, metadata) for migration.
+
+        ``id`` is the logical chunk id ("docid_chunkidx") so the destination can
+        derive the same uuid5 point id; ``passage``/``chunk_id`` are split back
+        out of the payload into the common shape Chroma uses.
+        """
+        if not await self._collection_present():
+            return []
+        points: list[dict[str, Any]] = []
+        offset = None
+        while True:
+            records, offset = await self._client.scroll(
+                collection_name=self._collection,
+                limit=256,
+                offset=offset,
+                with_payload=True,
+                with_vectors=True,
+            )
+            for r in records:
+                if r.vector is None:
+                    continue
+                payload = dict(r.payload or {})
+                logical_id = payload.pop("chunk_id", None) or str(r.id)
+                document = payload.pop("passage", "")
+                points.append({
+                    "id": logical_id,
+                    "vector": [float(x) for x in r.vector],
+                    "document": document,
+                    "metadata": payload,
+                })
+            if offset is None:
+                break
+        return points
+
+    async def load_points(self, points: list[dict[str, Any]]) -> int:
+        """Bulk-insert points from dump_points() preserving ids/vectors/payload."""
+        from qdrant_client import models
+
+        if not points:
+            return 0
+        await self._ensure_collection(len(points[0]["vector"]))
+        structs = []
+        for p in points:
+            meta = dict(p.get("metadata") or {})
+            payload = {**meta, "passage": p.get("document", ""), "chunk_id": p["id"]}
+            structs.append(models.PointStruct(
+                id=str(uuid.uuid5(_QDRANT_POINT_NAMESPACE, p["id"])),
+                vector=p["vector"],
+                payload=payload,
+            ))
+        await self._client.upsert(collection_name=self._collection, points=structs)
+        return len(structs)
 
 
 class BedrockKnowledgeBaseStore:

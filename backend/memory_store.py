@@ -120,6 +120,39 @@ class ChromaMemoryStore(MemoryStore):
             for mid, dist in zip(results["ids"][0], results["distances"][0])
         ]
 
+    async def dump_all(self) -> list[dict[str, Any]]:
+        loop = asyncio.get_running_loop()
+        data = await loop.run_in_executor(
+            None, lambda: self._col.get(include=["embeddings", "documents"])
+        )
+        ids = data.get("ids", []) or []
+        embeddings = data.get("embeddings")
+        embeddings = embeddings if embeddings is not None else []
+        documents = data.get("documents") or []
+        items: list[dict[str, Any]] = []
+        for i, mid in enumerate(ids):
+            if i >= len(embeddings) or embeddings[i] is None:
+                continue
+            items.append({
+                "id": str(mid),
+                "vector": [float(x) for x in embeddings[i]],
+                "text": documents[i] if i < len(documents) else "",
+            })
+        return items
+
+    async def load_all(self, items: list[dict[str, Any]]) -> int:
+        if not items:
+            return 0
+        loop = asyncio.get_running_loop()
+        ids = [it["id"] for it in items]
+        embeddings = [it["vector"] for it in items]
+        documents = [it.get("text", "") for it in items]
+        await loop.run_in_executor(
+            None,
+            lambda: self._col.upsert(ids=ids, embeddings=embeddings, documents=documents),
+        )
+        return len(items)
+
 
 class QdrantMemoryStore(MemoryStore):
     """Memory facts in a Qdrant collection (async client; D-06)."""
@@ -216,6 +249,49 @@ class QdrantMemoryStore(MemoryStore):
         )
         # Qdrant cosine score is the similarity directly (no 1 - dist).
         return [((p.payload or {}).get("memory_id", str(p.id)), p.score) for p in res.points]
+
+    async def dump_all(self) -> list[dict[str, Any]]:
+        if not await self._present():
+            return []
+        items: list[dict[str, Any]] = []
+        offset = None
+        while True:
+            records, offset = await self._client.scroll(
+                collection_name=self._collection,
+                limit=256,
+                offset=offset,
+                with_payload=True,
+                with_vectors=True,
+            )
+            for r in records:
+                if r.vector is None:
+                    continue
+                payload = r.payload or {}
+                items.append({
+                    "id": payload.get("memory_id", str(r.id)),
+                    "vector": [float(x) for x in r.vector],
+                    "text": payload.get("text", ""),
+                })
+            if offset is None:
+                break
+        return items
+
+    async def load_all(self, items: list[dict[str, Any]]) -> int:
+        from qdrant_client import models
+
+        if not items:
+            return 0
+        await self._ensure(len(items[0]["vector"]))
+        structs = [
+            models.PointStruct(
+                id=self._point_id(it["id"]),
+                vector=it["vector"],
+                payload={"memory_id": it["id"], "text": it.get("text", "")},
+            )
+            for it in items
+        ]
+        await self._client.upsert(collection_name=self._collection, points=structs)
+        return len(items)
 
 
 def make_memory_store(config: Any, llm_provider: LLMProvider) -> MemoryStore:
