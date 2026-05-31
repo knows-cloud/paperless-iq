@@ -62,6 +62,7 @@ from backend.orm_models import (
 from backend.memory_store import make_memory_store
 from backend.provider_registry import build_providers
 from backend.vector_factory import make_vector_store
+from backend.vector_migrate import migrate_embeddings, migrate_memories
 from backend.rate_limiter import RateLimiter
 from backend.settings_service import SettingsService
 from backend.protocols import VectorStore
@@ -1372,6 +1373,19 @@ async def semantic_search(
 # How many recent turns to keep verbatim before compressing older ones.
 _DISCOVER_VERBATIM_WINDOW = 8
 
+_DISCOVERY_DEFAULT_SYSTEM_PROMPT = (
+    "You are an expert document analyst helping a user research their personal document archive. "
+    "Answer questions using ONLY the provided document excerpts — do not use outside knowledge.\n\n"
+    "Formatting rules:\n"
+    "- Use **bold** for key names, amounts, dates, and important terms\n"
+    "- Use bullet lists when enumerating multiple items or conditions\n"
+    "- Use > blockquote for direct quotes from documents\n"
+    "- Cite sources inline with bracketed numbers, e.g. [1], [2][3]\n"
+    "- For contracts: identify parties, obligations, dates, amounts, termination clauses, and conditions\n"
+    "- If documents partially answer the question, say what IS found and what is missing\n"
+    "- If nothing relevant is found, say so directly"
+)
+
 
 async def _extract_memories_from_session(session, provider, memory_store, config) -> int:
     """Extract memorable facts from a conversation session and persist them.
@@ -1789,19 +1803,8 @@ async def discover(body: DiscoverBody, request: Request) -> dict:
     # ── Build multi-turn messages ────────────────────────────────────────────
     # System message holds the persistent instructions + any rolling summary of
     # turns that were compressed away in earlier rounds.
-    system_content = (
-        "You are an expert document analyst helping a user research their personal document archive. "
-        "Answer questions using ONLY the provided document excerpts — do not use outside knowledge.\n\n"
-        "Formatting rules:\n"
-        + lang_rule +
-        "- Use **bold** for key names, amounts, dates, and important terms\n"
-        "- Use bullet lists when enumerating multiple items or conditions\n"
-        "- Use > blockquote for direct quotes from documents\n"
-        "- Cite sources inline with bracketed numbers, e.g. [1], [2][3]\n"
-        "- For contracts: identify parties, obligations, dates, amounts, termination clauses, and conditions\n"
-        "- If documents partially answer the question, say what IS found and what is missing\n"
-        "- If nothing relevant is found, say so directly"
-    )
+    prompt_body = (config.discovery_system_prompt or "").strip() or _DISCOVERY_DEFAULT_SYSTEM_PROMPT
+    system_content = lang_rule + prompt_body
     if injected_memories:
         system_content += (
             "\n\nWhat I already know about your documents (from past conversations):\n"
@@ -2308,6 +2311,8 @@ async def update_settings(request: Request, body: dict[str, Any] = Body(...)) ->
     old_backend = _old.vector_store_backend
     old_qdrant_url = _old.qdrant_url
     old_qdrant_mode = _old.qdrant_mode
+    old_embed_provider = _old.embed_provider
+    old_embedding_model = _old.embedding_model
 
     try:
         await _settings_svc.update_and_persist(body)
@@ -2320,6 +2325,22 @@ async def update_settings(request: Request, body: dict[str, Any] = Body(...)) ->
     new_config = _settings_svc.config
     secret_key = os.environ.get("SECRET_KEY", "")
 
+    # A backend switch (or new Qdrant target) points at a different store.
+    backend_changed = (
+        new_config.vector_store_backend != old_backend
+        or (
+            new_config.vector_store_backend == "qdrant"
+            and (new_config.qdrant_url != old_qdrant_url or new_config.qdrant_mode != old_qdrant_mode)
+        )
+    )
+    embed_changed = (
+        new_config.embed_provider != old_embed_provider
+        or new_config.embedding_model != old_embedding_model
+    )
+    # Resolved while rebuilding the store below; surfaced to the UI at the end.
+    reindex_required = False
+    reindex_reason = ""
+
     # Re-build LLM providers with the updated config
     try:
         providers = build_providers(new_config, secret_key)
@@ -2331,7 +2352,9 @@ async def update_settings(request: Request, body: dict[str, Any] = Body(...)) ->
             request.app.state, "paperless_client", None
         )
         if paperless_client is not None:
-            vs = getattr(request.app.state, "vector_store", None)
+            old_vs = getattr(request.app.state, "vector_store", None)
+            old_mem = getattr(request.app.state, "memory_store", None)
+            vs = old_vs
             # Rebuild the vector + memory stores so EVERY setting takes effect
             # live: backend choice, search tuning, reranker, and embed provider.
             try:
@@ -2339,9 +2362,39 @@ async def update_settings(request: Request, body: dict[str, Any] = Body(...)) ->
                 if new_embed is not None:
                     new_ep_name = getattr(new_config, "embed_provider", "ollama")
                     new_concurrency = _embed_concurrency_for(new_ep_name)
-                    vs = make_vector_store(new_config, new_embed, new_concurrency, providers)
-                    request.app.state.vector_store = vs
-                    request.app.state.memory_store = make_memory_store(new_config, new_embed)
+                    new_vs = make_vector_store(new_config, new_embed, new_concurrency, providers)
+                    new_mem = make_memory_store(new_config, new_embed)
+
+                    # On a backend switch, copy the existing index into the new
+                    # store — but only when the embedding model is unchanged
+                    # (otherwise the old vectors are stale and a re-index is the
+                    # only correct option).
+                    if backend_changed:
+                        if embed_changed:
+                            reindex_required = True
+                            reindex_reason = (
+                                "Embedding model changed alongside the backend; existing "
+                                "vectors can't be reused. Re-index to populate the new store."
+                            )
+                        elif old_vs is not None and new_vs is not None:
+                            mig = await migrate_embeddings(old_vs, new_vs)
+                            await migrate_memories(old_mem, new_mem)
+                            reindex_required = mig.needs_reindex
+                            reindex_reason = mig.reason if mig.needs_reindex else ""
+                            logger.info(
+                                "Backend migration: migrated=%d needs_reindex=%s (%s)",
+                                mig.migrated, mig.needs_reindex, mig.reason,
+                            )
+                        else:
+                            reindex_required = True
+                            reindex_reason = (
+                                "No existing store to migrate from; re-index to populate "
+                                "the new backend."
+                            )
+
+                    vs = new_vs
+                    request.app.state.vector_store = new_vs
+                    request.app.state.memory_store = new_mem
                     logger.info(
                         "Vector + memory stores rebuilt after settings change "
                         "(backend: %s, embed_provider: %s).",
@@ -2407,21 +2460,13 @@ async def update_settings(request: Request, body: dict[str, Any] = Body(...)) ->
 
     result = _settings_svc.get_masked()
 
-    # Signal the UI when the embeddings can't follow the config change. Switching
-    # backend (or the Qdrant target) points at a different, empty store; existing
-    # embeddings are not migrated automatically yet, so a re-index is needed.
-    backend_changed = (
-        new_config.vector_store_backend != old_backend
-        or (
-            new_config.vector_store_backend == "qdrant"
-            and (new_config.qdrant_url != old_qdrant_url or new_config.qdrant_mode != old_qdrant_mode)
-        )
-    )
-    if backend_changed:
+    # Auto-migration ran above on a backend switch; only prompt for a re-index
+    # when it couldn't carry the embeddings over.
+    if reindex_required:
         result["needs_reindex"] = True
-        result["reindex_reason"] = (
-            f"Vector backend is now '{new_config.vector_store_backend}'. Existing embeddings "
-            "are not migrated automatically — re-index to populate the new store."
+        result["reindex_reason"] = reindex_reason or (
+            f"Vector backend is now '{new_config.vector_store_backend}'. "
+            "Re-index to populate the new store."
         )
 
     return result
@@ -2619,6 +2664,60 @@ async def trigger_reindex(
     oq = getattr(request.app.state, "ollama_queue", None)
     asyncio.create_task(_background_index(pc, vs, config, oq))
     return {"detail": "Vector store cleared. Full reindex started in the background."}
+
+
+@app.post("/api/vector/migrate", tags=["system"],
+          dependencies=[Depends(require_perm("can_settings"))])
+async def migrate_vector_store(
+    request: Request,
+    svc: Annotated[AuditLogService, Depends(_audit_service)],
+) -> dict:
+    """Copy existing embeddings from the legacy local Chroma store into the
+    currently-configured backend — without re-embedding. Use after switching to
+    Qdrant to carry the index over, or to retry a migration that didn't complete
+    automatically on save.
+    """
+    from backend.memory_store import ChromaMemoryStore
+    from backend.vector_store import ChromaVectorStore
+
+    config = _settings_svc.config
+    dst = getattr(request.app.state, "vector_store", None)
+    if dst is None:
+        raise HTTPException(status_code=503, detail="Vector store not available.")
+    if config.vector_store_backend == "local":
+        return {
+            "migrated": 0, "memories_migrated": 0, "needs_reindex": False,
+            "detail": "The local Chroma store is already the source; nothing to migrate.",
+        }
+
+    providers = getattr(request.app.state, "providers", None)
+    embed_provider = _resolve_embed_provider(config, providers)
+    if embed_provider is None:
+        raise HTTPException(status_code=503, detail="No embedding provider available.")
+
+    # Legacy source = the local Chroma store on disk.
+    src = ChromaVectorStore(embed_provider, persist_directory="/data/chroma")
+    src_mem = ChromaMemoryStore(embed_provider, persist_directory="/data/chroma")
+    dst_mem = getattr(request.app.state, "memory_store", None)
+
+    result = await migrate_embeddings(src, dst)
+    mem_result = await migrate_memories(src_mem, dst_mem)
+
+    actor = getattr(request.state, "user", None)
+    await svc.record_event(
+        action_type="vector_migrate",
+        change_source=f"user:{actor}" if actor else "system",
+        new_value=(
+            f"migrated {result.migrated} vectors, {mem_result.migrated} memories "
+            f"(needs_reindex={result.needs_reindex})"
+        ),
+    )
+    return {
+        "migrated": result.migrated,
+        "memories_migrated": mem_result.migrated,
+        "needs_reindex": result.needs_reindex,
+        "detail": result.reason or "Migration complete.",
+    }
 
 
 class ReindexSinceRequest(BaseModel):
