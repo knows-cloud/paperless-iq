@@ -1,6 +1,15 @@
-import { Select, TextInput, PasswordInput, NumberInput, Paper, Text, Divider, Stack, Badge } from "@mantine/core";
+import { Select, TextInput, PasswordInput, NumberInput, Paper, Text, Divider, Stack, Badge, Switch, Checkbox } from "@mantine/core";
 import { useTranslation } from "react-i18next";
-import { LLM_MODEL_DEFAULTS, EMBED_MODEL_DEFAULTS } from "./constants";
+import { InfoLabel } from "../../components/InfoLabel";
+import {
+  LLM_MODEL_DEFAULTS,
+  EMBED_MODEL_DEFAULTS,
+  VECTOR_STORE_BACKENDS,
+  CHUNK_STRATEGIES,
+  RERANK_METHODS,
+  QDRANT_MODES,
+  QDRANT_QUANTIZATIONS,
+} from "./constants";
 
 interface Props {
   s: Record<string, unknown>;
@@ -22,6 +31,16 @@ interface Props {
   setBedrockSecretKey: (v: string) => void;
   bedrockSessionToken: string;
   setBedrockSessionToken: (v: string) => void;
+  // Vector store
+  vectorStoreBackend: string;
+  setVectorStoreBackend: (v: string) => void;
+  qdrantApiKey: string;
+  setQdrantApiKey: (v: string) => void;
+  // Reranker
+  rerankEnabled: boolean;
+  setRerankEnabled: (v: boolean) => void;
+  rerankMethod: string;
+  setRerankMethod: (v: string) => void;
 }
 
 export function AIProviderTab({
@@ -35,10 +54,18 @@ export function AIProviderTab({
   bedrockAccessKeyId, setBedrockAccessKeyId,
   bedrockSecretKey, setBedrockSecretKey,
   bedrockSessionToken, setBedrockSessionToken,
+  vectorStoreBackend, setVectorStoreBackend,
+  qdrantApiKey, setQdrantApiKey,
+  rerankEnabled, setRerankEnabled,
+  rerankMethod, setRerankMethod,
 }: Props) {
   const { t } = useTranslation();
+
+  const qdrantApiKeyStored = Boolean((s as Record<string, unknown>)?.qdrant_api_key_stored);
+
   return (
     <Stack gap="md">
+      {/* ── LLM Provider ─────────────────────────────────────────────────────── */}
       <Paper withBorder p="md" radius="md">
         <Text fw={600} mb="md">{t("aiProvider.llm.title")}</Text>
         <Stack gap="md">
@@ -172,6 +199,7 @@ export function AIProviderTab({
         </Stack>
       </Paper>
 
+      {/* ── Embeddings ───────────────────────────────────────────────────────── */}
       <Paper withBorder p="md" radius="md">
         <Text fw={600} mb="xs">{t("aiProvider.embeddings.title")}</Text>
         <Text size="sm" c="dimmed" mb="md">{t("aiProvider.embeddings.subtitle")}</Text>
@@ -249,24 +277,246 @@ export function AIProviderTab({
         </Stack>
       </Paper>
 
+      {/* ── Vector Store ─────────────────────────────────────────────────────── */}
       <Paper withBorder p="md" radius="md">
         <Text fw={600} mb="md">{t("aiProvider.vectorStore.title")}</Text>
         <Stack gap="md">
           <Select
-            label={t("aiProvider.vectorStore.backend.label")}
+            label={<InfoLabel label={t("aiProvider.vectorStore.backend.label")} tip={t("aiProvider.vectorStore.backend.tip")} />}
             name="vector_store_backend"
-            defaultValue={String(s.vector_store_backend ?? "local")}
-            data={[
-              { value: "local",      label: t("aiProvider.vectorStore.local") },
-              { value: "bedrock_kb", label: t("aiProvider.vectorStore.bedrockKb") },
-            ]}
+            value={vectorStoreBackend}
+            onChange={v => setVectorStoreBackend(v ?? "local")}
+            data={VECTOR_STORE_BACKENDS.map(b => ({ value: b.value, label: t(b.labelKey) }))}
           />
-          <TextInput
-            label={t("aiProvider.vectorStore.kbId.label")}
-            name="bedrock_kb_id"
-            defaultValue={String(s.bedrock_kb_id ?? "")}
-            placeholder={t("aiProvider.vectorStore.kbId.placeholder")}
+
+          {vectorStoreBackend === "bedrock_kb" && (
+            <TextInput
+              label={t("aiProvider.vectorStore.kbId.label")}
+              name="bedrock_kb_id"
+              defaultValue={String(s.bedrock_kb_id ?? "")}
+              placeholder={t("aiProvider.vectorStore.kbId.placeholder")}
+            />
+          )}
+
+          {vectorStoreBackend === "qdrant" && (
+            <Stack gap="sm">
+              <Select
+                label={<InfoLabel label={t("aiProvider.vectorStore.qdrantMode.label")} tip={t("aiProvider.vectorStore.qdrantMode.tip")} />}
+                name="qdrant_mode"
+                defaultValue={String(s.qdrant_mode ?? "local")}
+                data={QDRANT_MODES.map(m => ({ value: m.value, label: t(m.labelKey) }))}
+              />
+              <TextInput
+                label={<InfoLabel label={t("aiProvider.vectorStore.qdrantUrl.label")} tip={t("aiProvider.vectorStore.qdrantUrl.tip")} />}
+                name="qdrant_url"
+                defaultValue={String(s.qdrant_url ?? "http://qdrant:6333")}
+                placeholder="http://qdrant:6333"
+              />
+              <PasswordInput
+                label={
+                  <span>
+                    <InfoLabel label={t("aiProvider.vectorStore.qdrantApiKey.label")} tip={t("aiProvider.vectorStore.qdrantApiKey.tip")} />
+                    {qdrantApiKeyStored && (
+                      <Badge size="xs" color="teal" variant="light" ml={6}>{t("common.credential.stored")}</Badge>
+                    )}
+                  </span>
+                }
+                value={qdrantApiKey}
+                onChange={e => setQdrantApiKey(e.target.value)}
+                placeholder={qdrantApiKeyStored ? t("common.credential.keepExisting") : t("aiProvider.vectorStore.qdrantApiKey.placeholder")}
+                description={t("aiProvider.vectorStore.qdrantApiKey.description")}
+              />
+              <div style={{ display: "flex", gap: "1rem", flexWrap: "wrap" }}>
+                <TextInput
+                  label={<InfoLabel label={t("aiProvider.vectorStore.qdrantCollection.label")} tip={t("aiProvider.vectorStore.qdrantCollection.tip")} />}
+                  name="qdrant_collection"
+                  defaultValue={String(s.qdrant_collection ?? "paperless_iq_chunks")}
+                  style={{ flex: 1, minWidth: "180px" }}
+                />
+                <TextInput
+                  label={<InfoLabel label={t("aiProvider.vectorStore.qdrantMemoryCollection.label")} tip={t("aiProvider.vectorStore.qdrantMemoryCollection.tip")} />}
+                  name="qdrant_memory_collection"
+                  defaultValue={String(s.qdrant_memory_collection ?? "piq_memories")}
+                  style={{ flex: 1, minWidth: "180px" }}
+                />
+              </div>
+            </Stack>
+          )}
+        </Stack>
+      </Paper>
+
+      {/* ── Similarity Search Tuning ─────────────────────────────────────────── */}
+      <Paper withBorder p="md" radius="md">
+        <Text fw={600} mb="md">{t("aiProvider.search.title")}</Text>
+        <Stack gap="md">
+
+          {/* Common knobs */}
+          <div style={{ display: "flex", gap: "1rem", flexWrap: "wrap" }}>
+            <NumberInput
+              label={<InfoLabel label={t("aiProvider.search.overfetch.label")} tip={t("aiProvider.search.overfetch.tip")} />}
+              name="search_overfetch_multiplier"
+              min={1} max={20}
+              defaultValue={Number(s.search_overfetch_multiplier ?? 5)}
+              style={{ flex: 1, minWidth: "150px" }}
+            />
+            <NumberInput
+              label={<InfoLabel label={t("aiProvider.search.minScore.label")} tip={t("aiProvider.search.minScore.tip")} />}
+              name="search_min_score"
+              min={0} max={1} step={0.05}
+              decimalScale={2}
+              defaultValue={Number(s.search_min_score ?? 0)}
+              style={{ flex: 1, minWidth: "150px" }}
+            />
+          </div>
+
+          <Divider label={t("aiProvider.search.chunkingDivider")} labelPosition="left" />
+          <div style={{ display: "flex", gap: "1rem", flexWrap: "wrap" }}>
+            <NumberInput
+              label={<InfoLabel label={t("aiProvider.search.chunkSize.label")} tip={t("aiProvider.search.chunkSize.tip")} />}
+              name="chunk_size"
+              min={100} max={8000}
+              defaultValue={Number(s.chunk_size ?? 1000)}
+              description={t("aiProvider.search.reindexHint")}
+              style={{ flex: 1, minWidth: "160px" }}
+            />
+            <NumberInput
+              label={<InfoLabel label={t("aiProvider.search.chunkOverlap.label")} tip={t("aiProvider.search.chunkOverlap.tip")} />}
+              name="chunk_overlap"
+              min={0} max={2000}
+              defaultValue={Number(s.chunk_overlap ?? 200)}
+              description={t("aiProvider.search.reindexHint")}
+              style={{ flex: 1, minWidth: "160px" }}
+            />
+            <Select
+              label={<InfoLabel label={t("aiProvider.search.chunkStrategy.label")} tip={t("aiProvider.search.chunkStrategy.tip")} />}
+              name="chunk_strategy"
+              defaultValue={String(s.chunk_strategy ?? "char")}
+              description={t("aiProvider.search.reindexHint")}
+              data={CHUNK_STRATEGIES.map(c => ({ value: c.value, label: t(c.labelKey) }))}
+              style={{ flex: 1, minWidth: "160px" }}
+            />
+          </div>
+
+          {/* Backend-specific HNSW knobs */}
+          {vectorStoreBackend === "local" && (
+            <>
+              <Divider label={t("aiProvider.search.chromaHnswDivider")} labelPosition="left" />
+              <div style={{ display: "flex", gap: "1rem", flexWrap: "wrap" }}>
+                <NumberInput
+                  label={<InfoLabel label={t("aiProvider.search.chromaSearchEf.label")} tip={t("aiProvider.search.chromaSearchEf.tip")} />}
+                  name="chroma_hnsw_search_ef"
+                  min={10} max={2000}
+                  defaultValue={Number(s.chroma_hnsw_search_ef ?? 100)}
+                  style={{ flex: 1, minWidth: "160px" }}
+                />
+                <NumberInput
+                  label={<InfoLabel label={t("aiProvider.search.chromaM.label")} tip={t("aiProvider.search.chromaM.tip")} />}
+                  name="chroma_hnsw_m"
+                  min={4} max={64}
+                  defaultValue={Number(s.chroma_hnsw_m ?? 16)}
+                  description={t("aiProvider.search.reindexHint")}
+                  style={{ flex: 1, minWidth: "160px" }}
+                />
+                <NumberInput
+                  label={<InfoLabel label={t("aiProvider.search.chromaConstructionEf.label")} tip={t("aiProvider.search.chromaConstructionEf.tip")} />}
+                  name="chroma_hnsw_construction_ef"
+                  min={10} max={2000}
+                  defaultValue={Number(s.chroma_hnsw_construction_ef ?? 100)}
+                  description={t("aiProvider.search.reindexHint")}
+                  style={{ flex: 1, minWidth: "160px" }}
+                />
+              </div>
+            </>
+          )}
+
+          {vectorStoreBackend === "qdrant" && (
+            <>
+              <Divider label={t("aiProvider.search.qdrantHnswDivider")} labelPosition="left" />
+              <div style={{ display: "flex", gap: "1rem", flexWrap: "wrap" }}>
+                <NumberInput
+                  label={<InfoLabel label={t("aiProvider.search.qdrantEf.label")} tip={t("aiProvider.search.qdrantEf.tip")} />}
+                  name="qdrant_hnsw_ef"
+                  min={10} max={2000}
+                  defaultValue={Number(s.qdrant_hnsw_ef ?? 128)}
+                  style={{ flex: 1, minWidth: "160px" }}
+                />
+                <NumberInput
+                  label={<InfoLabel label={t("aiProvider.search.qdrantM.label")} tip={t("aiProvider.search.qdrantM.tip")} />}
+                  name="qdrant_hnsw_m"
+                  min={4} max={64}
+                  defaultValue={Number(s.qdrant_hnsw_m ?? 16)}
+                  description={t("aiProvider.search.reindexHint")}
+                  style={{ flex: 1, minWidth: "160px" }}
+                />
+                <Select
+                  label={<InfoLabel label={t("aiProvider.search.qdrantQuantization.label")} tip={t("aiProvider.search.qdrantQuantization.tip")} />}
+                  name="qdrant_quantization"
+                  defaultValue={String(s.qdrant_quantization ?? "none")}
+                  description={t("aiProvider.search.reindexHint")}
+                  data={QDRANT_QUANTIZATIONS.map(q => ({ value: q.value, label: t(q.labelKey) }))}
+                  style={{ flex: 1, minWidth: "160px" }}
+                />
+              </div>
+              <Checkbox
+                label={<InfoLabel label={t("aiProvider.search.qdrantHybrid.label")} tip={t("aiProvider.search.qdrantHybrid.tip")} />}
+                name="qdrant_hybrid_search"
+                defaultChecked={Boolean(s.qdrant_hybrid_search)}
+              />
+            </>
+          )}
+
+          {/* Reranker */}
+          <Divider label={t("aiProvider.search.rerankDivider")} labelPosition="left" />
+          <Switch
+            label={<InfoLabel label={t("aiProvider.search.rerankEnabled.label")} tip={t("aiProvider.search.rerankEnabled.tip")} />}
+            checked={rerankEnabled}
+            onChange={e => setRerankEnabled(e.currentTarget.checked)}
           />
+          {rerankEnabled && (
+            <Stack gap="sm">
+              <div style={{ display: "flex", gap: "1rem", flexWrap: "wrap" }}>
+                <Select
+                  label={<InfoLabel label={t("aiProvider.search.rerankMethod.label")} tip={t("aiProvider.search.rerankMethod.tip")} />}
+                  name="rerank_method"
+                  value={rerankMethod}
+                  onChange={v => setRerankMethod(v ?? "llm")}
+                  data={RERANK_METHODS.map(m => ({ value: m.value, label: t(m.labelKey) }))}
+                  style={{ flex: 1, minWidth: "180px" }}
+                />
+                <NumberInput
+                  label={<InfoLabel label={t("aiProvider.search.rerankTopK.label")} tip={t("aiProvider.search.rerankTopK.tip")} />}
+                  name="rerank_top_k"
+                  min={1} max={100}
+                  defaultValue={Number(s.rerank_top_k ?? 20)}
+                  style={{ flex: 1, minWidth: "140px" }}
+                />
+              </div>
+              {rerankMethod === "local" && (
+                <TextInput
+                  label={<InfoLabel label={t("aiProvider.search.rerankModel.label")} tip={t("aiProvider.search.rerankModel.tip")} />}
+                  name="rerank_model"
+                  defaultValue={String(s.rerank_model ?? "BAAI/bge-reranker-v2-m3")}
+                  description={t("aiProvider.search.rerankModel.description")}
+                />
+              )}
+              {rerankMethod === "api" && (
+                <>
+                  <TextInput
+                    label={<InfoLabel label={t("aiProvider.search.rerankModel.label")} tip={t("aiProvider.search.rerankModel.tip")} />}
+                    name="rerank_model"
+                    defaultValue={String(s.rerank_model ?? "BAAI/bge-reranker-v2-m3")}
+                  />
+                  <PasswordInput
+                    label={t("aiProvider.search.rerankApiKey.label")}
+                    name="rerank_api_key"
+                    defaultValue=""
+                    placeholder={t("common.credential.keepExisting")}
+                    description={t("aiProvider.search.rerankApiKey.description")}
+                  />
+                </>
+              )}
+            </Stack>
+          )}
         </Stack>
       </Paper>
     </Stack>

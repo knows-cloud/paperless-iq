@@ -238,6 +238,7 @@ export const api = {
   getDocumentPreview: (id: number) => requestBlob(`/documents/${id}/preview`),
   getDocumentThumb: (id: number) => requestBlob(`/documents/${id}/thumb`),
   triggerReindex: () => request<{ detail: string }>("/reindex", { method: "POST" }),
+  migrateVectorStore: () => request<{ migrated: number; memories_migrated: number; needs_reindex: boolean; detail: string }>("/vector/migrate", { method: "POST" }),
   reindexSince: (date: string) => request<{ detail: string; count: number }>("/reindex/since", {
     method: "POST",
     body: JSON.stringify({ modified_after: date }),

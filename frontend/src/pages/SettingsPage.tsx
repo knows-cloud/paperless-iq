@@ -54,9 +54,18 @@ export default function SettingsPage() {
   const [bedrockAccessKeyId, setBedrockAccessKeyId] = useState("");
   const [bedrockSecretKey, setBedrockSecretKey] = useState("");
   const [bedrockSessionToken, setBedrockSessionToken] = useState("");
+  // Vector store + search tuning
+  const [vectorStoreBackend, setVectorStoreBackend] = useState("local");
+  const [qdrantApiKey, setQdrantApiKey] = useState("");
+  const [rerankEnabled, setRerankEnabled] = useState(false);
+  const [rerankMethod, setRerankMethod] = useState("llm");
+  // needs_reindex banner (set on successful settings save)
+  const [needsReindex, setNeedsReindex] = useState(false);
+  const [reindexReason, setReindexReason] = useState("");
 
   // Prompts & Fields tab
   const [promptText, setPromptText] = useState("");
+  const [discoveryPrompt, setDiscoveryPrompt] = useState("");
   const [translateLang, setTranslateLang] = useState("de");
   const [translating, setTranslating] = useState(false);
   const [fieldDescs, setFieldDescs] = useState<Record<string, string>>({});
@@ -122,6 +131,7 @@ export default function SettingsPage() {
     setEmbedModel(serverEmbedModel);
 
     setPromptText(String(s.global_prompt_template ?? ""));
+    setDiscoveryPrompt(String(s.discovery_system_prompt ?? ""));
     setPaperlessPublicUrl(String(s.paperless_public_url ?? ""));
     setPaperlessIqInternalUrl(String(s.paperless_iq_internal_url ?? ""));
     setPerFieldPrompts((s.per_field_prompt_templates as Record<string, string>) ?? {});
@@ -137,6 +147,9 @@ export default function SettingsPage() {
     setThemeFontSize(String(s.theme_font_size ?? "14px"));
     setThemeNavIcons((s.theme_nav_icons as Record<string, string>) ?? {});
     setMemoryEnabled(s.memory_enabled !== false);
+    setVectorStoreBackend(String(s.vector_store_backend ?? "local"));
+    setRerankEnabled(Boolean(s.rerank_enabled));
+    setRerankMethod(String(s.rerank_method ?? "llm"));
   }, [s]);
 
   // ── Load memories when Memories tab opens ──────────────────────────────────
@@ -152,10 +165,16 @@ export default function SettingsPage() {
   // ── Mutations ──────────────────────────────────────────────────────────────
   const mutation = useMutation({
     mutationFn: api.updateSettings,
-    onSuccess: () => {
+    onSuccess: (data) => {
       qc.invalidateQueries({ queryKey: ["settings"] });
       qc.invalidateQueries({ queryKey: ["theme"] });
       setMsg(t("settings.saved"));
+      if (data?.needs_reindex) {
+        setNeedsReindex(true);
+        setReindexReason(String(data.reindex_reason ?? ""));
+      } else {
+        setNeedsReindex(false);
+      }
     },
     onError: (e: Error) => setMsg(e.message),
   });
@@ -287,6 +306,39 @@ export default function SettingsPage() {
     values.ollama_url     = ollamaUrl.trim() || "http://localhost:11434";
     values.embed_provider = selectedEmbedProvider;
 
+    if (settingsTab === "aiProvider") {
+      // Cast number fields that come from NumberInput as strings
+      for (const k of [
+        "search_overfetch_multiplier", "search_min_score",
+        "chunk_size", "chunk_overlap",
+        "chroma_hnsw_search_ef", "chroma_hnsw_m", "chroma_hnsw_construction_ef",
+        "qdrant_hnsw_ef", "qdrant_hnsw_m",
+        "rerank_top_k",
+      ]) {
+        if (fd.has(k)) values[k] = Number(values[k]);
+      }
+      // Boolean toggles
+      values.rerank_enabled      = rerankEnabled;
+      values.qdrant_hybrid_search = fd.get("qdrant_hybrid_search") === "on";
+      // Qdrant API key: send new value or __REDACTED__ (backend drops redacted → preserves stored)
+      if (qdrantApiKey.trim()) {
+        values.qdrant_api_key = qdrantApiKey.trim();
+      } else {
+        values.qdrant_api_key = "__REDACTED__";
+      }
+      // Pre-flight §3.4: search_ef must cover overfetch candidates
+      const ef = vectorStoreBackend === "qdrant"
+        ? Number(values.qdrant_hnsw_ef ?? s?.qdrant_hnsw_ef ?? 128)
+        : Number(values.chroma_hnsw_search_ef ?? s?.chroma_hnsw_search_ef ?? 100);
+      const needed = Number(values.similar_docs_count ?? s?.similar_docs_count ?? 10)
+                   * Number(values.search_overfetch_multiplier ?? s?.search_overfetch_multiplier ?? 5);
+      const efField = vectorStoreBackend === "qdrant" ? "qdrant_hnsw_ef" : "chroma_hnsw_search_ef";
+      if (ef < needed) {
+        setMsg(t("aiProvider.search.efValidationError", { ef, efField, needed }));
+        return;
+      }
+    }
+
     // Field descriptions — always from React state
     const allDescs: Record<string, string> = {};
     for (const f of METADATA_FIELDS) {
@@ -314,6 +366,7 @@ export default function SettingsPage() {
     values.per_doctype_prompt_templates = pdtTemplates;
 
     values.global_prompt_template     = promptText;
+    values.discovery_system_prompt    = discoveryPrompt || null;
     values.paperless_public_url       = paperlessPublicUrl.trim() || null;
     values.paperless_iq_internal_url  = paperlessIqInternalUrl.trim();
     values.inbox_tag_id               = inboxTagId ? Number(inboxTagId) : null;
@@ -352,6 +405,50 @@ export default function SettingsPage() {
             {msg && <Text size="sm" c={mutation.isError ? "red" : "teal"}>{msg}</Text>}
           </Group>
         </Group>
+
+        {needsReindex && (
+          <Alert
+            color="yellow"
+            title={t("aiProvider.vectorStore.needsReindexTitle")}
+            withCloseButton
+            onClose={() => setNeedsReindex(false)}
+          >
+            <Text size="sm" mb="xs">{reindexReason || t("aiProvider.vectorStore.needsReindexDefault")}</Text>
+            <Group gap="sm">
+              <Button
+                size="xs"
+                variant="filled"
+                color="yellow"
+                onClick={async () => {
+                  setMaintenanceMsg(null);
+                  try {
+                    const res = await api.migrateVectorStore();
+                    if (res.needs_reindex) {
+                      setMaintenanceMsg(t("aiProvider.vectorStore.migrateNeedsReindex"));
+                    } else {
+                      setMaintenanceMsg(t("aiProvider.vectorStore.migrateDone", { count: res.migrated }));
+                      setNeedsReindex(false);
+                    }
+                  } catch {
+                    setMaintenanceMsg(t("aiProvider.vectorStore.migrateFailed"));
+                  }
+                }}
+              >
+                {t("aiProvider.vectorStore.migrateBtn")}
+              </Button>
+              <Button
+                size="xs"
+                variant="outline"
+                color="yellow"
+                loading={reindexing}
+                onClick={handleReindex}
+              >
+                {t("aiProvider.vectorStore.reindexBtn")}
+              </Button>
+            </Group>
+            {maintenanceMsg && <Text size="xs" mt="xs" c="dimmed">{maintenanceMsg}</Text>}
+          </Alert>
+        )}
 
         <Tabs variant="pills" value={settingsTab} onChange={v => setSettingsTab(v as SettingsTab)}>
           <Tabs.List mb="md">
@@ -400,6 +497,14 @@ export default function SettingsPage() {
               setBedrockSecretKey={setBedrockSecretKey}
               bedrockSessionToken={bedrockSessionToken}
               setBedrockSessionToken={setBedrockSessionToken}
+              vectorStoreBackend={vectorStoreBackend}
+              setVectorStoreBackend={setVectorStoreBackend}
+              qdrantApiKey={qdrantApiKey}
+              setQdrantApiKey={setQdrantApiKey}
+              rerankEnabled={rerankEnabled}
+              setRerankEnabled={setRerankEnabled}
+              rerankMethod={rerankMethod}
+              setRerankMethod={setRerankMethod}
             />
           </Tabs.Panel>
 
@@ -408,6 +513,8 @@ export default function SettingsPage() {
               s={s}
               promptText={promptText}
               setPromptText={setPromptText}
+              discoveryPrompt={discoveryPrompt}
+              setDiscoveryPrompt={setDiscoveryPrompt}
               translateLang={translateLang}
               setTranslateLang={setTranslateLang}
               translating={translating}
