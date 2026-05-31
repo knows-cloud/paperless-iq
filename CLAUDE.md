@@ -53,17 +53,21 @@ backend/
   main.py            — all HTTP routes + _automation_loop + background tasks
   analyzer.py        — DocumentAnalyzer pipeline (fetch → prompt → LLM → persist)
   providers/         — 4 LLM adapters (ollama, bedrock, anthropic, openai)
-  protocols.py       — LLMProvider + VectorStore as typing.Protocol
+  protocols.py       — LLMProvider + VectorStore + Reranker as typing.Protocol
   orm_models.py      — SQLAlchemy 2 ORM (7 tables)
   models.py          — Pydantic v2 API models (separate from ORM)
-  vector_store.py    — ChromaDB + Bedrock KB implementations
-  memory_store.py    — piq_memories ChromaDB collection (long-term memory)
+  vector_store.py    — ChromaDB + Qdrant + Bedrock KB implementations (+ shared helpers)
+  vector_factory.py  — make_vector_store() — single construction point (see D-20)
+  vector_migrate.py  — migrate_embeddings/memories without re-embedding
+  rerankers.py       — LLMReranker + LocalCrossEncoderReranker + BedrockReranker (off by default)
+  memory_store.py    — ChromaMemoryStore + QdrantMemoryStore + make_memory_store() factory
 
 frontend/src/
   pages/SettingsPage.tsx          — ~510-line orchestrator (all state + handleSubmit)
-  pages/settings/constants.ts     — METADATA_FIELDS, LLM_MODEL_DEFAULTS, EMBED_MODEL_DEFAULTS
+  pages/settings/constants.ts     — METADATA_FIELDS, LLM_MODEL_DEFAULTS, EMBED_MODEL_DEFAULTS, VECTOR_STORE_BACKENDS, CHUNK_STRATEGIES, RERANK_METHODS, QDRANT_MODES, QDRANT_QUANTIZATIONS
   pages/settings/*.tsx            — 8 tab components (pure display; exceptions: MemoriesTab + AccessControlTab own their CRUD)
   components/MarkdownText.tsx     — markdown + citation renderer (used by DiscoveryPage)
+  components/InfoLabel.tsx        — label + Tooltip info icon (§9.5 pattern); use for every settings field that has a tip
   PermissionsContext.tsx          — React context + usePermissions() hook; populated from /api/piq-users/me
   locales/{en,de,fr,es,it}/translation.json — i18n strings (react-i18next)
 ```
@@ -92,6 +96,8 @@ frontend/src/
 | Duplicate pagination loop for Paperless NGX lists | `_paperless_list(entity, extra_fields=None)` |
 | `get_document_ocr_text()` inside `analyze()` | `doc_meta.get("content", "")` |
 | Inherit from `LLMProvider` in a provider adapter | Implement the `typing.Protocol` structurally |
+| Construct `ChromaVectorStore` / `QdrantVectorStore` in `main.py` | `make_vector_store(config, provider, concurrency, providers)` |
+| `vs._collection`, `vs._llm`, `vs._embed_sem` from outside `vector_store.py` | Use Protocol methods: `vs.count()`, `vs.set_embed_provider()`, `vs.embed_health_check()`, `vs.get_indexed_chunk_counts()` |
 
 ---
 

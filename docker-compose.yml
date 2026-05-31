@@ -20,6 +20,26 @@ services:
       # SECRET_KEY: ${SECRET_KEY}
       # Optional: override Ollama URL if not running on the same host
       # OLLAMA_HOST: http://your-ollama-host:11434
+      #
+      # Qdrant vector backend (opt-in — start with: docker compose --profile qdrant up -d)
+      # Leave unset to keep using the default local ChromaDB backend.
+      # PIQ_VECTOR_STORE_BACKEND: qdrant
+      PIQ_QDRANT_URL: ${PIQ_QDRANT_URL:-http://qdrant:6333}
+    networks:
+      - paperless_default
+
+  # ── Qdrant vector store (opt-in profile) ────────────────────────────────────
+  # Usage:  docker compose --profile qdrant up -d
+  # Qdrant stores its data in the qdrant-data named volume.
+  # After switching the backend in Settings, use the "Migrate embeddings" button
+  # or POST /api/vector/migrate to copy existing ChromaDB vectors over without
+  # re-embedding.  If the embedding model changed, a full re-index is required.
+  qdrant:
+    image: qdrant/qdrant:latest
+    profiles: ["qdrant"]
+    restart: unless-stopped
+    volumes:
+      - qdrant-data:/qdrant/storage
     networks:
       - paperless_default
 
@@ -29,3 +49,4 @@ networks:
 
 volumes:
   paperless-iq-data:
+  qdrant-data:

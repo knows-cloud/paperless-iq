@@ -18,7 +18,7 @@ graph TD
     end
 
     LLM["LLM Provider Layer\nOllama · Bedrock · Anthropic · OpenAI"]
-    Storage["Storage\nSQLite (ORM) · ChromaDB (on disk)"]
+    Storage["Storage\nSQLite (ORM) · ChromaDB / Qdrant (vectors)"]
     NGX["Paperless NGX\nREST API (token-authenticated)"]
 
     Browser -->|"HTTP / REST + SSE"| FastAPI
@@ -74,15 +74,43 @@ Four provider adapters that all implement `protocols.LLMProvider`:
 All blocking (boto3) calls use `loop.run_in_executor(None, fn)` with `asyncio.get_running_loop()`.
 
 ### `backend/protocols.py`
-`LLMProvider` and `VectorStore` as `typing.Protocol` (structural subtyping). Implementations are not required to inherit from these — they just need to match the method signatures. This keeps the adapters decoupled.
+`LLMProvider`, `VectorStore`, and `Reranker` as `typing.Protocol` (structural subtyping). Implementations are not required to inherit from these — they just need to match the method signatures. This keeps the adapters decoupled.
 
-### `backend/vector_store.py` (~420 lines)
-`ChromaVectorStore` and `BedrockKBVectorStore` both implement `VectorStore`. ChromaDB runs locally on disk (`/data/chroma`). Two collections:
-- `paperless_iq_chunks` — document passages with `doc_id`, `title`, `url` metadata
-- `piq_memories` — long-term memory facts with `memory_id` metadata
+### `backend/vector_store.py`
+Three `VectorStore` implementations plus shared module-level helpers:
+
+| Class | Backend | Notes |
+|-------|---------|-------|
+| `ChromaVectorStore` | ChromaDB (local disk, `/data/chroma`) | Default; HNSW configurable via `configuration=` API |
+| `QdrantVectorStore` | Qdrant (self-hosted or Qdrant Cloud) | Async client (D-06); lazy collection bootstrap; `location=":memory:"` for tests |
+| `BedrockKnowledgeBaseStore` | Amazon Bedrock Knowledge Base | Delegates embedding storage to managed KB; read-only query |
+
+Shared helpers (used by all backends): `_build_embed_prefix`, `_build_base_meta`, `_maybe_rerank`, `_assemble_doc_results`, `_assemble_chunk_results`.
+
+Chunking is handled by `_chunk` → `_chunk_text` (char windows) or `_chunk_text_sentences` (sentence-aware packing).
+
+`dump_points`/`load_points` on each store enables backend-agnostic migration without re-embedding.
+
+### `backend/vector_factory.py`
+`make_vector_store(config, embed_provider, concurrency, providers)` — single construction point for all three backends. Wires search-tuning knobs (overfetch, min-score, chunking, HNSW, reranker) consistently. Never construct a store class directly in `main.py` (see D-20).
+
+### `backend/rerankers.py`
+`Reranker` implementations wired into the shared query post-processing path:
+- `LLMReranker` — listwise prompt to the configured chat provider; no new deps
+- `LocalCrossEncoderReranker` — sentence-transformers cross-encoder; **optional** dep (`pip install 'paperless-iq[rerank-local]'`); torch imported lazily on first call
+- `BedrockReranker` — Bedrock Rerank API; reuses existing Bedrock credentials
+
+`build_reranker(config, providers)` factory; ships disabled (`rerank_enabled=False`).
+
+### `backend/vector_migrate.py`
+`migrate_embeddings(src, dst)` / `migrate_memories(src, dst)` — copies stored vectors from one backend to another without re-embedding. Used by the settings-reload auto-migration and by `POST /api/vector/migrate`.
 
 ### `backend/memory_store.py`
-Manages the `piq_memories` ChromaDB collection. Key method: `find_similar(fact) → str | None` — returns the ID of an existing memory with cosine similarity ≥ 0.92 (deduplication threshold), or `None` if the fact is new.
+`MemoryStore` base (shared `find_similar` + `SIMILARITY_THRESHOLD = 0.88`). Two backends:
+- `ChromaMemoryStore` — default, co-located with the document store on disk
+- `QdrantMemoryStore` — uses the same Qdrant client as `QdrantVectorStore`
+
+`make_memory_store(config, provider)` factory selects the backend matching `vector_store_backend`.
 
 ### `backend/orm_models.py`
 SQLAlchemy 2 ORM declarations. Seven tables:

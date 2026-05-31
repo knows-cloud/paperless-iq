@@ -206,6 +206,23 @@ The bootstrap problem (first admin has no permissions yet) is solved by `sync_ng
 
 ---
 
+## D-20 · Vector backend selection via factory; embeddings are app-side and portable
+
+**Decision:** The active vector store is built by `backend/vector_factory.make_vector_store(config, embed_provider, concurrency, providers)`. Embeddings are computed **inside the app** (not delegated to the store) and are therefore backend-portable. Switching backends auto-migrates existing vectors without re-embedding when the embedding model is unchanged; if the model changed the app sets `needs_reindex=True` in the save response and the user must trigger a full re-index.
+
+**Rationale:** Before this, `main.py` hardcoded `ChromaVectorStore` and reached into its private attributes (`_collection`, `_llm`, `_embed_sem`). `BedrockKnowledgeBaseStore` was in the Protocol but never wired. The factory:
+- enforces the `VectorStore` Protocol as the only interface the rest of the app touches
+- centralises construction so every caller (lifespan, settings reload) gets identical configuration
+- makes backend switches testable via the `:memory:` Qdrant client
+- fixes the pre-existing bug that `bedrock_kb` was silently ignored at startup
+
+**Rule:**
+- Never construct `ChromaVectorStore`, `QdrantVectorStore`, or `BedrockKnowledgeBaseStore` directly in `main.py`. Always go through `make_vector_store`.
+- Never access `vs._collection`, `vs._llm`, `vs._embed_sem`, or `vs._embed_concurrency` from outside `vector_store.py`. Use the Protocol methods (`vs.count()`, `vs.set_embed_provider()`, `vs.embed_health_check()`, etc.).
+- `migrate_embeddings(src, dst)` in `backend/vector_migrate.py` is the only code that reads raw vectors out of a store (via `dump_points`/`load_points`). No other code should enumerate raw vectors.
+
+---
+
 ## D-15 · `_paperless_list` handles all entity pagination
 
 **Decision:** The private helper `_paperless_list(entity, extra_fields=None)` in `main.py` handles all pagination for Paperless NGX list endpoints. Functions like `list_tags`, `list_custom_fields`, `list_storage_paths` are one-liners that call this helper.
