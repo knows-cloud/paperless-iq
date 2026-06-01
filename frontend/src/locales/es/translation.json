@@ -319,7 +319,7 @@
   "aiProvider.search.qdrantQuantization.scalar": "Escalar (INT8, ~4× compresión)",
   "aiProvider.search.qdrantQuantization.binary": "Binario (~32× compresión)",
   "aiProvider.search.qdrantHybrid.label": "Búsqueda híbrida (densa + dispersa)",
-  "aiProvider.search.qdrantHybrid.tip": "Combina similitud vectorial densa con coincidencia dispersa. Aún no implementado.",
+  "aiProvider.search.qdrantHybrid.tip": "Combina vectores semánticos densos con coincidencia de palabras clave (BM25) mediante fusión RRF — mejora el recall en consultas precisas/poco frecuentes. Requiere el codificador disperso fastembed (paperless-iq[qdrant-hybrid]) y una reindexación.",
   "aiProvider.search.rerankDivider": "Reclasificación",
   "aiProvider.search.rerankEnabled.label": "Activar reclasificación",
   "aiProvider.search.rerankEnabled.tip": "Puntúa pares (consulta, pasaje) con un cross-encoder tras la búsqueda vectorial.",

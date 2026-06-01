@@ -29,6 +29,11 @@ dependencies = [
 rerank-local = [
     "sentence-transformers>=3.0",
 ]
+# Sparse encoder for Qdrant hybrid search (qdrant_hybrid_search). Pulls
+# onnxruntime; imported lazily — see QdrantVectorStore._ensure_sparse_encoder.
+qdrant-hybrid = [
+    "fastembed>=0.3",
+]
 
 [dependency-groups]
 dev = [

@@ -319,7 +319,7 @@
   "aiProvider.search.qdrantQuantization.scalar": "Scalar (INT8, ~4× compression)",
   "aiProvider.search.qdrantQuantization.binary": "Binary (~32× compression)",
   "aiProvider.search.qdrantHybrid.label": "Hybrid search (dense + sparse)",
-  "aiProvider.search.qdrantHybrid.tip": "Combines dense vector similarity with sparse keyword matching using RRF fusion. Typically improves recall for precise queries. Not yet implemented — reserved for a future release.",
+  "aiProvider.search.qdrantHybrid.tip": "Combines dense semantic vectors with sparse keyword (BM25) matching via RRF fusion — improves recall for precise/rare-term queries. Needs the fastembed sparse encoder (paperless-iq[qdrant-hybrid]) and a reindex to take effect.",
   "aiProvider.search.rerankDivider": "Re-ranking",
   "aiProvider.search.rerankEnabled.label": "Enable re-ranking",
   "aiProvider.search.rerankEnabled.tip": "After vector search, re-score (query, passage) pairs with a cross-encoder. Significantly improves precision. Adds latency proportional to rerank_top_k × passage length.",

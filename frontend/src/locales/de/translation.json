@@ -319,7 +319,7 @@
   "aiProvider.search.qdrantQuantization.scalar": "Skalar (INT8, ~4× Komprimierung)",
   "aiProvider.search.qdrantQuantization.binary": "Binär (~32× Komprimierung)",
   "aiProvider.search.qdrantHybrid.label": "Hybridsuche (dicht + spärlich)",
-  "aiProvider.search.qdrantHybrid.tip": "Kombiniert dichte Vektorähnlichkeit mit spärlichem Keyword-Matching. Noch nicht implementiert.",
+  "aiProvider.search.qdrantHybrid.tip": "Kombiniert dichte semantische Vektoren mit spärlichem Keyword-Matching (BM25) per RRF-Fusion — verbessert den Recall bei präzisen/seltenen Begriffen. Benötigt den fastembed-Sparse-Encoder (paperless-iq[qdrant-hybrid]) und eine Neuindizierung.",
   "aiProvider.search.rerankDivider": "Re-Ranking",
   "aiProvider.search.rerankEnabled.label": "Re-Ranking aktivieren",
   "aiProvider.search.rerankEnabled.tip": "Nach der Vektorsuche (Abfrage, Passage)-Paare mit einem Cross-Encoder neu bewerten. Verbessert die Präzision erheblich.",

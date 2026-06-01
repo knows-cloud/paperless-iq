@@ -674,6 +674,7 @@ class QdrantVectorStore(_EmbeddingBackedStore):
         hnsw_m: int = 16,
         quantization: str = "none",
         hybrid_search: bool = False,
+        sparse_model: str = "Qdrant/bm25",
     ) -> None:
         from qdrant_client import AsyncQdrantClient
 
@@ -688,11 +689,12 @@ class QdrantVectorStore(_EmbeddingBackedStore):
         self._hnsw_ef = hnsw_ef
         self._hnsw_m = hnsw_m
         self._quantization = quantization
-        if hybrid_search:
-            # Dense + sparse (RRF) needs a sparse encoder we don't ship yet;
-            # fall back to dense-only so the flag never silently breaks search.
-            logger.warning("qdrant_hybrid_search is not yet implemented; using dense search.")
-        self._hybrid_search = False
+        # Hybrid = dense + sparse (BM25/SPLADE) fused with RRF. The sparse encoder
+        # (fastembed) is an optional dep, loaded lazily on first use. Tests may
+        # inject a fake encoder by setting ``_sparse_encoder`` before indexing.
+        self._hybrid_search = hybrid_search
+        self._sparse_model = sparse_model
+        self._sparse_encoder: Any = None
         self._embed_sem = asyncio.Semaphore(embed_concurrency)
         self._embed_concurrency = embed_concurrency
         self._collection = collection_name
@@ -706,6 +708,67 @@ class QdrantVectorStore(_EmbeddingBackedStore):
     @staticmethod
     def _point_id(doc_id: int, chunk_index: int) -> str:
         return str(uuid.uuid5(_QDRANT_POINT_NAMESPACE, f"{doc_id}_{chunk_index}"))
+
+    def _ensure_sparse_encoder(self):
+        """Lazily load the fastembed sparse encoder (optional dependency)."""
+        if self._sparse_encoder is None:
+            try:
+                from fastembed import SparseTextEmbedding
+            except ImportError as exc:  # pragma: no cover - exercised via build path
+                raise RuntimeError(
+                    "Hybrid search needs the sparse encoder. Install it with "
+                    "`pip install 'paperless-iq[qdrant-hybrid]'` (adds fastembed), "
+                    "or disable qdrant_hybrid_search."
+                ) from exc
+            logger.info("Loading sparse encoder '%s' (first run downloads the model).", self._sparse_model)
+            self._sparse_encoder = SparseTextEmbedding(self._sparse_model)
+        return self._sparse_encoder
+
+    async def _sparse_vectors(self, texts: list[str]) -> list:
+        """Batch-encode texts to Qdrant SparseVectors (CPU encoder, off-loop)."""
+        from qdrant_client import models
+
+        if not texts:
+            return []
+        loop = asyncio.get_running_loop()
+
+        def _encode():
+            encoder = self._ensure_sparse_encoder()
+            out = []
+            for emb in encoder.embed(texts):
+                indices = emb.indices.tolist() if hasattr(emb.indices, "tolist") else list(emb.indices)
+                values = emb.values.tolist() if hasattr(emb.values, "tolist") else list(emb.values)
+                out.append(models.SparseVector(indices=indices, values=values))
+            return out
+
+        return await loop.run_in_executor(None, _encode)
+
+    async def _search_points(self, text: str, limit: int, query_filter=None):
+        """Run dense (or hybrid dense+sparse RRF) retrieval, returning points."""
+        from qdrant_client import models
+
+        dense = await self._embed(text)
+        if self._hybrid_search:
+            sparse = (await self._sparse_vectors([text]))[0]
+            res = await self._client.query_points(
+                collection_name=self._collection,
+                prefetch=[
+                    models.Prefetch(query=dense, using="dense", limit=limit, filter=query_filter),
+                    models.Prefetch(query=sparse, using="sparse", limit=limit, filter=query_filter),
+                ],
+                query=models.FusionQuery(fusion=models.Fusion.RRF),
+                limit=limit,
+                with_payload=True,
+            )
+        else:
+            res = await self._client.query_points(
+                collection_name=self._collection,
+                query=dense,
+                limit=limit,
+                query_filter=query_filter,
+                with_payload=True,
+            )
+        return res.points
 
     def _quantization_config(self):
         from qdrant_client import models
@@ -739,12 +802,27 @@ class QdrantVectorStore(_EmbeddingBackedStore):
             if self._ready:
                 return
             if not await self._client.collection_exists(self._collection):
-                await self._client.create_collection(
-                    collection_name=self._collection,
-                    vectors_config=models.VectorParams(size=dim, distance=models.Distance.COSINE),
+                dense_params = models.VectorParams(
+                    size=dim,
+                    distance=models.Distance.COSINE,
                     hnsw_config=models.HnswConfigDiff(m=self._hnsw_m, ef_construct=self._hnsw_ef),
                     quantization_config=self._quantization_config(),
                 )
+                if self._hybrid_search:
+                    # Named dense + sparse vectors for RRF fusion. Toggling hybrid
+                    # changes the schema, so it requires a reindex (documented).
+                    await self._client.create_collection(
+                        collection_name=self._collection,
+                        vectors_config={"dense": dense_params},
+                        sparse_vectors_config={
+                            "sparse": models.SparseVectorParams(modifier=models.Modifier.IDF)
+                        },
+                    )
+                else:
+                    await self._client.create_collection(
+                        collection_name=self._collection,
+                        vectors_config=dense_params,
+                    )
                 # Payload indexes speed up filtering (server only; no-op locally).
                 for field, schema in (
                     ("document_id", models.PayloadSchemaType.INTEGER),
@@ -789,17 +867,23 @@ class QdrantVectorStore(_EmbeddingBackedStore):
                     return i, None, chunk
 
         embedded = await asyncio.gather(*[_embed_chunk(i, c) for i, c in enumerate(chunks)])
+        ok = [(i, emb, chunk) for (i, emb, chunk) in embedded if emb is not None]
 
         # tag_ids as a real list enables a server-side must_not filter for
         # exclude_tag_id (Qdrant-specific; derived from the canonical
         # tag_ids_json so it stays consistent and migration-safe).
         tag_ids = json.loads(base_meta.get("tag_ids_json") or "[]")
 
+        # Sparse vectors for hybrid search — encode the same prefixed text as the
+        # dense embedding so keyword matches include title/correspondent terms.
+        sparse_by_idx: dict[int, Any] = {}
+        if self._hybrid_search and ok:
+            sparse_list = await self._sparse_vectors([embed_prefix + chunk for _, _, chunk in ok])
+            sparse_by_idx = {i: sv for (i, _, _), sv in zip(ok, sparse_list)}
+
         points: list[Any] = []
         dim: int | None = None
-        for i, emb, chunk in embedded:
-            if emb is None:
-                continue
+        for i, emb, chunk in ok:
             dim = dim or len(emb)
             payload = {
                 **base_meta,
@@ -809,7 +893,8 @@ class QdrantVectorStore(_EmbeddingBackedStore):
                 "passage": chunk,
                 "chunk_id": f"{doc_id}_{i}",
             }
-            points.append(models.PointStruct(id=self._point_id(doc_id, i), vector=emb, payload=payload))
+            vector: Any = {"dense": emb, "sparse": sparse_by_idx[i]} if self._hybrid_search else emb
+            points.append(models.PointStruct(id=self._point_id(doc_id, i), vector=vector, payload=payload))
 
         if not points or dim is None:
             return
@@ -841,24 +926,33 @@ class QdrantVectorStore(_EmbeddingBackedStore):
         SearchResult.score convention Chroma uses ((cos+1)/2)."""
         return max(0.0, min(1.0, (similarity + 1.0) / 2.0))
 
+    def _point_scores(self, points) -> list[float]:
+        """Normalised [0,1] score per point. Dense: (cos+1)/2. Hybrid: RRF fused
+        scores aren't similarities, so min-max normalise them across the result
+        set (best→1.0); ordering is preserved either way."""
+        if not self._hybrid_search:
+            return [self._norm_score(p.score) for p in points]
+        raw = [p.score for p in points]
+        if not raw:
+            return []
+        lo, hi = min(raw), max(raw)
+        if hi - lo < 1e-9:
+            return [1.0 for _ in raw]
+        return [(s - lo) / (hi - lo) for s in raw]
+
     async def query(self, text: str, top_n: int) -> list[SearchResult]:
         if not await self._collection_present():
             return []
-        embedding = await self._embed(text)
-        res = await self._client.query_points(
-            collection_name=self._collection,
-            query=embedding,
-            limit=self._candidate_count(top_n),
-            with_payload=True,
-        )
+        points = await self._search_points(text, self._candidate_count(top_n))
+        scores = self._point_scores(points)
         candidates: list[dict[str, Any]] = []
-        for p in res.points:
+        for p, sc in zip(points, scores):
             payload = p.payload or {}
             candidates.append({
                 "document_id": payload.get("document_id", 0),
                 "title": payload.get("title", ""),
                 "passage": payload.get("passage", ""),
-                "score": self._norm_score(p.score),
+                "score": sc,
             })
         rerank_scores = await _maybe_rerank(
             self._reranker, text, [c["passage"] for c in candidates]
@@ -868,22 +962,17 @@ class QdrantVectorStore(_EmbeddingBackedStore):
     async def query_chunks(self, text: str, top_n_chunks: int) -> list[dict[str, Any]]:
         if not await self._collection_present():
             return []
-        embedding = await self._embed(text)
-        res = await self._client.query_points(
-            collection_name=self._collection,
-            query=embedding,
-            limit=top_n_chunks,
-            with_payload=True,
-        )
+        points = await self._search_points(text, top_n_chunks)
+        scores = self._point_scores(points)
         candidates: list[dict[str, Any]] = []
-        for p in res.points:
+        for p, sc in zip(points, scores):
             payload = p.payload or {}
             doc_id = payload.get("document_id", 0)
             candidates.append({
                 "document_id": doc_id,
                 "title": payload.get("title", ""),
                 "passage": payload.get("passage", ""),
-                "score": self._norm_score(p.score),
+                "score": sc,
                 "deeplink_url": _deeplink(doc_id),
                 "chunk_index": payload.get("chunk_index", 0),
             })
@@ -908,7 +997,6 @@ class QdrantVectorStore(_EmbeddingBackedStore):
             return empty
         from qdrant_client import models
 
-        embedding = await self._embed(text)
         # Exclude documents carrying the given tag (e.g. the inbox tag) server-side
         # so suggestions don't come from un-reviewed documents.
         query_filter = None
@@ -920,12 +1008,8 @@ class QdrantVectorStore(_EmbeddingBackedStore):
                     )
                 ]
             )
-        res = await self._client.query_points(
-            collection_name=self._collection,
-            query=embedding,
-            limit=top_n * self._overfetch_multiplier,
-            query_filter=query_filter,
-            with_payload=True,
+        points = await self._search_points(
+            text, top_n * self._overfetch_multiplier, query_filter=query_filter
         )
 
         all_tags: set[str] = set()
@@ -934,7 +1018,7 @@ class QdrantVectorStore(_EmbeddingBackedStore):
         all_custom_fields: dict[str, set[str]] = {}
         seen_doc_ids: set[int] = set()
 
-        for p in res.points:
+        for p in points:
             payload = p.payload or {}
             doc_id = payload.get("document_id", 0)
             if doc_id in seen_doc_ids:
@@ -1039,6 +1123,9 @@ class QdrantVectorStore(_EmbeddingBackedStore):
             for r in records:
                 if r.vector is None:
                     continue
+                # Named-vector (hybrid) collections return a dict; migrate only
+                # the dense vector (sparse is re-encoded from the passage on load).
+                vec = r.vector["dense"] if isinstance(r.vector, dict) else r.vector
                 payload = dict(r.payload or {})
                 logical_id = payload.pop("chunk_id", None) or str(r.id)
                 document = payload.pop("passage", "")
@@ -1047,7 +1134,7 @@ class QdrantVectorStore(_EmbeddingBackedStore):
                 payload.pop("tag_ids", None)
                 points.append({
                     "id": logical_id,
-                    "vector": [float(x) for x in r.vector],
+                    "vector": [float(x) for x in vec],
                     "document": document,
                     "metadata": payload,
                 })
@@ -1062,8 +1149,15 @@ class QdrantVectorStore(_EmbeddingBackedStore):
         if not points:
             return 0
         await self._ensure_collection(len(points[0]["vector"]))
+
+        # For a hybrid destination, rebuild sparse vectors from the passages
+        # (dump only carries dense). Batch-encode once.
+        sparse_vecs: list[Any] = []
+        if self._hybrid_search:
+            sparse_vecs = await self._sparse_vectors([p.get("document", "") for p in points])
+
         structs = []
-        for p in points:
+        for idx, p in enumerate(points):
             meta = dict(p.get("metadata") or {})
             # Re-derive the Qdrant-only tag_ids list from the canonical json so
             # exclude_tag_id filtering keeps working after a migration.
@@ -1075,9 +1169,13 @@ class QdrantVectorStore(_EmbeddingBackedStore):
                 **meta, "tag_ids": tag_ids,
                 "passage": p.get("document", ""), "chunk_id": p["id"],
             }
+            vector: Any = (
+                {"dense": p["vector"], "sparse": sparse_vecs[idx]}
+                if self._hybrid_search else p["vector"]
+            )
             structs.append(models.PointStruct(
                 id=str(uuid.uuid5(_QDRANT_POINT_NAMESPACE, p["id"])),
-                vector=p["vector"],
+                vector=vector,
                 payload=payload,
             ))
         await self._client.upsert(collection_name=self._collection, points=structs)
