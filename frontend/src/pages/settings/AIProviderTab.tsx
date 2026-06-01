@@ -500,20 +500,13 @@ export function AIProviderTab({
                 />
               )}
               {rerankMethod === "api" && (
-                <>
-                  <TextInput
-                    label={<InfoLabel label={t("aiProvider.search.rerankModel.label")} tip={t("aiProvider.search.rerankModel.tip")} />}
-                    name="rerank_model"
-                    defaultValue={String(s.rerank_model ?? "BAAI/bge-reranker-v2-m3")}
-                  />
-                  <PasswordInput
-                    label={t("aiProvider.search.rerankApiKey.label")}
-                    name="rerank_api_key"
-                    defaultValue=""
-                    placeholder={t("common.credential.keepExisting")}
-                    description={t("aiProvider.search.rerankApiKey.description")}
-                  />
-                </>
+                <TextInput
+                  label={<InfoLabel label={t("aiProvider.search.rerankModel.label")} tip={t("aiProvider.search.rerankModel.tip")} />}
+                  name="rerank_model"
+                  defaultValue={String(s.rerank_model ?? "amazon.rerank-v1:0")}
+                  placeholder="amazon.rerank-v1:0"
+                  description={t("aiProvider.search.rerankApiDescription")}
+                />
               )}
             </Stack>
           )}

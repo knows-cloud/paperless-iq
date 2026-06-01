@@ -475,7 +475,7 @@ class DocumentAnalyzer:
             and document_content
             and hasattr(self._vector_store, "query_similar_metadata")
             and hasattr(self._vector_store, "count")
-            and self._vector_store.count() > 0
+            and await self._vector_store.count() > 0
         ):
             try:
                 similar_meta = await self._vector_store.query_similar_metadata(

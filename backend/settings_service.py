@@ -275,6 +275,11 @@ class SettingsService:
                 except (json.JSONDecodeError, Exception):
                     pass
 
+        # "<field>_stored" flags let the UI show a "stored" badge + keep-existing
+        # placeholder without exposing the value (mirrors bedrock_has_secret).
+        data["qdrant_api_key_stored"] = bool(self._config.qdrant_api_key)
+        data["rerank_api_key_stored"] = bool(self._config.rerank_api_key)
+
         for field in CREDENTIAL_FIELDS:
             if data.get(field):  # only redact when non-empty
                 data[field] = REDACTED_PLACEHOLDER
