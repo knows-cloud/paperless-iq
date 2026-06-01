@@ -207,7 +207,29 @@ def _assemble_chunk_results(
     return out
 
 
-class ChromaVectorStore:
+class _EmbeddingBackedStore:
+    """Shared embedding plumbing for stores that embed via an ``LLMProvider``.
+
+    Subclasses set ``_llm`` and ``_embed_concurrency`` in their constructor.
+    """
+
+    _llm: LLMProvider
+    _embed_concurrency: int
+
+    async def _embed(self, text: str) -> list[float]:
+        return await self._llm.embed(text)
+
+    async def embed_health_check(self) -> bool:
+        """Return True if the embedding provider is reachable."""
+        return await self._llm.health_check()
+
+    @property
+    def embed_concurrency(self) -> int:
+        """The current embedding concurrency limit (read-only)."""
+        return self._embed_concurrency
+
+
+class ChromaVectorStore(_EmbeddingBackedStore):
     """Local persistent vector store backed by ChromaDB with chunked embeddings.
 
     Documents are split into overlapping chunks before embedding. Each chunk
@@ -259,10 +281,6 @@ class ChromaVectorStore:
             name=collection_name,
             configuration=self._collection_config,
         )
-
-    async def _embed(self, text: str) -> list[float]:
-        """Embed a single chunk of text."""
-        return await self._llm.embed(text)
 
     async def upsert(self, doc_id: int, text: str, metadata: dict) -> None:
         """Split document into chunks, embed all in parallel, and store with metadata."""
@@ -467,23 +485,6 @@ class ChromaVectorStore:
         """Return the number of chunks in the store."""
         return self._collection.count()
 
-    @property
-    def embed_concurrency(self) -> int:
-        """The current embedding concurrency limit (read-only)."""
-        return self._embed_concurrency
-
-    def set_embed_provider(self, provider: LLMProvider, concurrency: int) -> None:
-        """Swap the embedding provider and rebuild the semaphore if the
-        concurrency limit changed (e.g. switching Ollama ↔ Bedrock)."""
-        self._llm = provider
-        if self._embed_concurrency != concurrency:
-            self._embed_sem = asyncio.Semaphore(concurrency)
-            self._embed_concurrency = concurrency
-
-    async def embed_health_check(self) -> bool:
-        """Return True if the embedding provider is reachable."""
-        return await self._llm.health_check()
-
     async def get_indexed_chunk_counts(self) -> tuple[dict[int, int], dict[int, int]]:
         """Enumerate stored chunks and return per-document counts.
 
@@ -628,7 +629,7 @@ class ChromaVectorStore:
         return len(points)
 
 
-class QdrantVectorStore:
+class QdrantVectorStore(_EmbeddingBackedStore):
     """Vector store backed by Qdrant with chunked embeddings.
 
     Mirrors ChromaVectorStore semantics (same chunking, embed prefix, payload
@@ -682,9 +683,6 @@ class QdrantVectorStore:
             self._client = AsyncQdrantClient(url=url, api_key=api_key or None)
         self._ready = False
         self._init_lock = asyncio.Lock()
-
-    async def _embed(self, text: str) -> list[float]:
-        return await self._llm.embed(text)
 
     @staticmethod
     def _point_id(doc_id: int, chunk_index: int) -> str:
@@ -978,19 +976,6 @@ class QdrantVectorStore:
             logger.debug("Qdrant reset: delete_collection failed.", exc_info=True)
         self._ready = False
         logger.info("Qdrant collection '%s' reset (all vectors cleared).", self._collection)
-
-    @property
-    def embed_concurrency(self) -> int:
-        return self._embed_concurrency
-
-    def set_embed_provider(self, provider: LLMProvider, concurrency: int) -> None:
-        self._llm = provider
-        if self._embed_concurrency != concurrency:
-            self._embed_sem = asyncio.Semaphore(concurrency)
-            self._embed_concurrency = concurrency
-
-    async def embed_health_check(self) -> bool:
-        return await self._llm.health_check()
 
     async def dump_points(self) -> list[dict[str, Any]]:
         """Export all points (id, vector, document, metadata) for migration.

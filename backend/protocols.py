@@ -105,13 +105,6 @@ class VectorStore(Protocol):
         """Wipe all vectors (e.g. before switching embedding models)."""
         ...
 
-    def set_embed_provider(self, provider: LLMProvider, concurrency: int) -> None:
-        """Swap the embedding provider and update the concurrency limit.
-
-        Replaces direct mutation of backend internals on a settings change.
-        """
-        ...
-
     async def embed_health_check(self) -> bool:
         """Return True if the backend's embedding provider is reachable."""
         ...
