@@ -58,14 +58,14 @@ logger = logging.getLogger(__name__)
 
 # Fields that contain credentials and must be redacted on export / API response
 CREDENTIAL_FIELDS = frozenset(
-    {"llm_credentials", "webhook_secret", "qdrant_api_key", "rerank_api_key"}
+    {"llm_credentials", "webhook_secret", "qdrant_api_key"}
 )
 
 # Credential fields typed as bytes (EncryptedBlob) — env-var values for these
 # must be encoded to bytes before being placed on the model. webhook_secret is
 # a plain str field and is excluded.
 _BYTES_CREDENTIAL_FIELDS = frozenset(
-    {"llm_credentials", "qdrant_api_key", "rerank_api_key"}
+    {"llm_credentials", "qdrant_api_key"}
 )
 
 # Placeholder used in exported config files and masked API responses
@@ -123,7 +123,6 @@ _ENV_MAP: dict[str, tuple[str, type]] = {
     "rerank_method":               ("PIQ_RERANK_METHOD", str),
     "rerank_top_k":                ("PIQ_RERANK_TOP_K", int),
     "rerank_model":                ("PIQ_RERANK_MODEL", str),
-    "rerank_api_key":              ("PIQ_RERANK_API_KEY", str),
     # Search tuning: Chroma-specific
     "chroma_hnsw_search_ef":       ("PIQ_CHROMA_HNSW_SEARCH_EF", int),
     "chroma_hnsw_m":               ("PIQ_CHROMA_HNSW_M", int),
@@ -275,10 +274,9 @@ class SettingsService:
                 except (json.JSONDecodeError, Exception):
                     pass
 
-        # "<field>_stored" flags let the UI show a "stored" badge + keep-existing
+        # "<field>_stored" flag lets the UI show a "stored" badge + keep-existing
         # placeholder without exposing the value (mirrors bedrock_has_secret).
         data["qdrant_api_key_stored"] = bool(self._config.qdrant_api_key)
-        data["rerank_api_key_stored"] = bool(self._config.rerank_api_key)
 
         for field in CREDENTIAL_FIELDS:
             if data.get(field):  # only redact when non-empty

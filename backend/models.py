@@ -123,7 +123,6 @@ class PaperlessIQConfig(BaseModel):
     rerank_method: Literal["llm", "local", "api"] = "llm"  # which reranker when enabled
     rerank_top_k: int = 20  # how many candidates to rerank
     rerank_model: str = "BAAI/bge-reranker-v2-m3"  # default local cross-encoder (multilingual)
-    rerank_api_key: EncryptedBlob = b""  # ONLY for standalone-SaaS api method; else unused
 
     # --- Search tuning: CHROMA-specific ---
     chroma_hnsw_search_ef: int = 100  # recall vs latency at query time
@@ -168,6 +167,7 @@ class PaperlessIQConfig(BaseModel):
     )
     per_field_prompt_templates: dict[str, str] = {}
     per_doctype_prompt_templates: dict[int, str] = {}
+    discovery_system_prompt: str | None = None  # configurable body for the discovery RAG prompt
 
     # Per-field descriptions: instructions for the LLM on how to populate each metadata field
     field_descriptions: dict[str, str] = {}
