@@ -381,6 +381,7 @@ async def _background_index(
                     meta = {
                         "title": doc.get("title", ""),
                         "tags": [tag_id_to_name.get(tid, "") for tid in doc_tags if tag_id_to_name.get(tid)],
+                        "tag_ids": doc_tags,
                         "correspondent": corr_id_to_name.get(doc.get("correspondent") or 0, ""),
                         "document_type": dt_id_to_name.get(doc.get("document_type") or 0, ""),
                         "custom_fields": custom_fields,
@@ -2853,6 +2854,7 @@ async def _reindex_document(doc_id: int, vs: VectorStore, pc: PaperlessNGXClient
     meta = {
         "title": doc.get("title", ""),
         "tags": [tag_id_to_name.get(tid, "") for tid in doc_tags if tag_id_to_name.get(tid)],
+        "tag_ids": doc_tags,
         "correspondent": corr_id_to_name.get(doc.get("correspondent") or 0, ""),
         "document_type": dt_id_to_name.get(doc.get("document_type") or 0, ""),
         "custom_fields": custom_fields,

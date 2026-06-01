@@ -138,6 +138,52 @@ async def test_query_similar_metadata_collects_entities() -> None:
 
 
 @pytest.mark.asyncio
+async def test_exclude_tag_id_filters_inbox_docs() -> None:
+    """query_similar_metadata(exclude_tag_id=...) must drop docs carrying that tag."""
+    store = _make_store()
+    # Doc 1 carries the inbox tag (id 99); doc 2 is curated.
+    await store.upsert(1, "insurance policy from acme", {
+        "title": "Inbox doc", "tags": ["insurance"], "tag_ids": [99, 5],
+        "correspondent": "Acme Inbox", "document_type": "Inbox Type",
+    })
+    await store.upsert(2, "insurance policy from acme curated", {
+        "title": "Curated doc", "tags": ["insurance"], "tag_ids": [5],
+        "correspondent": "Acme Curated", "document_type": "Policy",
+    })
+
+    # Without exclusion both contribute.
+    meta_all = await store.query_similar_metadata("insurance", top_n=5)
+    assert "Acme Inbox" in meta_all["correspondents"]
+
+    # Excluding tag 99 drops doc 1's entities.
+    meta_excl = await store.query_similar_metadata("insurance", top_n=5, exclude_tag_id=99)
+    assert "Acme Inbox" not in meta_excl["correspondents"]
+    assert "Acme Curated" in meta_excl["correspondents"]
+
+
+@pytest.mark.asyncio
+async def test_exclude_tag_id_survives_migration() -> None:
+    """tag_ids is reconstructed from tag_ids_json on load, so exclusion still works."""
+    from backend.vector_migrate import migrate_embeddings
+
+    src = _make_store()
+    await src.upsert(1, "inbox doc about loans", {
+        "title": "I", "tag_ids": [99], "correspondent": "Inbox Bank"})
+    await src.upsert(2, "curated doc about loans", {
+        "title": "C", "tag_ids": [5], "correspondent": "Curated Bank"})
+
+    dst = QdrantVectorStore(_MockLLMProvider(), url=":memory:", collection_name="excl_dst")
+    result = await migrate_embeddings(src, dst)
+    assert result.migrated > 0
+
+    # tag_ids was dropped on dump and re-derived from tag_ids_json on load —
+    # so the must_not filter still excludes doc 1 after migrating.
+    meta = await dst.query_similar_metadata("loans", top_n=5, exclude_tag_id=99)
+    assert "Inbox Bank" not in meta["correspondents"]
+    assert "Curated Bank" in meta["correspondents"]
+
+
+@pytest.mark.asyncio
 async def test_score_convention_matches_identity_high() -> None:
     """An exact match should score 1.0 under the (cos+1)/2 map.
 

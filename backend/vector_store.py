@@ -133,15 +133,30 @@ def _build_embed_prefix(metadata: dict) -> str:
 
 
 def _build_base_meta(doc_id: int, metadata: dict) -> dict[str, Any]:
-    """Per-chunk payload fields stored by every backend (shared shape)."""
+    """Per-chunk payload fields stored by every backend (shared shape).
+
+    ``tag_ids_json`` is the canonical, migration-safe form of the document's
+    tag IDs (Chroma metadata can't hold lists). Backends that can filter on
+    arrays (Qdrant) derive a list from it; it powers ``exclude_tag_id``.
+    """
     return {
         "document_id": doc_id,
         "title": metadata.get("title", ""),
         "tags_json": json.dumps(metadata.get("tags", [])),
+        "tag_ids_json": json.dumps([int(t) for t in (metadata.get("tag_ids") or [])]),
         "correspondent": metadata.get("correspondent") or "",
         "document_type": metadata.get("document_type") or "",
         "custom_fields_json": json.dumps(metadata.get("custom_fields") or {}),
     }
+
+
+def _meta_has_tag(meta: dict, tag_id: int) -> bool:
+    """True if the chunk's stored tag_ids_json contains ``tag_id``."""
+    try:
+        ids = json.loads(meta.get("tag_ids_json") or "[]")
+    except (json.JSONDecodeError, TypeError):
+        return False
+    return tag_id in ids
 
 
 async def _maybe_rerank(
@@ -448,6 +463,10 @@ class ChromaVectorStore(_EmbeddingBackedStore):
                 doc_id = meta.get("document_id", 0)
                 if doc_id in seen_doc_ids:
                     continue
+                # Skip documents carrying the excluded tag (e.g. the inbox tag)
+                # so suggestions don't come from un-reviewed documents.
+                if exclude_tag_id is not None and _meta_has_tag(meta, exclude_tag_id):
+                    continue
                 seen_doc_ids.add(doc_id)
                 if len(seen_doc_ids) > top_n:
                     break
@@ -731,6 +750,7 @@ class QdrantVectorStore(_EmbeddingBackedStore):
                     ("document_id", models.PayloadSchemaType.INTEGER),
                     ("document_type", models.PayloadSchemaType.KEYWORD),
                     ("correspondent", models.PayloadSchemaType.KEYWORD),
+                    ("tag_ids", models.PayloadSchemaType.INTEGER),
                 ):
                     try:
                         await self._client.create_payload_index(
@@ -770,6 +790,11 @@ class QdrantVectorStore(_EmbeddingBackedStore):
 
         embedded = await asyncio.gather(*[_embed_chunk(i, c) for i, c in enumerate(chunks)])
 
+        # tag_ids as a real list enables a server-side must_not filter for
+        # exclude_tag_id (Qdrant-specific; derived from the canonical
+        # tag_ids_json so it stays consistent and migration-safe).
+        tag_ids = json.loads(base_meta.get("tag_ids_json") or "[]")
+
         points: list[Any] = []
         dim: int | None = None
         for i, emb, chunk in embedded:
@@ -778,6 +803,7 @@ class QdrantVectorStore(_EmbeddingBackedStore):
             dim = dim or len(emb)
             payload = {
                 **base_meta,
+                "tag_ids": tag_ids,
                 "chunk_index": i,
                 "total_chunks": total,
                 "passage": chunk,
@@ -880,11 +906,25 @@ class QdrantVectorStore(_EmbeddingBackedStore):
         }
         if not await self._collection_present():
             return empty
+        from qdrant_client import models
+
         embedding = await self._embed(text)
+        # Exclude documents carrying the given tag (e.g. the inbox tag) server-side
+        # so suggestions don't come from un-reviewed documents.
+        query_filter = None
+        if exclude_tag_id is not None:
+            query_filter = models.Filter(
+                must_not=[
+                    models.FieldCondition(
+                        key="tag_ids", match=models.MatchValue(value=exclude_tag_id)
+                    )
+                ]
+            )
         res = await self._client.query_points(
             collection_name=self._collection,
             query=embedding,
             limit=top_n * self._overfetch_multiplier,
+            query_filter=query_filter,
             with_payload=True,
         )
 
@@ -1002,6 +1042,9 @@ class QdrantVectorStore(_EmbeddingBackedStore):
                 payload = dict(r.payload or {})
                 logical_id = payload.pop("chunk_id", None) or str(r.id)
                 document = payload.pop("passage", "")
+                # tag_ids is a Qdrant-only list (Chroma can't store lists);
+                # tag_ids_json in the payload is the migration-safe form.
+                payload.pop("tag_ids", None)
                 points.append({
                     "id": logical_id,
                     "vector": [float(x) for x in r.vector],
@@ -1022,7 +1065,16 @@ class QdrantVectorStore(_EmbeddingBackedStore):
         structs = []
         for p in points:
             meta = dict(p.get("metadata") or {})
-            payload = {**meta, "passage": p.get("document", ""), "chunk_id": p["id"]}
+            # Re-derive the Qdrant-only tag_ids list from the canonical json so
+            # exclude_tag_id filtering keeps working after a migration.
+            try:
+                tag_ids = json.loads(meta.get("tag_ids_json") or "[]")
+            except (json.JSONDecodeError, TypeError):
+                tag_ids = []
+            payload = {
+                **meta, "tag_ids": tag_ids,
+                "passage": p.get("document", ""), "chunk_id": p["id"],
+            }
             structs.append(models.PointStruct(
                 id=str(uuid.uuid5(_QDRANT_POINT_NAMESPACE, p["id"])),
                 vector=p["vector"],

@@ -287,3 +287,22 @@ def test_chunk_dispatch_char_is_default() -> None:
     # char strategy yields fixed-width windows
     assert char_chunks[0] == "x" * 1000
     assert len(char_chunks) >= 3
+
+
+@pytest.mark.asyncio
+async def test_chroma_exclude_tag_id_filters_inbox_docs() -> None:
+    """Chroma post-filters query_similar_metadata on tag_ids_json."""
+    store = _make_store()
+    await store.upsert(1, "insurance policy acme corp", {
+        "title": "Inbox", "tag_ids": [99, 5], "correspondent": "Acme Inbox",
+    })
+    await store.upsert(2, "insurance policy acme corp curated", {
+        "title": "Curated", "tag_ids": [5], "correspondent": "Acme Curated",
+    })
+
+    meta_all = await store.query_similar_metadata("insurance", top_n=5)
+    assert "Acme Inbox" in meta_all["correspondents"]
+
+    meta_excl = await store.query_similar_metadata("insurance", top_n=5, exclude_tag_id=99)
+    assert "Acme Inbox" not in meta_excl["correspondents"]
+    assert "Acme Curated" in meta_excl["correspondents"]
