@@ -5,6 +5,13 @@ services:
     build:
       context: .
       dockerfile: docker/Dockerfile
+      args:
+        # Optional Python extras baked into the image (comma-separated).
+        # Default includes Qdrant hybrid search (fastembed). To also bundle the
+        # local torch cross-encoder reranker, set in your .env:
+        #   PIQ_EXTRAS=qdrant-hybrid,rerank-local
+        # For the leanest image (no hybrid):  PIQ_EXTRAS=
+        PIQ_EXTRAS: ${PIQ_EXTRAS-qdrant-hybrid}
     restart: unless-stopped
     ports:
       - "0.0.0.0:8082:8080"

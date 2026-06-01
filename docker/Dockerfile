@@ -12,20 +12,26 @@ RUN npm run build
 FROM python:3.12-slim
 WORKDIR /app
 
-# Install system deps for chromadb (needs build tools)
+# System deps: build tools for chromadb; libgomp1 for onnxruntime (fastembed).
 RUN apt-get update && apt-get install -y --no-install-recommends \
-    build-essential && \
+    build-essential libgomp1 && \
     rm -rf /var/lib/apt/lists/*
 
-# Install Python dependencies from requirements.txt
-COPY backend/requirements.txt ./
-RUN pip install --no-cache-dir -r requirements.txt
+# Install Python dependencies from pyproject.toml (single source of truth) via uv.
+# Hybrid search (fastembed) is included by default. Add more optional extras with
+# the PIQ_EXTRAS build arg (comma-separated), e.g. to also bundle the local torch
+# reranker:  --build-arg PIQ_EXTRAS=qdrant-hybrid,rerank-local
+# Set PIQ_EXTRAS= (empty) for the leanest image (no hybrid).
+RUN pip install --no-cache-dir uv
+COPY pyproject.toml ./
+ARG PIQ_EXTRAS="qdrant-hybrid"
+RUN uv pip install --system --no-cache -r pyproject.toml \
+    $(for e in $(echo "$PIQ_EXTRAS" | tr ',' ' '); do printf -- '--extra %s ' "$e"; done)
 
 # Copy backend source
 COPY backend/ ./backend/
 COPY main.py ./
 COPY alembic.ini ./
-COPY pyproject.toml ./
 
 # Copy Alembic config
 COPY backend/alembic/ ./backend/alembic/
