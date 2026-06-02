@@ -20,7 +20,7 @@ on:
   push:
     branches: [main]
     paths:
-      - "docs/**"
+      - "docs/SETTINGS.md"
       - ".github/workflows/wiki-sync.yml"
   workflow_dispatch: {}
 
@@ -50,16 +50,17 @@ jobs:
             exit 1
           fi
 
-          # Mirror every docs/*.md into the wiki, keeping the same page names.
-          # Generate a sidebar so the pages are navigable.
-          cp docs/*.md wiki/
-          {
-            echo "### Documentation"
-            for f in docs/*.md; do
-              name="$(basename "$f" .md)"
-              echo "- [[${name}]]"
-            done
-          } > wiki/_Sidebar.md
+          # Curated allowlist — the repo is public, so only user-facing docs are
+          # published. Format: "<docs source>.md|<Wiki Page Name>". Add lines here
+          # to publish more pages (and to the push-trigger paths above).
+          PAGES="SETTINGS|Settings"
+          : > wiki/_Sidebar.md
+          echo "### Documentation" >> wiki/_Sidebar.md
+          echo "$PAGES" | while IFS='|' read -r src page; do
+            [ -n "$src" ] || continue
+            cp "docs/${src}.md" "wiki/${page}.md"
+            echo "- [[${page}]]" >> wiki/_Sidebar.md
+          done
 
           # Seed a Home page only if the wiki doesn't already have one.
           if [ ! -f wiki/Home.md ]; then
