@@ -319,7 +319,7 @@ export default function ManualPage() {
                   </Group>
                   <Group gap="xs" style={{ flexShrink: 0 }}>
                     <Button size="xs" loading={isAnalyzing} disabled={batchRunning} onClick={() => analyzeOne(doc.id)}>
-                      {t("analysis.analyze")}
+                      {t("common.analyze")}
                     </Button>
                     <VisionAnalysisFlow
                       documentId={doc.id}

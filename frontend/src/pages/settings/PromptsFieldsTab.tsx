@@ -8,6 +8,8 @@ interface Props {
   s: Record<string, unknown>;
   promptText: string;
   setPromptText: (v: string) => void;
+  discoveryPrompt: string;
+  setDiscoveryPrompt: (v: string) => void;
   translateLang: string;
   setTranslateLang: (v: string) => void;
   translating: boolean;
@@ -23,6 +25,7 @@ interface Props {
 export function PromptsFieldsTab({
   s,
   promptText, setPromptText,
+  discoveryPrompt, setDiscoveryPrompt,
   translateLang, setTranslateLang,
   translating, setTranslating,
   fieldDescs, setFieldDescs,
@@ -82,6 +85,22 @@ export function PromptsFieldsTab({
             placeholder={t("prompts.outputLang.placeholder")}
             description={t("prompts.outputLang.description")}
           />
+        </Stack>
+      </Paper>
+
+      <Paper withBorder p="md" radius="md">
+        <Text fw={600} mb="md">{t("prompts.discovery.title")}</Text>
+        <Stack gap="md">
+          <Textarea
+            label={t("prompts.discovery.label")}
+            name="discovery_system_prompt"
+            rows={8}
+            value={discoveryPrompt}
+            onChange={e => setDiscoveryPrompt(e.target.value)}
+            placeholder={t("prompts.discovery.placeholder")}
+            styles={{ input: { fontFamily: "monospace", fontSize: "0.85rem" } }}
+          />
+          <Text size="xs" c="dimmed">{t("prompts.discovery.hint")}</Text>
         </Stack>
       </Paper>
 

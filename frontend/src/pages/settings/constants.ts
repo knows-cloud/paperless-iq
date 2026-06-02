@@ -14,6 +14,34 @@ export const EMBED_MODEL_DEFAULTS: Record<string, string> = {
   openai:  "text-embedding-3-small",
 };
 
+export const VECTOR_STORE_BACKENDS = [
+  { value: "local",      labelKey: "aiProvider.vectorStore.local" },
+  { value: "qdrant",     labelKey: "aiProvider.vectorStore.qdrant" },
+  { value: "bedrock_kb", labelKey: "aiProvider.vectorStore.bedrockKb" },
+] as const;
+
+export const CHUNK_STRATEGIES = [
+  { value: "char",     labelKey: "aiProvider.search.chunkStrategy.char" },
+  { value: "sentence", labelKey: "aiProvider.search.chunkStrategy.sentence" },
+] as const;
+
+export const RERANK_METHODS = [
+  { value: "llm",   labelKey: "aiProvider.search.rerankMethod.llm" },
+  { value: "local", labelKey: "aiProvider.search.rerankMethod.local" },
+  { value: "api",   labelKey: "aiProvider.search.rerankMethod.api" },
+] as const;
+
+export const QDRANT_MODES = [
+  { value: "local", labelKey: "aiProvider.vectorStore.qdrantMode.local" },
+  { value: "cloud", labelKey: "aiProvider.vectorStore.qdrantMode.cloud" },
+] as const;
+
+export const QDRANT_QUANTIZATIONS = [
+  { value: "none",   labelKey: "aiProvider.search.qdrantQuantization.none" },
+  { value: "scalar", labelKey: "aiProvider.search.qdrantQuantization.scalar" },
+  { value: "binary", labelKey: "aiProvider.search.qdrantQuantization.binary" },
+] as const;
+
 export const METADATA_FIELDS = [
   { key: "title",         label: "Title",                 description: "How should the LLM generate the document title?" },
   { key: "tags",          label: "Tags",                  description: "How should the LLM select or suggest tags?" },

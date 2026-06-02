@@ -18,7 +18,13 @@ from hypothesis import HealthCheck, given, settings
 from hypothesis import strategies as st
 
 from backend.models import SearchResult
-from backend.vector_store import ChromaVectorStore, DEFAULT_CHUNK_SIZE, DEFAULT_CHUNK_OVERLAP
+from backend.vector_store import (
+    ChromaVectorStore,
+    DEFAULT_CHUNK_SIZE,
+    DEFAULT_CHUNK_OVERLAP,
+    _chunk,
+    _chunk_text_sentences,
+)
 
 # ---------------------------------------------------------------------------
 # Deterministic mock LLM provider
@@ -72,12 +78,18 @@ def _make_store() -> ChromaVectorStore:
     store._llm = provider
     store._chunk_size = DEFAULT_CHUNK_SIZE
     store._chunk_overlap = DEFAULT_CHUNK_OVERLAP
+    store._chunk_strategy = "char"
+    store._overfetch_multiplier = 5
+    store._min_score = 0.0
+    store._reranker = None
+    store._rerank_top_k = 20
+    store._collection_config = {"hnsw": {"space": "cosine"}}
     store._embed_sem = asyncio.Semaphore(1)
     store._embed_concurrency = 1
     store._client = chromadb.EphemeralClient()
     store._collection = store._client.get_or_create_collection(
-        name="test",
-        metadata={"hnsw:space": "cosine"},
+        name="test_collection",
+        configuration=store._collection_config,
     )
     return store
 
@@ -238,3 +250,59 @@ async def test_property_12_reindex_completeness(
         assert doc["doc_id"] in found_ids, (
             f"Document {doc['doc_id']} not queryable after re-index"
         )
+
+
+# ---------------------------------------------------------------------------
+# Configurable chunking: sentence strategy (QDRANT_PLAN §5.5 item 3)
+# ---------------------------------------------------------------------------
+
+
+def test_sentence_chunking_short_text_single_chunk() -> None:
+    """Text shorter than chunk_size is one chunk."""
+    text = "One sentence. Two sentences."
+    assert _chunk_text_sentences(text, chunk_size=1000, overlap=200) == [text]
+
+
+def test_sentence_chunking_no_midword_cuts() -> None:
+    """Sentence chunking packs whole sentences — no chunk exceeds chunk_size,
+    and reassembled words match the source (no mid-word splits)."""
+    sentences = [f"This is sentence number {i} with some filler words." for i in range(40)]
+    text = " ".join(sentences)
+    chunks = _chunk_text_sentences(text, chunk_size=120, overlap=30)
+
+    assert len(chunks) > 1, "expected multiple chunks for long text"
+    for c in chunks:
+        # allow a small slack for the joining space; packing stops before exceeding size
+        assert len(c) <= 120 + 60
+    # Every source word survives somewhere (no truncation/mid-word loss)
+    source_words = set(text.split())
+    chunk_words = set(" ".join(chunks).split())
+    assert source_words <= chunk_words
+
+
+def test_chunk_dispatch_char_is_default() -> None:
+    """The dispatcher routes to char splitting unless strategy == 'sentence'."""
+    text = "x" * 2500
+    char_chunks = _chunk(text, 1000, 200, "char")
+    # char strategy yields fixed-width windows
+    assert char_chunks[0] == "x" * 1000
+    assert len(char_chunks) >= 3
+
+
+@pytest.mark.asyncio
+async def test_chroma_exclude_tag_id_filters_inbox_docs() -> None:
+    """Chroma post-filters query_similar_metadata on tag_ids_json."""
+    store = _make_store()
+    await store.upsert(1, "insurance policy acme corp", {
+        "title": "Inbox", "tag_ids": [99, 5], "correspondent": "Acme Inbox",
+    })
+    await store.upsert(2, "insurance policy acme corp curated", {
+        "title": "Curated", "tag_ids": [5], "correspondent": "Acme Curated",
+    })
+
+    meta_all = await store.query_similar_metadata("insurance", top_n=5)
+    assert "Acme Inbox" in meta_all["correspondents"]
+
+    meta_excl = await store.query_similar_metadata("insurance", top_n=5, exclude_tag_id=99)
+    assert "Acme Inbox" not in meta_excl["correspondents"]
+    assert "Acme Curated" in meta_excl["correspondents"]

@@ -5,6 +5,11 @@ services:
     build:
       context: .
       dockerfile: docker/Dockerfile
+      args:
+        # Bundle hybrid search (fastembed) and the local cross-encoder reranker
+        # (sentence-transformers + torch) by default. Override with the PIQ_EXTRAS
+        # env var, e.g. PIQ_EXTRAS=qdrant-hybrid for the leaner image.
+        PIQ_EXTRAS: ${PIQ_EXTRAS:-qdrant-hybrid,rerank-local}
     restart: unless-stopped
     ports:
       - "0.0.0.0:8082:8080"
@@ -14,12 +19,36 @@ services:
       PAPERLESS_URL: ${PAPERLESS_URL:-http://webserver:8000}
       PAPERLESS_TOKEN: ${PAPERLESS_TOKEN:?PAPERLESS_TOKEN must be set}
       DATABASE_URL: sqlite+aiosqlite:////data/paperless_iq.db
+      # Cache HuggingFace model weights (local reranker / sparse encoder) in the
+      # persistent volume so they are downloaded once, not on every restart.
+      HF_HOME: /data/hf-cache
       # SECRET_KEY is optional — a random key is auto-generated on first startup
       # and stored in the volume at /data/.secret_key.  Set it explicitly if you
       # want to be able to restore an encrypted DB backup after a volume loss.
       # SECRET_KEY: ${SECRET_KEY}
       # Optional: override Ollama URL if not running on the same host
       # OLLAMA_HOST: http://your-ollama-host:11434
+      #
+      # Qdrant vector backend (opt-in — start with: docker compose --profile qdrant up -d)
+      # Leave unset to keep using the default local ChromaDB backend.
+      # PIQ_VECTOR_STORE_BACKEND: qdrant
+      PIQ_QDRANT_URL: ${PIQ_QDRANT_URL:-http://qdrant:6333}
+      PIQ_EXTRAS:
+    networks:
+      - paperless_default
+
+  # ── Qdrant vector store (opt-in profile) ────────────────────────────────────
+  # Usage:  docker compose --profile qdrant up -d
+  # Qdrant stores its data in the qdrant-data named volume.
+  # After switching the backend in Settings, use the "Migrate embeddings" button
+  # or POST /api/vector/migrate to copy existing ChromaDB vectors over without
+  # re-embedding.  If the embedding model changed, a full re-index is required.
+  qdrant:
+    image: qdrant/qdrant:latest
+    profiles: ["qdrant"]
+    restart: unless-stopped
+    volumes:
+      - qdrant-data:/qdrant/storage
     networks:
       - paperless_default
 
@@ -29,3 +58,4 @@ networks:
 
 volumes:
   paperless-iq-data:
+  qdrant-data:

@@ -18,8 +18,21 @@ dependencies = [
     "pydantic>=2.12.5",
     "Pillow>=10.0",
     "pypdfium2>=4.30",
+    "qdrant-client>=1.12",
     "sqlalchemy>=2.0.48",
     "uvicorn>=0.34.0",
+]
+
+[project.optional-dependencies]
+# Local cross-encoder reranker (rerank_method="local"). Heavy (pulls torch);
+# installed only on demand. Imported lazily at runtime — see backend/rerankers.py.
+rerank-local = [
+    "sentence-transformers>=3.0",
+]
+# Sparse encoder for Qdrant hybrid search (qdrant_hybrid_search). Pulls
+# onnxruntime; imported lazily — see QdrantVectorStore._ensure_sparse_encoder.
+qdrant-hybrid = [
+    "fastembed>=0.3",
 ]
 
 [dependency-groups]

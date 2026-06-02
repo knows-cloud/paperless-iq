@@ -59,10 +59,13 @@ from backend.orm_models import (
     UserMemoryORM,
     UserPermissionsORM,
 )
+from backend.memory_store import make_memory_store
 from backend.provider_registry import build_providers
+from backend.vector_factory import make_vector_store
+from backend.vector_migrate import migrate_embeddings, migrate_memories
 from backend.rate_limiter import RateLimiter
 from backend.settings_service import SettingsService
-from backend.vector_store import ChromaVectorStore
+from backend.protocols import VectorStore
 
 logger = logging.getLogger(__name__)
 
@@ -260,9 +263,39 @@ async def _automation_loop(
         await asyncio.sleep(poll_interval)
 
 
+async def _heal_dim_mismatch(vs: Any, embed_provider: Any) -> bool:
+    """Auto-reset the vector store if its stored dimension differs from the embed model.
+
+    Must be called *before* _background_index so the indexer starts with an empty
+    already_indexed set rather than skipping all documents thinking they are current.
+    Returns True if a reset was performed.
+    """
+    get_dim = getattr(vs, "get_collection_dim", None)
+    if get_dim is None:
+        return False
+    existing_dim = await get_dim()
+    if existing_dim is None:
+        return False
+    try:
+        test_emb = await asyncio.wait_for(embed_provider.embed("test"), timeout=15.0)
+        expected_dim = len(test_emb)
+    except Exception:
+        logger.debug("_heal_dim_mismatch: test embed failed, skipping check.", exc_info=True)
+        return False
+    if existing_dim == expected_dim:
+        return False
+    logger.warning(
+        "Vector store dimension mismatch: collection has %d-dim vectors but the current "
+        "embedding model produces %d dims. Auto-resetting — full reindex will follow.",
+        existing_dim, expected_dim,
+    )
+    await vs.reset()
+    return True
+
+
 async def _background_index(
     paperless_client: PaperlessNGXClient,
-    vector_store: ChromaVectorStore,
+    vector_store: VectorStore,
     config: Any,
     queue: OllamaQueue | None = None,
 ) -> None:
@@ -272,7 +305,7 @@ async def _background_index(
     and upserts those not already in the store.
     """
     try:
-        existing_count = vector_store.count()
+        existing_count = await vector_store.count()
         logger.info("Vector store has %d chunks. Starting background index...", existing_count)
 
         base = paperless_client._base_url
@@ -314,23 +347,8 @@ async def _background_index(
         # Also checks chunk completeness: if a doc has fewer chunks than expected, re-index it
         already_indexed: set[int] = set()
         try:
-            loop = asyncio.get_running_loop()
-            existing = await loop.run_in_executor(
-                None,
-                lambda: vector_store._collection.get(include=["metadatas"])
-            )
             # Count chunks per document and check against expected total
-            doc_chunk_counts: dict[int, int] = {}
-            doc_expected_chunks: dict[int, int] = {}
-            for i, chunk_id in enumerate(existing.get("ids", [])):
-                try:
-                    doc_id_part = int(str(chunk_id).split("_")[0])
-                    doc_chunk_counts[doc_id_part] = doc_chunk_counts.get(doc_id_part, 0) + 1
-                    meta = existing.get("metadatas", [])[i] if existing.get("metadatas") else {}
-                    if meta and "total_chunks" in meta:
-                        doc_expected_chunks[doc_id_part] = int(meta["total_chunks"])
-                except (ValueError, IndexError):
-                    pass
+            doc_chunk_counts, doc_expected_chunks = await vector_store.get_indexed_chunk_counts()
 
             incomplete = 0
             for doc_id_part, count in doc_chunk_counts.items():
@@ -393,6 +411,7 @@ async def _background_index(
                     meta = {
                         "title": doc.get("title", ""),
                         "tags": [tag_id_to_name.get(tid, "") for tid in doc_tags if tag_id_to_name.get(tid)],
+                        "tag_ids": doc_tags,
                         "correspondent": corr_id_to_name.get(doc.get("correspondent") or 0, ""),
                         "document_type": dt_id_to_name.get(doc.get("document_type") or 0, ""),
                         "custom_fields": custom_fields,
@@ -575,16 +594,19 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
                     "smart entity selection disabled."
                 )
             ep_name = getattr(config, "embed_provider", "ollama")
-            vector_store = ChromaVectorStore(
-                llm_provider=embed_provider,
-                persist_directory="/data/chroma",
-                embed_concurrency=_embed_concurrency_for(ep_name),
+            vector_store = make_vector_store(
+                config, embed_provider, getattr(config, "embed_concurrency", 1), providers
             )
             app.state.vector_store = vector_store
-            logger.info(
-                "Vector store initialized (ChromaDB, embed_provider: %s, concurrency: %d).",
-                ep_name, vector_store._embed_concurrency,
-            )
+            if vector_store is not None:
+                logger.info(
+                    "Vector store initialized (backend: %s, embed_provider: %s).",
+                    config.vector_store_backend, ep_name,
+                )
+            else:
+                logger.warning(
+                    "Vector store not initialized for backend '%s'.", config.vector_store_backend
+                )
         except Exception:
             logger.warning("Could not initialize vector store — smart entity selection disabled.", exc_info=True)
             vector_store = None
@@ -604,16 +626,16 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
 
         # Start background indexing of existing processed documents
         if vector_store and paperless_client:
+            await _heal_dim_mismatch(vector_store, embed_provider)
             asyncio.create_task(_background_index(paperless_client, vector_store, config, ollama_queue))
 
-        # Initialise long-term memory store (same embed provider + Chroma dir as vector store)
+        # Initialise long-term memory store (matches the configured vector backend)
         try:
-            from backend.memory_store import MemoryStore
-            app.state.memory_store = MemoryStore(
-                llm_provider=embed_provider,
-                persist_directory="/data/chroma",
+            app.state.memory_store = make_memory_store(config, embed_provider)
+            logger.info(
+                "Memory store initialised (backend: %s, embed_provider: %s).",
+                config.vector_store_backend, ep_name,
             )
-            logger.info("Memory store initialised (embed_provider: %s).", ep_name)
         except Exception:
             logger.warning("Could not initialise memory store.", exc_info=True)
 
@@ -1383,6 +1405,19 @@ async def semantic_search(
 # How many recent turns to keep verbatim before compressing older ones.
 _DISCOVER_VERBATIM_WINDOW = 8
 
+_DISCOVERY_DEFAULT_SYSTEM_PROMPT = (
+    "You are an expert document analyst helping a user research their personal document archive. "
+    "Answer questions using ONLY the provided document excerpts — do not use outside knowledge.\n\n"
+    "Formatting rules:\n"
+    "- Use **bold** for key names, amounts, dates, and important terms\n"
+    "- Use bullet lists when enumerating multiple items or conditions\n"
+    "- Use > blockquote for direct quotes from documents\n"
+    "- Cite sources inline with bracketed numbers, e.g. [1], [2][3]\n"
+    "- For contracts: identify parties, obligations, dates, amounts, termination clauses, and conditions\n"
+    "- If documents partially answer the question, say what IS found and what is missing\n"
+    "- If nothing relevant is found, say so directly"
+)
+
 
 async def _extract_memories_from_session(session, provider, memory_store, config) -> int:
     """Extract memorable facts from a conversation session and persist them.
@@ -1680,12 +1715,38 @@ async def discover(body: DiscoverBody, request: Request) -> dict:
             if h.get("role") in ("user", "assistant") and h.get("content", "").strip()
         ]
 
-    # ── Query reformulation ─────────────────────────────────────────────────
-    # Follow-up questions ("When does the first one expire?") embed poorly.
-    # Ask the LLM to rewrite into a standalone search query given the context.
+    # ── Search: raw question first, reformulate only as a no-results fallback ──
+    # Reformulation (which requires an LLM call) is deferred: we only spend it
+    # when the raw question returns nothing AND there is conversation history that
+    # suggests this is a follow-up ("when does it expire?"). If the raw search
+    # already finds relevant chunks, no LLM call is needed before the answer.
     search_question = body.question
     context_for_rewrite = history or stored_turns
-    if context_for_rewrite:
+    _MIN_SCORE = float(getattr(config, "search_min_score", 0.0))
+
+    async def _search(q: str) -> list[dict]:
+        try:
+            raw = await vs.query_chunks(q, body.top_n * 4)
+        except Exception as exc:
+            exc_str = str(exc)
+            if "dimension" in exc_str.lower() and (
+                "expected" in exc_str.lower() or "got" in exc_str.lower()
+            ):
+                raise HTTPException(
+                    status_code=409,
+                    detail=(
+                        "Vector dimension mismatch: the embedding model was changed after "
+                        "the index was built. Go to Settings → Processing and click "
+                        "'Re-index Vector Store' to rebuild with the new model."
+                    ),
+                )
+            raise HTTPException(status_code=500, detail=f"Vector search failed: {exc}")
+        return [c for c in raw if c["score"] >= _MIN_SCORE]
+
+    chunks = await _search(search_question)
+
+    # No results on the raw question — try reformulation if we have history.
+    if not chunks and context_for_rewrite:
         try:
             parts: list[str] = []
             if stored_summary:
@@ -1701,38 +1762,26 @@ async def discover(body: DiscoverBody, request: Request) -> dict:
                 f"Latest question: {body.question}\n\n"
                 "Search query:"
             )
-            reformulated = (await provider.complete(rewrite_prompt, 60)).strip()
-            # Strip markdown formatting that some models add (**, *, ", #, etc.)
-            reformulated = reformulated.strip('*"`#_ \t\n').strip("'")
+            _rewrite_timeout = getattr(config, "llm_timeout_seconds", 120) or None
+            reformulated = (
+                await asyncio.wait_for(
+                    provider.complete(rewrite_prompt, 60), timeout=_rewrite_timeout
+                )
+            ).strip().strip('*"`#_ \t\n').strip("'")
             if reformulated and len(reformulated) <= 300:
                 search_question = reformulated
-                logger.info("Discovery: reformulated query %r → %r", body.question, search_question)
+                logger.info("Discovery: reformulated %r → %r (no raw results)", body.question, reformulated)
+                chunks = await _search(search_question)
+        except HTTPException:
+            raise
         except Exception:
-            logger.warning("Discovery: query reformulation failed, using original", exc_info=True)
+            logger.warning("Discovery: query reformulation failed", exc_info=True)
 
-    try:
-        # Fetch more candidates than needed — score filtering will reduce them.
-        chunks = await vs.query_chunks(search_question, body.top_n * 4)
-        results = await vs.query(search_question, body.top_n * 2)
-    except Exception as exc:
-        raise HTTPException(status_code=500, detail=f"Vector search failed: {exc}")
+    logger.info("Discovery: %d chunks after score filter %.2f", len(chunks), _MIN_SCORE)
+    for c in chunks[:body.top_n]:
+        logger.info("  chunk: doc_id=%s score=%.3f title=%r", c.get("document_id"), c.get("score", 0), c.get("title", ""))
 
-    # ── Relevance threshold ──────────────────────────────────────────────────
-    # ChromaDB cosine distance ∈ [0, 1] for text → score = 1 - distance/2 ∈ [0.5, 1.0].
-    # 0.60 ≈ cosine_similarity 0.2 — the minimum topical overlap worth sending to the LLM.
-    _MIN_SCORE = 0.60
-    chunks = [c for c in chunks if c["score"] >= _MIN_SCORE]
-    results = [r for r in results if r.score >= _MIN_SCORE]
-    # Deduplicate results to top_n after filtering (query fetched 2× as many)
-    results = results[:body.top_n]
-    logger.info(
-        "Discovery: score filter %.2f → %d chunks, %d source docs",
-        _MIN_SCORE, len(chunks), len(results),
-    )
-    for r in results:
-        logger.info("  source doc: id=%d score=%.3f title=%r", r.document_id, r.score, r.document_title)
-
-    if not results:
+    if not chunks:
         lang = (config.target_language or "").strip()
         no_results_msg = (
             "Keine relevanten Dokumente für Ihre Frage gefunden." if lang.startswith("de")
@@ -1800,19 +1849,8 @@ async def discover(body: DiscoverBody, request: Request) -> dict:
     # ── Build multi-turn messages ────────────────────────────────────────────
     # System message holds the persistent instructions + any rolling summary of
     # turns that were compressed away in earlier rounds.
-    system_content = (
-        "You are an expert document analyst helping a user research their personal document archive. "
-        "Answer questions using ONLY the provided document excerpts — do not use outside knowledge.\n\n"
-        "Formatting rules:\n"
-        + lang_rule +
-        "- Use **bold** for key names, amounts, dates, and important terms\n"
-        "- Use bullet lists when enumerating multiple items or conditions\n"
-        "- Use > blockquote for direct quotes from documents\n"
-        "- Cite sources inline with bracketed numbers, e.g. [1], [2][3]\n"
-        "- For contracts: identify parties, obligations, dates, amounts, termination clauses, and conditions\n"
-        "- If documents partially answer the question, say what IS found and what is missing\n"
-        "- If nothing relevant is found, say so directly"
-    )
+    prompt_body = (config.discovery_system_prompt or "").strip() or _DISCOVERY_DEFAULT_SYSTEM_PROMPT
+    system_content = lang_rule + prompt_body
     if injected_memories:
         system_content += (
             "\n\nWhat I already know about your documents (from past conversations):\n"
@@ -1832,7 +1870,17 @@ async def discover(body: DiscoverBody, request: Request) -> dict:
     llm_messages.append({"role": "user", "content": current_user_msg})
 
     try:
-        answer = await provider.chat(llm_messages, 2048)
+        _llm_timeout = getattr(config, "llm_timeout_seconds", 120) or None
+        answer = await asyncio.wait_for(provider.chat(llm_messages, 2048), timeout=_llm_timeout)
+    except asyncio.TimeoutError:
+        raise HTTPException(
+            status_code=504,
+            detail=(
+                f"LLM did not respond within {getattr(config, 'llm_timeout_seconds', 120)}s. "
+                "The model may be loading or the response is very long. "
+                "Increase 'LLM Timeout' in Settings → AI Provider, or try a smaller model."
+            ),
+        )
     except Exception as exc:
         logger.exception("Discovery LLM call failed")
         raise HTTPException(status_code=500, detail=f"LLM call failed: {exc}")
@@ -2314,7 +2362,13 @@ async def update_settings(request: Request, body: dict[str, Any] = Body(...)) ->
     - Starts or stops inbox/scheduler automation tasks when automation_enabled changes.
     - Rate limiter config could be extended here in the future.
     """
-    old_automation = _settings_svc.config.automation_enabled
+    _old = _settings_svc.config
+    old_automation = _old.automation_enabled
+    old_backend = _old.vector_store_backend
+    old_qdrant_url = _old.qdrant_url
+    old_qdrant_mode = _old.qdrant_mode
+    old_embed_provider = _old.embed_provider
+    old_embedding_model = _old.embedding_model
 
     try:
         await _settings_svc.update_and_persist(body)
@@ -2327,6 +2381,22 @@ async def update_settings(request: Request, body: dict[str, Any] = Body(...)) ->
     new_config = _settings_svc.config
     secret_key = os.environ.get("SECRET_KEY", "")
 
+    # A backend switch (or new Qdrant target) points at a different store.
+    backend_changed = (
+        new_config.vector_store_backend != old_backend
+        or (
+            new_config.vector_store_backend == "qdrant"
+            and (new_config.qdrant_url != old_qdrant_url or new_config.qdrant_mode != old_qdrant_mode)
+        )
+    )
+    embed_changed = (
+        new_config.embed_provider != old_embed_provider
+        or new_config.embedding_model != old_embedding_model
+    )
+    # Resolved while rebuilding the store below; surfaced to the UI at the end.
+    reindex_required = False
+    reindex_reason = ""
+
     # Re-build LLM providers with the updated config
     try:
         providers = build_providers(new_config, secret_key)
@@ -2338,36 +2408,72 @@ async def update_settings(request: Request, body: dict[str, Any] = Body(...)) ->
             request.app.state, "paperless_client", None
         )
         if paperless_client is not None:
-            vs = getattr(request.app.state, "vector_store", None)
-            # Update the embed provider in the vector store to match the new config
+            old_vs = getattr(request.app.state, "vector_store", None)
+            old_mem = getattr(request.app.state, "memory_store", None)
+            vs = old_vs
+            # Rebuild the vector + memory stores so EVERY setting takes effect
+            # live: backend choice, search tuning, reranker, and embed provider.
             try:
                 new_embed = _resolve_embed_provider(new_config, providers)
                 if new_embed is not None:
                     new_ep_name = getattr(new_config, "embed_provider", "ollama")
-                    new_concurrency = _embed_concurrency_for(new_ep_name)
-                    if vs is not None:
-                        vs._llm = new_embed
-                        # Update semaphore if concurrency changed (e.g. Ollama ↔ Bedrock)
-                        if vs._embed_concurrency != new_concurrency:
-                            vs._embed_sem = asyncio.Semaphore(new_concurrency)
-                            vs._embed_concurrency = new_concurrency
-                    else:
-                        vs = ChromaVectorStore(
-                            llm_provider=new_embed,
-                            persist_directory="/data/chroma",
-                            embed_concurrency=new_concurrency,
+                    new_concurrency = getattr(new_config, "embed_concurrency", 1)
+                    new_vs = make_vector_store(new_config, new_embed, new_concurrency, providers)
+                    new_mem = make_memory_store(new_config, new_embed)
+
+                    # On a backend switch, copy the existing index into the new
+                    # store — but only when the embedding model is unchanged
+                    # (otherwise the old vectors are stale and a re-index is the
+                    # only correct option).
+                    if backend_changed:
+                        if embed_changed:
+                            reindex_required = True
+                            reindex_reason = (
+                                "Embedding model changed alongside the backend; existing "
+                                "vectors can't be reused. Re-index to populate the new store."
+                            )
+                        elif old_vs is not None and new_vs is not None:
+                            mig = await migrate_embeddings(old_vs, new_vs)
+                            await migrate_memories(old_mem, new_mem)
+                            reindex_required = mig.needs_reindex
+                            reindex_reason = mig.reason if mig.needs_reindex else ""
+                            logger.info(
+                                "Backend migration: migrated=%d needs_reindex=%s (%s)",
+                                mig.migrated, mig.needs_reindex, mig.reason,
+                            )
+                        else:
+                            reindex_required = True
+                            reindex_reason = (
+                                "No existing store to migrate from; re-index to populate "
+                                "the new backend."
+                            )
+                    elif embed_changed:
+                        # Same backend, different embedding model — existing vectors are
+                        # stale (and may have a different dimension). Warn the user so
+                        # they can trigger a reindex; don't wipe automatically.
+                        reindex_required = True
+                        reindex_reason = (
+                            "Embedding model changed. Existing vectors are stale and may "
+                            "have a different dimension. Re-index the vector store to "
+                            "rebuild with the new model."
                         )
-                        request.app.state.vector_store = vs
+
+                    vs = new_vs
+                    request.app.state.vector_store = new_vs
+                    request.app.state.memory_store = new_mem
                     logger.info(
-                        "Embed provider updated to '%s' (concurrency: %d) after settings change.",
-                        new_ep_name, new_concurrency,
+                        "Vector + memory stores rebuilt after settings change "
+                        "(backend: %s, embed_provider: %s).",
+                        new_config.vector_store_backend, new_ep_name,
                     )
                 else:
                     logger.info("Provider '%s' has no embedding support; vector store disabled.", new_config.llm_provider)
                     request.app.state.vector_store = None
+                    request.app.state.memory_store = None
                     vs = None
             except Exception:
-                logger.warning("Could not update embed provider after settings change.", exc_info=True)
+                logger.warning("Could not rebuild vector store after settings change.", exc_info=True)
+                vs = getattr(request.app.state, "vector_store", None)
             request.app.state.manual_analysis_svc = ManualAnalysisService(
                 new_config, providers, paperless_client, vector_store=vs
             )
@@ -2418,7 +2524,18 @@ async def update_settings(request: Request, body: dict[str, Any] = Body(...)) ->
     # Rate limiter: currently uses default 60/60. Could be extended here
     # if rate limit fields are added to PaperlessIQConfig.
 
-    return _settings_svc.get_masked()
+    result = _settings_svc.get_masked()
+
+    # Auto-migration ran above on a backend switch; only prompt for a re-index
+    # when it couldn't carry the embeddings over.
+    if reindex_required:
+        result["needs_reindex"] = True
+        result["reindex_reason"] = reindex_reason or (
+            f"Vector backend is now '{new_config.vector_store_backend}'. "
+            "Re-index to populate the new store."
+        )
+
+    return result
 
 
 # ---------------------------------------------------------------------------
@@ -2519,9 +2636,9 @@ async def get_status(request: Request) -> dict:
             queue.update_health_cache("llm", llm_online)
 
         vs = getattr(request.app.state, "vector_store", None)
-        if vs and hasattr(vs, "_llm"):
+        if vs is not None:
             try:
-                embed_online = await asyncio.wait_for(vs._llm.health_check(), timeout=3.0)
+                embed_online = await asyncio.wait_for(vs.embed_health_check(), timeout=3.0)
             except Exception:
                 pass
         if queue:
@@ -2545,7 +2662,7 @@ async def get_status(request: Request) -> dict:
     vs_store = getattr(request.app.state, "vector_store", None)
     if vs_store:
         try:
-            embedded_count = vs_store.count()
+            embedded_count = await vs_store.count()
         except Exception:
             pass
     # Count total documents in Paperless NGX (excluding inbox tag)
@@ -2593,7 +2710,7 @@ async def trigger_reindex(
     Always resets the collection first — this is required when the embedding
     model (or its output dimension) has changed since the last index run.
     """
-    vs: ChromaVectorStore | None = getattr(request.app.state, "vector_store", None)
+    vs: VectorStore | None = getattr(request.app.state, "vector_store", None)
     pc = getattr(request.app.state, "paperless_client", None)
     if not vs or not pc:
         raise HTTPException(status_code=503, detail="Vector store or Paperless client not available.")
@@ -2615,6 +2732,60 @@ async def trigger_reindex(
     return {"detail": "Vector store cleared. Full reindex started in the background."}
 
 
+@app.post("/api/vector/migrate", tags=["system"],
+          dependencies=[Depends(require_perm("can_settings"))])
+async def migrate_vector_store(
+    request: Request,
+    svc: Annotated[AuditLogService, Depends(_audit_service)],
+) -> dict:
+    """Copy existing embeddings from the legacy local Chroma store into the
+    currently-configured backend — without re-embedding. Use after switching to
+    Qdrant to carry the index over, or to retry a migration that didn't complete
+    automatically on save.
+    """
+    from backend.memory_store import ChromaMemoryStore
+    from backend.vector_store import ChromaVectorStore
+
+    config = _settings_svc.config
+    dst = getattr(request.app.state, "vector_store", None)
+    if dst is None:
+        raise HTTPException(status_code=503, detail="Vector store not available.")
+    if config.vector_store_backend == "local":
+        return {
+            "migrated": 0, "memories_migrated": 0, "needs_reindex": False,
+            "detail": "The local Chroma store is already the source; nothing to migrate.",
+        }
+
+    providers = getattr(request.app.state, "providers", None)
+    embed_provider = _resolve_embed_provider(config, providers)
+    if embed_provider is None:
+        raise HTTPException(status_code=503, detail="No embedding provider available.")
+
+    # Legacy source = the local Chroma store on disk.
+    src = ChromaVectorStore(embed_provider, persist_directory="/data/chroma")
+    src_mem = ChromaMemoryStore(embed_provider, persist_directory="/data/chroma")
+    dst_mem = getattr(request.app.state, "memory_store", None)
+
+    result = await migrate_embeddings(src, dst)
+    mem_result = await migrate_memories(src_mem, dst_mem)
+
+    actor = getattr(request.state, "user", None)
+    await svc.record_event(
+        action_type="vector_migrate",
+        change_source=f"user:{actor}" if actor else "system",
+        new_value=(
+            f"migrated {result.migrated} vectors, {mem_result.migrated} memories "
+            f"(needs_reindex={result.needs_reindex})"
+        ),
+    )
+    return {
+        "migrated": result.migrated,
+        "memories_migrated": mem_result.migrated,
+        "needs_reindex": result.needs_reindex,
+        "detail": result.reason or "Migration complete.",
+    }
+
+
 class ReindexSinceRequest(BaseModel):
     modified_after: str  # ISO date string, e.g. "2025-01-15"
 
@@ -2631,7 +2802,7 @@ async def trigger_reindex_since(
     Useful for catching up after a period without live webhook re-indexing.
     Does NOT wipe the existing vector store — only updates changed docs.
     """
-    vs: ChromaVectorStore | None = getattr(request.app.state, "vector_store", None)
+    vs: VectorStore | None = getattr(request.app.state, "vector_store", None)
     pc: PaperlessNGXClient | None = getattr(request.app.state, "paperless_client", None)
     if not vs or not pc:
         raise HTTPException(status_code=503, detail="Vector store or Paperless client not available.")
@@ -2697,7 +2868,7 @@ async def trigger_reindex_since(
 _PAPERLESS_IQ_WORKFLOW_NAME = "Paperless IQ — Live Reindex"
 
 
-async def _reindex_document(doc_id: int, vs: ChromaVectorStore, pc: PaperlessNGXClient) -> None:
+async def _reindex_document(doc_id: int, vs: VectorStore, pc: PaperlessNGXClient) -> None:
     """Fetch current document metadata from Paperless NGX and upsert into the vector store."""
     base = pc._base_url
     headers = pc._headers
@@ -2748,6 +2919,7 @@ async def _reindex_document(doc_id: int, vs: ChromaVectorStore, pc: PaperlessNGX
     meta = {
         "title": doc.get("title", ""),
         "tags": [tag_id_to_name.get(tid, "") for tid in doc_tags if tag_id_to_name.get(tid)],
+        "tag_ids": doc_tags,
         "correspondent": corr_id_to_name.get(doc.get("correspondent") or 0, ""),
         "document_type": dt_id_to_name.get(doc.get("document_type") or 0, ""),
         "custom_fields": custom_fields,
@@ -2896,7 +3068,7 @@ async def paperless_webhook(request: Request) -> dict:
             detail="Invalid or missing webhook secret.",
         )
 
-    vs: ChromaVectorStore | None = getattr(request.app.state, "vector_store", None)
+    vs: VectorStore | None = getattr(request.app.state, "vector_store", None)
     pc: PaperlessNGXClient | None = getattr(request.app.state, "paperless_client", None)
     if not vs or not pc:
         logger.warning("Webhook received but vector store or paperless client not available; skipped.")

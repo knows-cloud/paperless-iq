@@ -194,7 +194,7 @@ export default function AuditPage() {
         {exportError && <Alert color="red" variant="light" mb="sm">{exportError}</Alert>}
 
         {isLoading ? (
-          <Text size="sm" c="dimmed">{t("audit.loading")}</Text>
+          <Text size="sm" c="dimmed">{t("common.loading")}</Text>
         ) : items.length === 0 ? (
           <Text size="sm" c="dimmed">{t("audit.empty")}</Text>
         ) : (

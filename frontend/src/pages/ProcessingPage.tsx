@@ -40,7 +40,7 @@ export default function ProcessingPage() {
           </Group>
           <Group gap="xs">
             <Text size="sm" c="dimmed">{t("processing.approvalQueue")}:</Text>
-            <Text size="sm" fw={600}>{d?.queue_pending ?? 0} {t("processing.pending")}</Text>
+            <Text size="sm" fw={600}>{d?.queue_pending ?? 0} {t("common.pending")}</Text>
           </Group>
         </Group>
       </Paper>
@@ -107,15 +107,15 @@ export default function ProcessingPage() {
                 <Text size="sm" fw={600}>{tr.tracked_documents}</Text>
               </Group>
               <Group gap="xs">
-                <Text size="sm" c="dimmed">{t("processing.approvedLabel")}</Text>
+                <Text size="sm" c="dimmed">{t("common.approved")}</Text>
                 <Text size="sm" fw={600} c="teal">{tr.suggestions_approved}</Text>
               </Group>
               <Group gap="xs">
-                <Text size="sm" c="dimmed">{t("processing.rejectedLabel")}</Text>
+                <Text size="sm" c="dimmed">{t("common.rejected")}</Text>
                 <Text size="sm" fw={600} c="red">{tr.suggestions_rejected}</Text>
               </Group>
               <Group gap="xs">
-                <Text size="sm" c="dimmed">{t("processing.pendingLabel")}</Text>
+                <Text size="sm" c="dimmed">{t("common.pending")}</Text>
                 <Text size="sm" fw={600}>{tr.suggestions_pending}</Text>
               </Group>
             </Group>

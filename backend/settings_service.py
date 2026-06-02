@@ -57,7 +57,16 @@ def _decrypt_creds(stored: str) -> str:
 logger = logging.getLogger(__name__)
 
 # Fields that contain credentials and must be redacted on export / API response
-CREDENTIAL_FIELDS = frozenset({"llm_credentials", "webhook_secret"})
+CREDENTIAL_FIELDS = frozenset(
+    {"llm_credentials", "webhook_secret", "qdrant_api_key"}
+)
+
+# Credential fields typed as bytes (EncryptedBlob) — env-var values for these
+# must be encoded to bytes before being placed on the model. webhook_secret is
+# a plain str field and is excluded.
+_BYTES_CREDENTIAL_FIELDS = frozenset(
+    {"llm_credentials", "qdrant_api_key"}
+)
 
 # Placeholder used in exported config files and masked API responses
 REDACTED_PLACEHOLDER = "__REDACTED__"
@@ -77,6 +86,7 @@ _ENV_MAP: dict[str, tuple[str, type]] = {
     "llm_model":                   ("PIQ_LLM_MODEL", str),
     "llm_credentials":             ("PIQ_LLM_CREDENTIALS", str),
     "ollama_url":                   ("PIQ_OLLAMA_URL", str),
+    "llm_timeout_seconds":          ("PIQ_LLM_TIMEOUT_SECONDS", int),
     "vector_store_backend":        ("PIQ_VECTOR_STORE_BACKEND", str),
     "bedrock_kb_id":               ("PIQ_BEDROCK_KB_ID", str),
     "default_analysis_mode":       ("PIQ_DEFAULT_ANALYSIS_MODE", str),
@@ -86,6 +96,7 @@ _ENV_MAP: dict[str, tuple[str, type]] = {
     "frequency_fallback_count":    ("PIQ_FREQUENCY_FALLBACK_COUNT", int),
     "embed_provider":              ("PIQ_EMBED_PROVIDER", str),
     "embedding_model":             ("PIQ_EMBEDDING_MODEL", str),
+    "embed_concurrency":           ("PIQ_EMBED_CONCURRENCY", int),
     "tag_creation_policy":         ("PIQ_TAG_CREATION_POLICY", str),
     "correspondent_creation_policy": ("PIQ_CORRESPONDENT_CREATION_POLICY", str),
     "doctype_creation_policy":     ("PIQ_DOCTYPE_CREATION_POLICY", str),
@@ -98,6 +109,31 @@ _ENV_MAP: dict[str, tuple[str, type]] = {
     "audit_retention_days":        ("PIQ_AUDIT_RETENTION_DAYS", int),
     "target_language":             ("PIQ_TARGET_LANGUAGE", str),
     "paperless_public_url":        ("PIQ_PAPERLESS_PUBLIC_URL", str),
+    # Qdrant backend (api key is a credential — encoded to bytes below)
+    "qdrant_mode":                 ("PIQ_QDRANT_MODE", str),
+    "qdrant_url":                  ("PIQ_QDRANT_URL", str),
+    "qdrant_api_key":              ("PIQ_QDRANT_API_KEY", str),
+    "qdrant_collection":           ("PIQ_QDRANT_COLLECTION", str),
+    "qdrant_memory_collection":    ("PIQ_QDRANT_MEMORY_COLLECTION", str),
+    # Search tuning: common
+    "search_overfetch_multiplier": ("PIQ_SEARCH_OVERFETCH_MULTIPLIER", int),
+    "search_min_score":            ("PIQ_SEARCH_MIN_SCORE", float),
+    "chunk_size":                  ("PIQ_CHUNK_SIZE", int),
+    "chunk_overlap":               ("PIQ_CHUNK_OVERLAP", int),
+    "chunk_strategy":              ("PIQ_CHUNK_STRATEGY", str),
+    "rerank_enabled":              ("PIQ_RERANK_ENABLED", bool),
+    "rerank_method":               ("PIQ_RERANK_METHOD", str),
+    "rerank_top_k":                ("PIQ_RERANK_TOP_K", int),
+    "rerank_model":                ("PIQ_RERANK_MODEL", str),
+    # Search tuning: Chroma-specific
+    "chroma_hnsw_search_ef":       ("PIQ_CHROMA_HNSW_SEARCH_EF", int),
+    "chroma_hnsw_m":               ("PIQ_CHROMA_HNSW_M", int),
+    "chroma_hnsw_construction_ef": ("PIQ_CHROMA_HNSW_CONSTRUCTION_EF", int),
+    # Search tuning: Qdrant-specific
+    "qdrant_hnsw_ef":              ("PIQ_QDRANT_HNSW_EF", int),
+    "qdrant_hnsw_m":               ("PIQ_QDRANT_HNSW_M", int),
+    "qdrant_quantization":         ("PIQ_QDRANT_QUANTIZATION", str),
+    "qdrant_hybrid_search":        ("PIQ_QDRANT_HYBRID_SEARCH", bool),
 }
 
 
@@ -107,6 +143,8 @@ def _coerce(value: str, target_type: type) -> Any:
         return value.lower() in ("1", "true", "yes", "on")
     if target_type is int:
         return int(value)
+    if target_type is float:
+        return float(value)
     return value
 
 
@@ -121,9 +159,10 @@ def _build_env_overrides() -> dict[str, Any]:
             overrides[field] = _coerce(raw, target_type)
         except (ValueError, TypeError):
             logger.warning("Ignoring invalid env var %s=%r", env_name, raw)
-    # Special: llm_credentials must be stored as bytes on the model
-    if "llm_credentials" in overrides and isinstance(overrides["llm_credentials"], str):
-        overrides["llm_credentials"] = overrides["llm_credentials"].encode()
+    # Special: bytes-typed credential blobs must be stored as bytes on the model
+    for field in _BYTES_CREDENTIAL_FIELDS:
+        if field in overrides and isinstance(overrides[field], str):
+            overrides[field] = overrides[field].encode()
     return overrides
 
 
@@ -164,10 +203,9 @@ class SettingsService:
                 try:
                     data = json.loads(row.config_json)
                     # Decrypt credential fields if stored encrypted
-                    if data.get("llm_credentials"):
-                        data["llm_credentials"] = _decrypt_creds(data["llm_credentials"])
-                    if data.get("webhook_secret"):
-                        data["webhook_secret"] = _decrypt_creds(data["webhook_secret"])
+                    for field in CREDENTIAL_FIELDS:
+                        if data.get(field):
+                            data[field] = _decrypt_creds(data[field])
                     self._config = PaperlessIQConfig(**data)
                     logger.info("Settings loaded from database.")
                     return
@@ -190,17 +228,14 @@ class SettingsService:
 
         try:
             data = self._config.model_dump(mode="json")
-            # Encrypt credentials before writing to disk
-            raw = self._config.llm_credentials
-            if raw:
-                plaintext = raw.decode("latin-1") if isinstance(raw, bytes) else str(raw)
-                data["llm_credentials"] = _encrypt_creds(plaintext)
-            else:
-                data["llm_credentials"] = ""
-            if self._config.webhook_secret:
-                data["webhook_secret"] = _encrypt_creds(self._config.webhook_secret)
-            else:
-                data["webhook_secret"] = ""
+            # Encrypt credential fields before writing to disk
+            for field in CREDENTIAL_FIELDS:
+                raw = getattr(self._config, field)
+                if raw:
+                    plaintext = raw.decode("latin-1") if isinstance(raw, bytes) else str(raw)
+                    data[field] = _encrypt_creds(plaintext)
+                else:
+                    data[field] = ""
 
             row = await session.get(SettingsORM, 1)
             if row is None:
@@ -240,6 +275,10 @@ class SettingsService:
                     data["bedrock_has_session_token"] = bool(creds.get("session_token"))
                 except (json.JSONDecodeError, Exception):
                     pass
+
+        # "<field>_stored" flag lets the UI show a "stored" badge + keep-existing
+        # placeholder without exposing the value (mirrors bedrock_has_secret).
+        data["qdrant_api_key_stored"] = bool(self._config.qdrant_api_key)
 
         for field in CREDENTIAL_FIELDS:
             if data.get(field):  # only redact when non-empty

@@ -153,14 +153,14 @@ export default function VisionAnalysisFlow({
           {error && <Text size="sm" c="red">{error}</Text>}
           <Group justify="flex-end" gap="xs">
             <Button variant="default" size="sm" onClick={reset}>
-              {t("processing.cancel")}
+              {t("common.cancel")}
             </Button>
             <Button
               size="sm"
               onClick={handleConfirmOptions}
               loading={step === "fetchingCount"}
             >
-              {t("vision.analyze")}
+              {t("common.analyze")}
             </Button>
           </Group>
         </Stack>
@@ -183,7 +183,7 @@ export default function VisionAnalysisFlow({
           <Text size="sm" c="dimmed">{t("vision.pageLimitCostNote")}</Text>
           <Group justify="flex-end" gap="xs">
             <Button variant="default" size="sm" onClick={reset}>
-              {t("processing.cancel")}
+              {t("common.cancel")}
             </Button>
             <Button
               variant="light"
@@ -204,7 +204,7 @@ export default function VisionAnalysisFlow({
         opened={step === "analyzing"}
         onClose={() => {}}
         withCloseButton={false}
-        title={t("vision.analyzing")}
+        title={t("common.analyzing")}
         size="sm"
       >
         <Group gap="sm" p="md">

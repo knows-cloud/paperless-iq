@@ -6,7 +6,7 @@ from datetime import datetime
 from typing import Any, Literal
 from uuid import UUID
 
-from pydantic import BaseModel, ConfigDict, field_validator
+from pydantic import BaseModel, ConfigDict, field_validator, model_validator
 
 # Type alias for encrypted credential blobs
 EncryptedBlob = bytes
@@ -101,10 +101,40 @@ class PaperlessIQConfig(BaseModel):
     llm_model: str
     llm_credentials: EncryptedBlob = b""  # never returned to UI
     ollama_url: str = "http://localhost:11434"  # Ollama server URL (only used when provider is ollama)
+    llm_timeout_seconds: int = 120  # max seconds to wait for LLM response (0 = no limit)
 
     # Vector store
-    vector_store_backend: Literal["local", "bedrock_kb"] = "local"
+    vector_store_backend: Literal["local", "bedrock_kb", "qdrant"] = "local"
     bedrock_kb_id: str | None = None
+
+    # Qdrant backend
+    qdrant_mode: Literal["local", "cloud"] = "local"
+    qdrant_url: str = "http://qdrant:6333"  # default = compose service DNS
+    qdrant_api_key: EncryptedBlob = b""  # Fernet-encrypted; never returned to UI
+    qdrant_collection: str = "paperless_iq_chunks"
+    qdrant_memory_collection: str = "piq_memories"
+
+    # --- Search tuning: COMMON (apply to every backend) ---
+    search_overfetch_multiplier: int = 5  # candidates fetched = top_n * this
+    search_min_score: float = 0.0  # drop results below this normalized score (0 = off)
+    chunk_size: int = 1000  # chars per chunk
+    chunk_overlap: int = 200  # overlap between chunks
+    chunk_strategy: Literal["char", "sentence"] = "char"
+    rerank_enabled: bool = False  # master switch (ships OFF)
+    rerank_method: Literal["llm", "local", "api"] = "llm"  # which reranker when enabled
+    rerank_top_k: int = 20  # how many candidates to rerank
+    rerank_model: str = "BAAI/bge-reranker-v2-m3"  # default local cross-encoder (multilingual)
+
+    # --- Search tuning: CHROMA-specific ---
+    chroma_hnsw_search_ef: int = 100  # recall vs latency at query time
+    chroma_hnsw_m: int = 16  # graph connectivity (index build)
+    chroma_hnsw_construction_ef: int = 100  # index build quality
+
+    # --- Search tuning: QDRANT-specific ---
+    qdrant_hnsw_ef: int = 128
+    qdrant_hnsw_m: int = 16
+    qdrant_quantization: Literal["none", "scalar", "binary"] = "none"
+    qdrant_hybrid_search: bool = False  # dense + sparse (named vectors)
 
     # Analysis defaults
     default_analysis_mode: Literal["ocr", "full_document"] = "ocr"
@@ -117,6 +147,7 @@ class PaperlessIQConfig(BaseModel):
     frequency_fallback_count: int = 20  # top-N most frequent entities as fallback
     embed_provider: Literal["ollama", "bedrock", "openai"] = "ollama"  # provider used for embeddings
     embedding_model: str = "nomic-embed-text"  # embedding model name (used when embed_provider=ollama)
+    embed_concurrency: int = 1  # parallel embed calls; 1 is safe for local Ollama, raise for remote/GPU
 
     # Prompt templates
     global_prompt_template: str = (
@@ -138,6 +169,7 @@ class PaperlessIQConfig(BaseModel):
     )
     per_field_prompt_templates: dict[str, str] = {}
     per_doctype_prompt_templates: dict[int, str] = {}
+    discovery_system_prompt: str | None = None  # configurable body for the discovery RAG prompt
 
     # Per-field descriptions: instructions for the LLM on how to populate each metadata field
     field_descriptions: dict[str, str] = {}
@@ -217,3 +249,22 @@ class PaperlessIQConfig(BaseModel):
         if v < 1:
             raise ValueError("batch_size must be at least 1")
         return v
+
+    @model_validator(mode="after")
+    def validate_search_ef(self) -> "PaperlessIQConfig":
+        """The active backend's HNSW query candidate list (search_ef) must be
+        large enough to serve the requested + overfetched results, or recall
+        silently caps. Only the active backend's ef field is enforced."""
+        needed = self.similar_docs_count * self.search_overfetch_multiplier
+        if self.vector_store_backend == "local":
+            ef, field = self.chroma_hnsw_search_ef, "chroma_hnsw_search_ef"
+        elif self.vector_store_backend == "qdrant":
+            ef, field = self.qdrant_hnsw_ef, "qdrant_hnsw_ef"
+        else:
+            return self  # bedrock_kb manages its own retrieval
+        if ef < needed:
+            raise ValueError(
+                f"{field} ({ef}) must be ≥ similar_docs_count × overfetch "
+                f"({self.similar_docs_count} × {self.search_overfetch_multiplier} = {needed})"
+            )
+        return self
