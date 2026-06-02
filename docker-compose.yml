@@ -6,12 +6,10 @@ services:
       context: .
       dockerfile: docker/Dockerfile
       args:
-        # Optional Python extras baked into the image (comma-separated).
-        # Default includes Qdrant hybrid search (fastembed). To also bundle the
-        # local torch cross-encoder reranker, set in your .env:
-        #   PIQ_EXTRAS=qdrant-hybrid,rerank-local
-        # For the leanest image (no hybrid):  PIQ_EXTRAS=
-        PIQ_EXTRAS: ${PIQ_EXTRAS-qdrant-hybrid}
+        # Bundle hybrid search (fastembed) and the local cross-encoder reranker
+        # (sentence-transformers + torch) by default. Override with the PIQ_EXTRAS
+        # env var, e.g. PIQ_EXTRAS=qdrant-hybrid for the leaner image.
+        PIQ_EXTRAS: ${PIQ_EXTRAS:-qdrant-hybrid,rerank-local}
     restart: unless-stopped
     ports:
       - "0.0.0.0:8082:8080"
@@ -21,6 +19,9 @@ services:
       PAPERLESS_URL: ${PAPERLESS_URL:-http://webserver:8000}
       PAPERLESS_TOKEN: ${PAPERLESS_TOKEN:?PAPERLESS_TOKEN must be set}
       DATABASE_URL: sqlite+aiosqlite:////data/paperless_iq.db
+      # Cache HuggingFace model weights (local reranker / sparse encoder) in the
+      # persistent volume so they are downloaded once, not on every restart.
+      HF_HOME: /data/hf-cache
       # SECRET_KEY is optional — a random key is auto-generated on first startup
       # and stored in the volume at /data/.secret_key.  Set it explicitly if you
       # want to be able to restore an encrypted DB backup after a volume loss.
@@ -32,6 +33,7 @@ services:
       # Leave unset to keep using the default local ChromaDB backend.
       # PIQ_VECTOR_STORE_BACKEND: qdrant
       PIQ_QDRANT_URL: ${PIQ_QDRANT_URL:-http://qdrant:6333}
+      PIQ_EXTRAS:
     networks:
       - paperless_default
 

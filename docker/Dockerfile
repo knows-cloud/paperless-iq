@@ -25,6 +25,14 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 RUN pip install --no-cache-dir uv
 COPY pyproject.toml ./
 ARG PIQ_EXTRAS="qdrant-hybrid"
+# When the local reranker is bundled, pre-install the CPU-only torch wheel so
+# sentence-transformers reuses it instead of pulling the default ~3 GB CUDA build
+# (this container runs CPU-only — no GPU is passed in). Must run BEFORE the main
+# install so the CPU build is already-satisfied and wins resolution.
+RUN if echo ",$PIQ_EXTRAS," | grep -q ',rerank-local,'; then \
+        uv pip install --system --no-cache \
+            --index-url https://download.pytorch.org/whl/cpu torch; \
+    fi
 RUN uv pip install --system --no-cache -r pyproject.toml \
     $(for e in $(echo "$PIQ_EXTRAS" | tr ',' ' '); do printf -- '--extra %s ' "$e"; done)
 

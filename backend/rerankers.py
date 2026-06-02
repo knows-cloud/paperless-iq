@@ -26,6 +26,7 @@ import asyncio
 import json
 import logging
 import math
+import threading
 from typing import Any
 
 from backend.protocols import LLMProvider, Reranker
@@ -86,30 +87,45 @@ class LocalCrossEncoderReranker:
     The heavy import (``sentence_transformers`` → ``torch``) and the model load
     happen lazily on first ``rerank`` call, so merely selecting — but not
     enabling — this method costs nothing.
+
+    A single instance is shared by every caller (discovery + the automation
+    suggestion loop). Two locks keep that safe and fast on CPU:
+
+    - ``_load_lock`` ensures the ~GB model is built exactly once. Without it,
+      concurrent first-calls each construct their own ``CrossEncoder`` (each
+      re-downloading the weights), multiplying memory and CPU.
+    - ``_predict_lock`` serialises inference. The model saturates every core on
+      its own; running predicts in parallel oversubscribes the CPU and makes
+      each one crawl, so callers queue rather than thrash.
     """
 
     def __init__(self, model_name: str) -> None:
         self._model_name = model_name
         self._model: Any = None
+        self._load_lock = threading.Lock()
+        self._predict_lock = threading.Lock()
 
     def _ensure_model(self) -> None:
         if self._model is not None:
             return
-        try:
-            from sentence_transformers import CrossEncoder
-        except ImportError as exc:  # pragma: no cover - exercised via build_reranker
-            raise RuntimeError(
-                "The 'local' reranker needs optional dependencies. Install them with "
-                "`pip install 'paperless-iq[rerank-local]'` (adds sentence-transformers "
-                "and torch), or choose the 'llm' / 'api' rerank method instead."
-            ) from exc
-        logger.info(
-            "Loading local reranker '%s' — first run downloads the model weights "
-            "(progress is logged by huggingface_hub).",
-            self._model_name,
-        )
-        self._model = CrossEncoder(self._model_name)
-        logger.info("Local reranker '%s' ready.", self._model_name)
+        with self._load_lock:
+            if self._model is not None:  # another thread loaded it while we waited
+                return
+            try:
+                from sentence_transformers import CrossEncoder
+            except ImportError as exc:  # pragma: no cover - exercised via build_reranker
+                raise RuntimeError(
+                    "The 'local' reranker needs optional dependencies. Install them with "
+                    "`pip install 'paperless-iq[rerank-local]'` (adds sentence-transformers "
+                    "and torch), or choose the 'llm' / 'api' rerank method instead."
+                ) from exc
+            logger.info(
+                "Loading local reranker '%s' — first run downloads the model weights "
+                "(progress is logged by huggingface_hub).",
+                self._model_name,
+            )
+            self._model = CrossEncoder(self._model_name)
+            logger.info("Local reranker '%s' ready.", self._model_name)
 
     async def rerank(self, query: str, passages: list[str]) -> list[float]:
         if not passages:
@@ -119,7 +135,11 @@ class LocalCrossEncoderReranker:
         def _predict() -> list[float]:
             self._ensure_model()
             pairs = [[query, p] for p in passages]
-            return [float(s) for s in self._model.predict(pairs)]
+            # Serialise inference: one predict already uses every core, so
+            # concurrent calls would only thrash the CPU and starve each other.
+            with self._predict_lock:
+                scores = self._model.predict(pairs, show_progress_bar=False)
+            return [float(s) for s in scores]
 
         try:
             raw = await loop.run_in_executor(None, _predict)
