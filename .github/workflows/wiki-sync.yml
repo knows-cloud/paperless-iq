@@ -1,0 +1,78 @@
+name: Sync docs to Wiki
+
+# Mirrors the in-repo docs/ folder (the source of truth) into the GitHub Wiki,
+# so the browser-editable Wiki always matches the versioned, PR-reviewed docs.
+#
+# One-time setup (required before this runs):
+#   1. Repo -> Settings -> Features -> enable "Wikis".
+#   2. Open the Wiki tab and click "Create the first page" -> Save (any content).
+#      This initialises the <repo>.wiki.git repository that this job pushes to.
+# After that, every push to main that touches docs/** updates the Wiki.
+#
+# Note: edit docs in-repo, not in the Wiki UI -- the Wiki is a mirror and manual
+# edits to mirrored pages will be overwritten on the next sync.
+#
+# Security: the only ${{ }} interpolation below is secrets.GITHUB_TOKEN, mapped
+# into an env var (the recommended pattern). No untrusted event input (commit
+# messages, issue/PR titles, branch names) is used in any run: step.
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "docs/**"
+      - ".github/workflows/wiki-sync.yml"
+  workflow_dispatch: {}
+
+permissions:
+  contents: write
+
+concurrency:
+  group: wiki-sync
+  cancel-in-progress: true
+
+jobs:
+  sync:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repo
+        uses: actions/checkout@v4
+
+      - name: Clone wiki, mirror docs, push
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          WIKI_URL="https://x-access-token:${GH_TOKEN}@github.com/${GITHUB_REPOSITORY}.wiki.git"
+
+          if ! git clone "$WIKI_URL" wiki 2>/dev/null; then
+            echo "::error::Could not clone the wiki repo. Enable Wikis and create the first page once (see this workflow's header)."
+            exit 1
+          fi
+
+          # Mirror every docs/*.md into the wiki, keeping the same page names.
+          # Generate a sidebar so the pages are navigable.
+          cp docs/*.md wiki/
+          {
+            echo "### Documentation"
+            for f in docs/*.md; do
+              name="$(basename "$f" .md)"
+              echo "- [[${name}]]"
+            done
+          } > wiki/_Sidebar.md
+
+          # Seed a Home page only if the wiki doesn't already have one.
+          if [ ! -f wiki/Home.md ]; then
+            printf '# Paperless IQ\n\nDocumentation mirrored from the repo'\''s `docs/` folder. See the sidebar.\n' > wiki/Home.md
+          fi
+
+          cd wiki
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add -A
+          if git diff --cached --quiet; then
+            echo "Wiki already up to date."
+          else
+            git commit -m "docs: sync from ${GITHUB_SHA::7}"
+            git push
+          fi
