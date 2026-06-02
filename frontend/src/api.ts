@@ -80,6 +80,8 @@ export interface MetadataSuggestionResponse {
   custom_fields: Record<string, unknown>;
   llm_provider: string;
   llm_model: string;
+  extracted_content?: string | null;
+  original_ocr_content?: string | null;
 }
 
 export interface VisionAnalysisResult {

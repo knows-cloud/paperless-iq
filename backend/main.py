@@ -523,11 +523,15 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
 
     async with engine.begin() as conn:
         await conn.run_sync(Base.metadata.create_all)
-        # Add columns introduced in audit log overhaul — safe for existing DBs.
+        # Add columns introduced after initial release — safe for existing DBs
+        # (create_all only creates missing tables, it never alters existing ones).
         for col_ddl in [
             "ALTER TABLE audit_log ADD COLUMN document_title TEXT",
             "ALTER TABLE audit_log ADD COLUMN action_type VARCHAR(50) DEFAULT 'field_change'",
             "ALTER TABLE audit_log ADD COLUMN session_id VARCHAR(36)",
+            # Suggested content from full-document analysis (Step 1, vision rework).
+            "ALTER TABLE suggestions ADD COLUMN extracted_content TEXT",
+            "ALTER TABLE suggestions ADD COLUMN original_ocr_content TEXT",
         ]:
             try:
                 await conn.execute(text(col_ddl))

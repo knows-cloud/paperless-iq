@@ -35,6 +35,11 @@ class MetadataSuggestion(BaseModel):
     prompt_used: str
     raw_llm_response: str
 
+    # Suggested content from full-document analysis (None unless transcribed).
+    # original_ocr_content is the document's OCR text at analysis time, for the diff.
+    extracted_content: str | None = None
+    original_ocr_content: str | None = None
+
 
 class VisionAnalysisResult(BaseModel):
     """Result of a vision-based full-document analysis."""

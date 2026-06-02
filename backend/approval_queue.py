@@ -100,6 +100,8 @@ def _orm_to_pydantic(row: SuggestionORM) -> MetadataSuggestion:
         analysis_mode=row.analysis_mode,  # type: ignore[arg-type]
         prompt_used=row.prompt_used,
         raw_llm_response=row.raw_llm_response,
+        extracted_content=row.extracted_content,
+        original_ocr_content=row.original_ocr_content,
     )
 
 
@@ -121,6 +123,8 @@ def _pydantic_to_orm(suggestion: MetadataSuggestion) -> SuggestionORM:
         analysis_mode=suggestion.analysis_mode,
         prompt_used=suggestion.prompt_used,
         raw_llm_response=suggestion.raw_llm_response,
+        extracted_content=suggestion.extracted_content,
+        original_ocr_content=suggestion.original_ocr_content,
     )
 
 

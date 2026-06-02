@@ -880,6 +880,13 @@ class DocumentAnalyzer:
             all_document_types=all_document_types,
         )
 
+        # Attach the transcribed content to the suggestion so it persists through
+        # the approval queue (enqueue) and can be viewed/applied later.
+        suggestion = suggestion.model_copy(update={
+            "extracted_content": extracted_content,
+            "original_ocr_content": original_ocr_content if include_content else None,
+        })
+
         return VisionAnalysisResult(
             suggestion=suggestion,
             extracted_content=extracted_content,

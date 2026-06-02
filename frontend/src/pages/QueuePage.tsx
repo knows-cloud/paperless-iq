@@ -9,6 +9,7 @@ import TagInput from "../TagInput";
 import AutocompleteInput from "../AutocompleteInput";
 import CfNameEditor from "../CfNameEditor";
 import VisionAnalysisFlow from "../VisionAnalysisFlow";
+import { ContentDiffModal } from "../components/ContentDiffModal";
 import { useTranslation } from "react-i18next";
 
 interface QueueItem {
@@ -47,6 +48,7 @@ export default function QueuePage() {
   const [existingTagsMap, setExistingTagsMap] = useState<Record<number, string[]>>({});
   const [showEmptyConfirm, setShowEmptyConfirm] = useState(false);
   const [reanalyzingIds, setReanalyzingIds] = useState<Set<string>>(new Set());
+  const [contentView, setContentView] = useState<{ extracted: string | null; original: string | null } | null>(null);
   const [openPreviews, setOpenPreviews] = useState<Set<number>>(new Set());
   const [previewUrls, setPreviewUrls] = useState<Record<number, string>>({});
   const [previewErrors, setPreviewErrors] = useState<Record<number, string>>({});
@@ -260,6 +262,18 @@ export default function QueuePage() {
                 <Button size="xs" variant="default" onClick={() => handleReanalyze(id)} loading={isReanalyzing}>
                   {t("queue.reanalyze")}
                 </Button>
+                {Boolean(raw.extracted_content) && (
+                  <Button
+                    size="xs"
+                    variant="default"
+                    onClick={() => setContentView({
+                      extracted: (raw.extracted_content as string) ?? null,
+                      original: (raw.original_ocr_content as string) ?? null,
+                    })}
+                  >
+                    {t("vision.viewContent")}
+                  </Button>
+                )}
                 <VisionAnalysisFlow
                   documentId={item.document_id}
                   pageWarningThreshold={pageWarningThreshold}
@@ -429,6 +443,18 @@ export default function QueuePage() {
           </Paper>
         );
       })}
+
+      <ContentDiffModal
+        opened={contentView !== null}
+        onClose={() => setContentView(null)}
+        originalOcr={contentView?.original}
+        extracted={contentView?.extracted}
+        footer={
+          <Button size="sm" variant="default" onClick={() => setContentView(null)}>
+            {t("common.close")}
+          </Button>
+        }
+      />
     </Stack>
   );
 }

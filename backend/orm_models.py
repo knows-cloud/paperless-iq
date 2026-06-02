@@ -43,6 +43,12 @@ class SuggestionORM(Base):
     prompt_used: Mapped[str] = mapped_column(Text, nullable=False, default="")
     raw_llm_response: Mapped[str] = mapped_column(Text, nullable=False, default="")
 
+    # Suggested document content from vision/full-document analysis (nullable —
+    # only present when the LLM transcribed the document). original_ocr_content is
+    # the document's OCR text at analysis time, kept for the side-by-side diff.
+    extracted_content: Mapped[str | None] = mapped_column(Text, nullable=True)
+    original_ocr_content: Mapped[str | None] = mapped_column(Text, nullable=True)
+
 
 class AuditLogORM(Base):
     """Persisted AuditLogEntry record."""
