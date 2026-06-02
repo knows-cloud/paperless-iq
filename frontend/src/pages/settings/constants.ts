@@ -37,9 +37,9 @@ export const QDRANT_MODES = [
 ] as const;
 
 export const QDRANT_QUANTIZATIONS = [
-  { value: "none",   labelKey: "aiProvider.vectorStore.qdrantQuantization.none" },
-  { value: "scalar", labelKey: "aiProvider.vectorStore.qdrantQuantization.scalar" },
-  { value: "binary", labelKey: "aiProvider.vectorStore.qdrantQuantization.binary" },
+  { value: "none",   labelKey: "aiProvider.search.qdrantQuantization.none" },
+  { value: "scalar", labelKey: "aiProvider.search.qdrantQuantization.scalar" },
+  { value: "binary", labelKey: "aiProvider.search.qdrantQuantization.binary" },
 ] as const;
 
 export const METADATA_FIELDS = [
