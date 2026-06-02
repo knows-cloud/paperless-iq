@@ -334,6 +334,8 @@ class ChromaVectorStore(_EmbeddingBackedStore):
             succeeded += 1
 
         await asyncio.gather(*[_embed_and_store(i, chunk) for i, chunk in enumerate(chunks)])
+        if succeeded == 0:
+            raise RuntimeError(f"All {total} chunk embeddings failed for document {doc_id}")
         logger.info("Upserted %d/%d chunks for document %d.", succeeded, total, doc_id)
 
     async def delete(self, doc_id: int) -> None:
@@ -897,7 +899,7 @@ class QdrantVectorStore(_EmbeddingBackedStore):
             points.append(models.PointStruct(id=self._point_id(doc_id, i), vector=vector, payload=payload))
 
         if not points or dim is None:
-            return
+            raise RuntimeError(f"All {total} chunk embeddings failed for document {doc_id}")
 
         await self._ensure_collection(dim)
         await self.delete(doc_id)  # replace any existing chunks for this document
@@ -1053,6 +1055,21 @@ class QdrantVectorStore(_EmbeddingBackedStore):
             "document_types": all_document_types,
             "custom_fields": all_custom_fields,
         }
+
+    async def get_collection_dim(self) -> int | None:
+        """Return the dense-vector dimension stored in the Qdrant collection, or None."""
+        try:
+            if not await self._client.collection_exists(self._collection):
+                return None
+            info = await self._client.get_collection(self._collection)
+            vecs = info.config.params.vectors
+            if self._hybrid_search and isinstance(vecs, dict):
+                dense = vecs.get("dense")
+                return dense.size if dense is not None else None
+            return getattr(vecs, "size", None)
+        except Exception:
+            logger.debug("get_collection_dim failed", exc_info=True)
+            return None
 
     async def count(self) -> int:
         if not await self._collection_present():

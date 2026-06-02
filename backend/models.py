@@ -101,6 +101,7 @@ class PaperlessIQConfig(BaseModel):
     llm_model: str
     llm_credentials: EncryptedBlob = b""  # never returned to UI
     ollama_url: str = "http://localhost:11434"  # Ollama server URL (only used when provider is ollama)
+    llm_timeout_seconds: int = 120  # max seconds to wait for LLM response (0 = no limit)
 
     # Vector store
     vector_store_backend: Literal["local", "bedrock_kb", "qdrant"] = "local"
@@ -146,6 +147,7 @@ class PaperlessIQConfig(BaseModel):
     frequency_fallback_count: int = 20  # top-N most frequent entities as fallback
     embed_provider: Literal["ollama", "bedrock", "openai"] = "ollama"  # provider used for embeddings
     embedding_model: str = "nomic-embed-text"  # embedding model name (used when embed_provider=ollama)
+    embed_concurrency: int = 1  # parallel embed calls; 1 is safe for local Ollama, raise for remote/GPU
 
     # Prompt templates
     global_prompt_template: str = (

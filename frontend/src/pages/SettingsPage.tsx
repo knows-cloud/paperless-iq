@@ -313,7 +313,7 @@ export default function SettingsPage() {
         "chunk_size", "chunk_overlap",
         "chroma_hnsw_search_ef", "chroma_hnsw_m", "chroma_hnsw_construction_ef",
         "qdrant_hnsw_ef", "qdrant_hnsw_m",
-        "rerank_top_k",
+        "rerank_top_k", "embed_concurrency", "llm_timeout_seconds",
       ]) {
         if (fd.has(k)) values[k] = Number(values[k]);
       }
