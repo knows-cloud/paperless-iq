@@ -195,6 +195,14 @@ export function AIProviderTab({
               description={t("aiProvider.visionThreshold.description")}
               style={{ flex: 1, minWidth: "160px" }}
             />
+            <NumberInput
+              label={<InfoLabel label={t("aiProvider.llmTimeout.label")} tip={t("aiProvider.llmTimeout.tip")} />}
+              name="llm_timeout_seconds"
+              min={0}
+              defaultValue={Number(s.llm_timeout_seconds ?? 120)}
+              description={t("aiProvider.llmTimeout.description")}
+              style={{ flex: 1, minWidth: "160px" }}
+            />
           </div>
         </Stack>
       </Paper>
@@ -237,6 +245,13 @@ export function AIProviderTab({
                 }}
                 placeholder="nomic-embed-text"
                 description={t("aiProvider.embeddings.model.description")}
+              />
+              <NumberInput
+                label={<InfoLabel label={t("aiProvider.embeddings.concurrency.label")} tip={t("aiProvider.embeddings.concurrency.tip")} />}
+                name="embed_concurrency"
+                min={1}
+                max={16}
+                defaultValue={Number(s.embed_concurrency ?? 1)}
               />
               {selectedProvider !== "ollama" && (
                 <TextInput
@@ -342,33 +357,8 @@ export function AIProviderTab({
               </div>
             </Stack>
           )}
-        </Stack>
-      </Paper>
 
-      {/* ── Similarity Search Tuning ─────────────────────────────────────────── */}
-      <Paper withBorder p="md" radius="md">
-        <Text fw={600} mb="md">{t("aiProvider.search.title")}</Text>
-        <Stack gap="md">
-
-          {/* Common knobs */}
-          <div style={{ display: "flex", gap: "1rem", flexWrap: "wrap" }}>
-            <NumberInput
-              label={<InfoLabel label={t("aiProvider.search.overfetch.label")} tip={t("aiProvider.search.overfetch.tip")} />}
-              name="search_overfetch_multiplier"
-              min={1} max={20}
-              defaultValue={Number(s.search_overfetch_multiplier ?? 5)}
-              style={{ flex: 1, minWidth: "150px" }}
-            />
-            <NumberInput
-              label={<InfoLabel label={t("aiProvider.search.minScore.label")} tip={t("aiProvider.search.minScore.tip")} />}
-              name="search_min_score"
-              min={0} max={1} step={0.05}
-              decimalScale={2}
-              defaultValue={Number(s.search_min_score ?? 0)}
-              style={{ flex: 1, minWidth: "150px" }}
-            />
-          </div>
-
+          {/* Chunking — affects how documents are embedded/stored (changing requires re-indexing) */}
           <Divider label={t("aiProvider.search.chunkingDivider")} labelPosition="left" />
           <div style={{ display: "flex", gap: "1rem", flexWrap: "wrap" }}>
             <NumberInput
@@ -397,7 +387,7 @@ export function AIProviderTab({
             />
           </div>
 
-          {/* Backend-specific HNSW knobs */}
+          {/* Backend-specific index build params (changing requires re-indexing) */}
           {vectorStoreBackend === "local" && (
             <>
               <Divider label={t("aiProvider.search.chromaHnswDivider")} labelPosition="left" />
@@ -457,12 +447,42 @@ export function AIProviderTab({
                   style={{ flex: 1, minWidth: "160px" }}
                 />
               </div>
-              <Checkbox
-                label={<InfoLabel label={t("aiProvider.search.qdrantHybrid.label")} tip={t("aiProvider.search.qdrantHybrid.tip")} />}
-                name="qdrant_hybrid_search"
-                defaultChecked={Boolean(s.qdrant_hybrid_search)}
-              />
             </>
+          )}
+        </Stack>
+      </Paper>
+
+      {/* ── Similarity Search Tuning ─────────────────────────────────────────── */}
+      <Paper withBorder p="md" radius="md">
+        <Text fw={600} mb="md">{t("aiProvider.search.title")}</Text>
+        <Stack gap="md">
+
+          {/* Common query-time knobs */}
+          <div style={{ display: "flex", gap: "1rem", flexWrap: "wrap" }}>
+            <NumberInput
+              label={<InfoLabel label={t("aiProvider.search.overfetch.label")} tip={t("aiProvider.search.overfetch.tip")} />}
+              name="search_overfetch_multiplier"
+              min={1} max={20}
+              defaultValue={Number(s.search_overfetch_multiplier ?? 5)}
+              style={{ flex: 1, minWidth: "150px" }}
+            />
+            <NumberInput
+              label={<InfoLabel label={t("aiProvider.search.minScore.label")} tip={t("aiProvider.search.minScore.tip")} />}
+              name="search_min_score"
+              min={0} max={1} step={0.05}
+              decimalScale={2}
+              defaultValue={Number(s.search_min_score ?? 0)}
+              style={{ flex: 1, minWidth: "150px" }}
+            />
+          </div>
+
+          {/* Hybrid search — a query strategy, so it lives with search tuning (Qdrant only) */}
+          {vectorStoreBackend === "qdrant" && (
+            <Checkbox
+              label={<InfoLabel label={t("aiProvider.search.qdrantHybrid.label")} tip={t("aiProvider.search.qdrantHybrid.tip")} />}
+              name="qdrant_hybrid_search"
+              defaultChecked={Boolean(s.qdrant_hybrid_search)}
+            />
           )}
 
           {/* Reranker */}

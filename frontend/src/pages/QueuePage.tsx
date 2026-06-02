@@ -211,7 +211,7 @@ export default function QueuePage() {
             <Button color="red" size="xs" onClick={() => emptyQueue.mutate()} loading={emptyQueue.isPending}>
               {t("queue.emptyConfirmYes")}
             </Button>
-            <Button variant="default" size="xs" onClick={() => setShowEmptyConfirm(false)}>{t("processing.cancel")}</Button>
+            <Button variant="default" size="xs" onClick={() => setShowEmptyConfirm(false)}>{t("common.cancel")}</Button>
           </Group>
         </Alert>
       )}
@@ -371,7 +371,7 @@ export default function QueuePage() {
               </Box>
 
               <Box>
-                <Text size="xs" fw={600} c="dimmed" mb={4}>{t("analysis.correspondent_field")}</Text>
+                <Text size="xs" fw={600} c="dimmed" mb={4}>{t("analysis.correspondent")}</Text>
                 <AutocompleteInput value={item.correspondent ?? ""} suggestions={(corrsQ.data ?? []).map((c: PaperlessEntity) => c.name)}
                   onChange={v => updateField(id, raw, "correspondent", v || null)}
                   style={isNewCorr ? { color: "var(--mantine-color-red-6)", fontWeight: 700 } : undefined} />
@@ -379,7 +379,7 @@ export default function QueuePage() {
               </Box>
 
               <Box>
-                <Text size="xs" fw={600} c="dimmed" mb={4}>{t("analysis.docType_field")}</Text>
+                <Text size="xs" fw={600} c="dimmed" mb={4}>{t("analysis.docType")}</Text>
                 <AutocompleteInput value={item.document_type ?? ""} suggestions={(dtQ.data ?? []).map((d: PaperlessEntity) => d.name)}
                   onChange={v => updateField(id, raw, "document_type", v || null)}
                   style={isNewDt ? { color: "var(--mantine-color-red-6)", fontWeight: 700 } : undefined} />
@@ -412,17 +412,17 @@ export default function QueuePage() {
                 <Button size="sm"
                   onClick={() => approve.mutate({ id, item, docId: item.document_id })}
                   loading={approve.isPending && approve.variables?.id === id}>
-                  {t("queue.approve")}
+                  {t("common.approve")}
                 </Button>
                 <Button size="sm" variant="default"
                   onClick={() => reject.mutate(id)}
                   loading={reject.isPending && reject.variables === id}>
-                  {t("queue.reject")}
+                  {t("common.reject")}
                 </Button>
               </Group>
               {approve.isError && approve.variables?.id === id && (
                 <Text size="xs" c="red" mt="xs">
-                  {t("queue.approvalFailed")} {(approve.error as Error).message}
+                  {t("common.approvalFailed")} {(approve.error as Error).message}
                 </Text>
               )}
             </Box>
