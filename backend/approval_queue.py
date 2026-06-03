@@ -202,6 +202,7 @@ class ApprovalQueueService:
         create_missing: bool = False,
         document_title: str | None = None,
         session_id: str | None = None,
+        apply_content: bool = False,
     ) -> MetadataSuggestion:
         """
         Approve a suggestion, optionally applying field edits.
@@ -241,6 +242,12 @@ class ApprovalQueueService:
         for field in editable_fields:
             patch_payload[field] = getattr(row, field)
 
+        # Content write-back (opt-in) — only when the suggestion carries transcribed
+        # content from full-document analysis and the approver kept it enabled.
+        content_applied = bool(apply_content and row.extracted_content)
+        if content_applied:
+            patch_payload["content"] = row.extracted_content
+
         # Write to Paperless NGX
         await self._patch_paperless(
             row.document_id, patch_payload,
@@ -269,6 +276,24 @@ class ApprovalQueueService:
                     suggestion_id=row.id,
                 )
                 self._session.add(audit)
+
+        # Audit the content write-back separately (content isn't an editable field).
+        # Values are truncated — the full document text would bloat the audit log.
+        if content_applied:
+            any_changes = True
+            self._session.add(AuditLogORM(
+                id=str(uuid4()),
+                document_id=row.document_id,
+                document_title=doc_title,
+                field_name="content",
+                previous_value=((row.original_ocr_content or "")[:500] or None),
+                new_value=(row.extracted_content or "")[:500],
+                change_source=change_source,
+                action_type="field_change",
+                session_id=session_id,
+                changed_at=now,
+                suggestion_id=row.id,
+            ))
 
         # Always write an "approved" event even when no fields changed
         approval_event = AuditLogORM(
@@ -484,6 +509,11 @@ class ApprovalQueueService:
                 )
                 if cf_list:
                     patch["custom_fields"] = cf_list
+
+            # Document content (OCR text) — written back from full-document analysis
+            # when the approver opted in. Empty/None is ignored (never wipes content).
+            if payload.get("content"):
+                patch["content"] = payload["content"]
 
             if not patch:
                 logger.info("No fields to patch for document %d.", document_id)

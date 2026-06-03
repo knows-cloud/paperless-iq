@@ -149,7 +149,7 @@ export const api = {
     const qs = params ? "?" + new URLSearchParams(params).toString() : "";
     return request<{ items: unknown[]; total: number }>(`/queue${qs}`);
   },
-  approveItem: (id: string, opts?: { edits?: Record<string, unknown>; merge_tags?: boolean; create_missing?: boolean }) =>
+  approveItem: (id: string, opts?: { edits?: Record<string, unknown>; merge_tags?: boolean; create_missing?: boolean; apply_content?: boolean }) =>
     request(`/queue/${id}/approve`, { method: "POST", body: JSON.stringify(opts ?? {}) }),
   rejectItem: (id: string) =>
     request(`/queue/${id}/reject`, { method: "POST" }),

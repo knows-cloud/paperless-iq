@@ -136,6 +136,7 @@
   "vision.noContentNotice": "Le modèle n'a renvoyé aucun texte du document. Les suggestions de métadonnées ont tout de même été appliquées. Essayez un DPI de rendu plus élevé, moins de pages ou un modèle de vision plus performant.",
   "vision.noContentTitle": "Aucun contenu extrait",
   "vision.viewContent": "Voir le contenu",
+  "queue.applyContent": "Appliquer le contenu suggéré au document",
   "vision.keepOriginal": "Garder l'original",
   "vision.replaceContent": "Remplacer le contenu",
   "common.cancel": "Annuler",

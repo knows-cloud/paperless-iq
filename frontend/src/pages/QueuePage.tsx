@@ -2,7 +2,7 @@ import React, { useState, useMemo, useEffect, useCallback } from "react";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import {
   Title, Paper, Text, Group, Stack, Badge, Button, TextInput,
-  Box, Alert, Anchor, Loader,
+  Box, Alert, Anchor, Loader, Switch,
 } from "@mantine/core";
 import { api, type PaperlessEntity, type PaperlessCustomField, type VisionAnalysisResult } from "../api";
 import TagInput from "../TagInput";
@@ -49,6 +49,7 @@ export default function QueuePage() {
   const [showEmptyConfirm, setShowEmptyConfirm] = useState(false);
   const [reanalyzingIds, setReanalyzingIds] = useState<Set<string>>(new Set());
   const [contentView, setContentView] = useState<{ extracted: string | null; original: string | null } | null>(null);
+  const [contentApply, setContentApply] = useState<Record<string, boolean>>({});
   const [openPreviews, setOpenPreviews] = useState<Set<number>>(new Set());
   const [previewUrls, setPreviewUrls] = useState<Record<number, string>>({});
   const [previewErrors, setPreviewErrors] = useState<Record<number, string>>({});
@@ -122,6 +123,8 @@ export default function QueuePage() {
           custom_fields: item.custom_fields,
         },
         merge_tags: false, // we send the complete desired set
+        // Default ON; backend only writes content when the suggestion actually has it.
+        apply_content: contentApply[id] ?? true,
       });
     },
     onSuccess: () => qc.invalidateQueries({ queryKey: ["queue"] }),
@@ -422,6 +425,15 @@ export default function QueuePage() {
 
             {/* Approve / Reject */}
             <Box mt="md">
+              {Boolean(raw.extracted_content) && (
+                <Switch
+                  size="sm"
+                  mb="xs"
+                  checked={contentApply[id] ?? true}
+                  onChange={e => setContentApply(prev => ({ ...prev, [id]: e.currentTarget.checked }))}
+                  label={t("queue.applyContent")}
+                />
+              )}
               <Group gap="xs">
                 <Button size="sm"
                   onClick={() => approve.mutate({ id, item, docId: item.document_id })}

@@ -916,6 +916,7 @@ async def auth_me(request: Request) -> dict:
 
 class ApproveBody(BaseModel):
     edits: dict[str, Any] | None = None
+    apply_content: bool = False
 
 
 class BulkIdsBody(BaseModel):
@@ -976,6 +977,7 @@ async def approve_suggestion(
             merge_tags=False,    # frontend computes the complete final tag set
             create_missing=True, # user reviewed and approved — always create missing entities
             change_source=change_source,
+            apply_content=body.apply_content,
         )
     except ValueError as exc:
         raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(exc))

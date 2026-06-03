@@ -136,6 +136,7 @@
   "vision.noContentNotice": "El modelo no devolvió texto del documento. Las sugerencias de metadatos se aplicaron igualmente. Pruebe con un DPI de renderizado más alto, menos páginas o un modelo de visión más potente.",
   "vision.noContentTitle": "No se extrajo contenido",
   "vision.viewContent": "Ver contenido",
+  "queue.applyContent": "Aplicar el contenido sugerido al documento",
   "vision.keepOriginal": "Mantener original",
   "vision.replaceContent": "Reemplazar contenido",
   "common.cancel": "Cancelar",

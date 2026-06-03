@@ -136,6 +136,7 @@
   "vision.noContentNotice": "The model returned no document text. Metadata suggestions were still applied. Try a higher render DPI, fewer pages, or a stronger vision model.",
   "vision.noContentTitle": "No content extracted",
   "vision.viewContent": "View content",
+  "queue.applyContent": "Apply suggested content to the document",
   "vision.keepOriginal": "Keep Original",
   "vision.replaceContent": "Replace Content",
   "common.cancel": "Cancel",

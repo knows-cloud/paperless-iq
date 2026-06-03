@@ -136,6 +136,7 @@
   "vision.noContentNotice": "Das Modell hat keinen Dokumenttext zurückgegeben. Metadatenvorschläge wurden trotzdem übernommen. Versuchen Sie eine höhere Render-DPI, weniger Seiten oder ein leistungsfähigeres Vision-Modell.",
   "vision.noContentTitle": "Kein Inhalt extrahiert",
   "vision.viewContent": "Inhalt anzeigen",
+  "queue.applyContent": "Vorgeschlagenen Inhalt auf das Dokument anwenden",
   "vision.keepOriginal": "Original behalten",
   "vision.replaceContent": "Inhalt ersetzen",
   "common.cancel": "Abbrechen",
