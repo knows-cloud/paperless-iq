@@ -203,6 +203,7 @@ class ApprovalQueueService:
         document_title: str | None = None,
         session_id: str | None = None,
         apply_content: bool = False,
+        supersede_siblings: bool = True,
     ) -> MetadataSuggestion:
         """
         Approve a suggestion, optionally applying field edits.
@@ -312,6 +313,33 @@ class ApprovalQueueService:
         self._session.add(approval_event)
 
         row.status = "approved"
+
+        # Supersede the other pending suggestions for this document: approving one
+        # resolves the document, so the rest are rejected (one card → one decision).
+        if supersede_siblings:
+            siblings = await self._session.execute(
+                select(SuggestionORM).where(
+                    SuggestionORM.document_id == row.document_id,
+                    SuggestionORM.status == "pending",
+                    SuggestionORM.id != row.id,
+                )
+            )
+            for sib in siblings.scalars():
+                sib.status = "rejected"
+                self._session.add(AuditLogORM(
+                    id=str(uuid4()),
+                    document_id=sib.document_id,
+                    document_title=doc_title,
+                    field_name="_event",
+                    previous_value=None,
+                    new_value=f"superseded_by:{row.id}",
+                    change_source=change_source,
+                    action_type="rejected",
+                    session_id=session_id,
+                    changed_at=now,
+                    suggestion_id=sib.id,
+                ))
+
         await self._session.commit()
         await self._session.refresh(row)
         logger.info("Approved suggestion %s for document %d.", row.id, row.document_id)
@@ -381,9 +409,11 @@ class ApprovalQueueService:
 
         Validates: Requirements 7.5, 7.6
         """
+        # Bulk approve is an explicit multi-approve — don't supersede siblings, or
+        # approving one would reject the others in the same batch.
         results: list[MetadataSuggestion] = []
         for sid in suggestion_ids:
-            result = await self.approve(sid, change_source=change_source)
+            result = await self.approve(sid, change_source=change_source, supersede_siblings=False)
             results.append(result)
         return results
 

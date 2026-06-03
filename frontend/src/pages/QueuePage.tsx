@@ -2,7 +2,7 @@ import React, { useState, useMemo, useEffect, useCallback } from "react";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import {
   Title, Paper, Text, Group, Stack, Badge, Button, TextInput,
-  Box, Alert, Anchor, Loader, Switch,
+  Box, Alert, Anchor, Loader, Switch, Tabs,
 } from "@mantine/core";
 import { api, type PaperlessEntity, type PaperlessCustomField, type VisionAnalysisResult } from "../api";
 import TagInput from "../TagInput";
@@ -61,6 +61,18 @@ export default function QueuePage() {
   }, []); // eslint-disable-line react-hooks/exhaustive-deps
 
   const items = (data?.items ?? []) as Array<Record<string, unknown>>;
+
+  // Group pending suggestions by document — one card per document, a tab per
+  // suggestion. Insertion order is preserved (queue is already sorted).
+  const groups = useMemo(() => {
+    const m = new Map<number, Array<Record<string, unknown>>>();
+    for (const raw of items) {
+      const docId = Number(raw.document_id);
+      const arr = m.get(docId);
+      if (arr) arr.push(raw); else m.set(docId, [raw]);
+    }
+    return [...m.entries()].map(([documentId, suggestions]) => ({ documentId, suggestions }));
+  }, [items]);
 
   useEffect(() => {
     const docIds = [...new Set(items.map(r => Number(r.document_id)))];
@@ -225,65 +237,39 @@ export default function QueuePage() {
         <Text c="dimmed">{t("queue.empty")}</Text>
       )}
 
-      {items.map((raw) => {
-        const item = getItem(raw);
-        const id = item.id;
-        const isNewCorr = item.correspondent ? !corrNames.has(item.correspondent.toLowerCase()) : false;
-        const isNewDt = item.document_type ? !dtNames.has(item.document_type.toLowerCase()) : false;
-        const cfEntries = Object.entries(item.custom_fields ?? {});
-        const isNewCf = (name: string) => !cfNames.has(name.toLowerCase());
-        const currentTags = existingTagsMap[item.document_id] ?? [];
-        const suggestedTags = item.tags;
-        const overrides = tagOverrides[id] ?? {};
-        const isReanalyzing = reanalyzingIds.has(id);
-        const previewOpen = openPreviews.has(item.document_id);
-        const previewUrl = previewUrls[item.document_id];
-        const previewErr = previewErrors[item.document_id];
-        const previewIsLoading = previewLoading.has(item.document_id);
+      {groups.map((group) => {
+        const documentId = group.documentId;
+        const suggestions = group.suggestions;
+        const headerRaw = suggestions[0];
+        const headerTitle = (headerRaw.title as string) || `${t("queue.document")} #${documentId}`;
+        const previewOpen = openPreviews.has(documentId);
+        const previewUrl = previewUrls[documentId];
+        const previewErr = previewErrors[documentId];
+        const previewIsLoading = previewLoading.has(documentId);
 
         return (
-          <Paper key={id} withBorder p="md" radius="md">
-            {/* Header */}
+          <Paper key={documentId} withBorder p="md" radius="md">
+            {/* Document header */}
             <Group justify="space-between" align="flex-start" wrap="nowrap" mb="sm">
               <Box style={{ flex: 1, minWidth: 0 }}>
-                <Text fw={600}>{item.title || `${t("queue.document")} #${item.document_id}`}</Text>
-                {item.title && (
-                  <Text size="xs" c="dimmed">
-                    #{item.document_id}
-                    {paperlessUrl && (
-                      <Anchor href={`${paperlessUrl}/documents/${item.document_id}/details`} target="_blank" size="xs" ml={6}>
-                        {t("queue.openInPaperless")}
-                      </Anchor>
-                    )}
-                  </Text>
-                )}
+                <Text fw={600}>{headerTitle}</Text>
+                <Text size="xs" c="dimmed">
+                  #{documentId}
+                  {paperlessUrl && (
+                    <Anchor href={`${paperlessUrl}/documents/${documentId}/details`} target="_blank" size="xs" ml={6}>
+                      {t("queue.openInPaperless")}
+                    </Anchor>
+                  )}
+                  {suggestions.length > 1 && (
+                    <Badge ml={8} size="xs" variant="light" color="blue">
+                      {t("queue.pendingCount", { count: String(suggestions.length) })}
+                    </Badge>
+                  )}
+                </Text>
               </Box>
-              <Group gap="xs" style={{ flexShrink: 0 }}>
-                <Button size="xs" variant="default" onClick={() => togglePreview(item.document_id)}>
-                  {previewOpen ? `✕ ${t("queue.hidePreview")}` : `📄 ${t("queue.preview")}`}
-                </Button>
-                <Button size="xs" variant="default" onClick={() => handleReanalyze(id)} loading={isReanalyzing}>
-                  {t("queue.reanalyze")}
-                </Button>
-                {Boolean(raw.extracted_content) && (
-                  <Button
-                    size="xs"
-                    variant="default"
-                    onClick={() => setContentView({
-                      extracted: (raw.extracted_content as string) ?? null,
-                      original: (raw.original_ocr_content as string) ?? null,
-                    })}
-                  >
-                    {t("vision.viewContent")}
-                  </Button>
-                )}
-                <VisionAnalysisFlow
-                  documentId={item.document_id}
-                  pageWarningThreshold={pageWarningThreshold}
-                  onResult={result => handleVisionResult(raw, result)}
-                  size="xs"
-                />
-              </Group>
+              <Button size="xs" variant="default" onClick={() => togglePreview(documentId)}>
+                {previewOpen ? `✕ ${t("queue.hidePreview")}` : `📄 ${t("queue.preview")}`}
+              </Button>
             </Group>
 
             {/* Preview panel */}
@@ -295,18 +281,59 @@ export default function QueuePage() {
                   <Group p="sm" gap="sm">
                     <Text size="sm" c="red">{t("queue.previewError")} {previewErr}</Text>
                     {paperlessUrl && (
-                      <Anchor href={`${paperlessUrl}/documents/${item.document_id}/details`} target="_blank" size="sm">
+                      <Anchor href={`${paperlessUrl}/documents/${documentId}/details`} target="_blank" size="sm">
                         {t("queue.openInPaperless")}
                       </Anchor>
                     )}
                   </Group>
                 ) : previewUrl ? (
-                  <iframe src={previewUrl} title={`Preview #${item.document_id}`} style={{ width: "100%", height: 640, border: "none", display: "block" }} />
+                  <iframe src={previewUrl} title={`Preview #${documentId}`} style={{ width: "100%", height: 640, border: "none", display: "block" }} />
                 ) : null}
               </Box>
             )}
 
-            {/* Unified tag diff — gray=keep, strikethrough=remove, green=add */}
+            <Tabs defaultValue={String(suggestions[0].id)}>
+              {suggestions.length > 1 && (
+                <Tabs.List mb="sm">
+                  {suggestions.map((raw, i) => (
+                    <Tabs.Tab key={String(raw.id)} value={String(raw.id)}>
+                      {`${i + 1}. ${String(raw.llm_provider ?? "")}`}
+                    </Tabs.Tab>
+                  ))}
+                </Tabs.List>
+              )}
+              {suggestions.map((raw) => {
+                const item = getItem(raw);
+                const id = item.id;
+                const isNewCorr = item.correspondent ? !corrNames.has(item.correspondent.toLowerCase()) : false;
+                const isNewDt = item.document_type ? !dtNames.has(item.document_type.toLowerCase()) : false;
+                const cfEntries = Object.entries(item.custom_fields ?? {});
+                const isNewCf = (name: string) => !cfNames.has(name.toLowerCase());
+                const currentTags = existingTagsMap[item.document_id] ?? [];
+                const suggestedTags = item.tags;
+                const overrides = tagOverrides[id] ?? {};
+                const isReanalyzing = reanalyzingIds.has(id);
+                return (
+                  <Tabs.Panel key={id} value={id}>
+                    {/* Per-suggestion actions */}
+                    <Group gap="xs" mb="sm" wrap="wrap">
+                      <Text size="xs" c="dimmed">{String(raw.llm_provider ?? "")} · {String(raw.llm_model ?? "")}</Text>
+                      <Box style={{ flex: 1 }} />
+                      <Button size="xs" variant="default" onClick={() => handleReanalyze(id)} loading={isReanalyzing}>
+                        {t("queue.reanalyze")}
+                      </Button>
+                      {Boolean(raw.extracted_content) && (
+                        <Button size="xs" variant="default" onClick={() => setContentView({ extracted: (raw.extracted_content as string) ?? null, original: (raw.original_ocr_content as string) ?? null })}>
+                          {t("vision.viewContent")}
+                        </Button>
+                      )}
+                      <VisionAnalysisFlow
+                        documentId={item.document_id}
+                        pageWarningThreshold={pageWarningThreshold}
+                        onResult={result => handleVisionResult(raw, result)}
+                        size="xs"
+                      />
+                    </Group>
 
             {/* Edit form */}
             <Stack gap="xs">
@@ -452,6 +479,10 @@ export default function QueuePage() {
                 </Text>
               )}
             </Box>
+                  </Tabs.Panel>
+                );
+              })}
+            </Tabs>
           </Paper>
         );
       })}

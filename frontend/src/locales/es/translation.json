@@ -137,6 +137,7 @@
   "vision.noContentTitle": "No se extrajo contenido",
   "vision.viewContent": "Ver contenido",
   "queue.applyContent": "Aplicar el contenido sugerido al documento",
+  "queue.pendingCount": "{count} pendientes",
   "vision.keepOriginal": "Mantener original",
   "vision.replaceContent": "Reemplazar contenido",
   "common.cancel": "Cancelar",
