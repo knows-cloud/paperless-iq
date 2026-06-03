@@ -39,7 +39,18 @@ class MemoryStore:
         self._llm = llm_provider
 
     async def _embed(self, text: str) -> list[float]:
-        return await self._llm.embed(text)
+        try:
+            return await self._llm.embed(text)
+        except Exception as exc:
+            # Surface the real provider exception so the root cause is visible even
+            # when a caller's broad except only logs a higher-level message.
+            logger.error(
+                "MemoryStore._embed() failed (provider=%s): %s",
+                type(self._llm).__name__,
+                exc,
+                exc_info=True,
+            )
+            raise
 
     # Storage operations — implemented by subclasses.
     async def upsert(self, memory_id: str, text: str) -> None:
