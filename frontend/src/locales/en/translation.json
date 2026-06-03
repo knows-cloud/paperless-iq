@@ -241,6 +241,8 @@
   "aiProvider.contextWindow.label": "Context Window (characters)",
   "aiProvider.contextWindow.description": "Maximum characters sent to the LLM. Default: 128,000.",
   "aiProvider.visionThreshold.label": "Vision Page Warning Threshold",
+  "aiProvider.visionDpi.tip": "Resolution for rendering document pages to images before full-document analysis. Higher = sharper text (better transcription) but larger images and more tokens. 150 is a good balance; raise to ~200 for dense/small text.",
+  "aiProvider.visionDpi.label": "Vision Render DPI",
   "aiProvider.visionThreshold.description": "Show a cost warning when a document has more pages than this before vision analysis.",
   "aiProvider.llmTimeout.label": "LLM Timeout (s)",
   "aiProvider.llmTimeout.tip": "Maximum seconds to wait for an LLM response in Discovery. Set to 0 for no limit. Increase for large local models — a 70B model on CPU can take several minutes.",

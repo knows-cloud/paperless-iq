@@ -209,6 +209,8 @@ class PaperlessIQConfig(BaseModel):
 
     # Vision analysis
     vision_max_pages_warning: int = 5  # warn user (Keep/Limit/Cancel) when page count exceeds this
+    vision_render_dpi: int = 150  # DPI for rendering pages to images (higher = sharper text, larger images)
+    vision_pages_per_call: int = 10  # pages per transcription LLM call (respects per-call image limits)
 
     # Paperless NGX public URL for browser-facing links (may differ from PAPERLESS_URL which
     # uses the internal Docker hostname/network address)

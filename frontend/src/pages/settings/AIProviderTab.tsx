@@ -186,6 +186,14 @@ export function AIProviderTab({
               style={{ flex: 1, minWidth: "160px" }}
             />
             <NumberInput
+              label={<InfoLabel label={t("aiProvider.visionDpi.label")} tip={t("aiProvider.visionDpi.tip")} />}
+              name="vision_render_dpi"
+              min={72}
+              max={400}
+              defaultValue={Number(s.vision_render_dpi ?? 150)}
+              style={{ flex: 1, minWidth: "160px" }}
+            />
+            <NumberInput
               label={<InfoLabel label={t("aiProvider.llmTimeout.label")} tip={t("aiProvider.llmTimeout.tip")} />}
               name="llm_timeout_seconds"
               min={0}

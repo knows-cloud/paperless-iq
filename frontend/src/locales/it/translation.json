@@ -241,6 +241,8 @@
   "aiProvider.contextWindow.label": "Finestra di contesto (caratteri)",
   "aiProvider.contextWindow.description": "Massimo di caratteri inviati all’LLM. Predefinito: 128 000.",
   "aiProvider.visionThreshold.label": "Soglia avviso pagine visione",
+  "aiProvider.visionDpi.tip": "Risoluzione per il rendering delle pagine del documento in immagini prima dell'analisi del documento completo. Più alto = testo più nitido (migliore trascrizione) ma immagini più grandi e più token. 150 è un buon compromesso; aumenta a ~200 per testo fitto/piccolo.",
+  "aiProvider.visionDpi.label": "DPI di rendering (visione)",
   "aiProvider.visionThreshold.description": "Mostra un avviso di costo quando un documento supera questo numero di pagine prima dell’analisi visiva.",
   "aiProvider.llmTimeout.label": "Timeout LLM (s)",
   "aiProvider.llmTimeout.tip": "Secondi massimi di attesa per una risposta LLM in Discovery. 0 = nessun limite. Aumentare per modelli locali grandi — un modello da 70B su CPU può richiedere diversi minuti.",

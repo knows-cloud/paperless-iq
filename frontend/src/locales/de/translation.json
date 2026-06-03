@@ -241,6 +241,8 @@
   "aiProvider.contextWindow.label": "Kontextfenster (Zeichen)",
   "aiProvider.contextWindow.description": "Maximale Zeichen die an das LLM gesendet werden. Standard: 128.000.",
   "aiProvider.visionThreshold.label": "Vision Seiten-Warnschwellenwert",
+  "aiProvider.visionDpi.tip": "Auflösung für das Rendern der Dokumentseiten als Bilder vor der Vollständige-Dokument-Analyse. Höher = schärferer Text (bessere Transkription), aber größere Bilder und mehr Tokens. 150 ist ein guter Mittelwert; für dichten/kleinen Text auf ~200 erhöhen.",
+  "aiProvider.visionDpi.label": "Vision-Render-DPI",
   "aiProvider.visionThreshold.description": "Kostenwarnmeldung anzeigen wenn ein Dokument mehr Seiten als dieser Wert hat vor der Vision-Analyse.",
   "aiProvider.llmTimeout.label": "LLM-Timeout (s)",
   "aiProvider.llmTimeout.tip": "Maximale Wartezeit in Sekunden auf eine LLM-Antwort in Discovery. 0 = kein Limit. Für große lokale Modelle erhöhen — ein 70B-Modell auf CPU kann mehrere Minuten benötigen.",
