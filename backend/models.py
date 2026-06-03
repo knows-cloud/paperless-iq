@@ -142,9 +142,9 @@ class PaperlessIQConfig(BaseModel):
     qdrant_hybrid_search: bool = False  # dense + sparse (named vectors)
 
     # Analysis defaults
-    default_analysis_mode: Literal["ocr", "full_document"] = "ocr"
+    # Standard analysis is always OCR-text based; full-document (vision) analysis is
+    # on-demand only (via the vision flow / /api/analyze/vision), never the default.
     context_window_chars: int = 128_000  # max chars sent to LLM (truncates if exceeded)
-    per_doctype_analysis_mode: dict[int, Literal["ocr", "full_document"]] = {}
 
     # Smart entity selection (hybrid: vector similarity + frequency fallback)
     smart_entity_selection: bool = True

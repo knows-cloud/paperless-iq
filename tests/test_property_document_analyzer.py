@@ -70,8 +70,6 @@ _prompt_strategy = st.text(
 
 
 def _config_strategy(
-    default_mode: str | None = None,
-    per_doctype_mode: dict | None = None,
     global_prompt: str = "",
     per_field_prompts: dict | None = None,
     per_doctype_prompts: dict | None = None,
@@ -79,8 +77,6 @@ def _config_strategy(
     return PaperlessIQConfig(
         llm_provider="openai",
         llm_model="gpt-4o",
-        default_analysis_mode=default_mode or "ocr",
-        per_doctype_analysis_mode=per_doctype_mode or {},
         global_prompt_template=global_prompt,
         per_field_prompt_templates=per_field_prompts or {},
         per_doctype_prompt_templates=per_doctype_prompts or {},
@@ -105,138 +101,6 @@ def _make_mock_paperless(ocr_text: str = "ocr content", doc_bytes: bytes = b"pdf
     # second API call in OCR mode.
     client.get_document_metadata = AsyncMock(return_value={"document_type": None, "content": ocr_text})
     return client
-
-
-# ---------------------------------------------------------------------------
-# Property 1: LLM input mode selection
-# ---------------------------------------------------------------------------
-
-@settings(max_examples=100, suppress_health_check=[HealthCheck.too_slow])
-@given(
-    document_id=_doc_id_strategy,
-    ocr_text=_text_strategy,
-    doc_bytes=st.binary(min_size=1, max_size=500),
-    default_mode=_analysis_mode_strategy,
-    doctype_id=_doctype_id_strategy,
-)
-@pytest.mark.asyncio
-async def test_property_1_llm_input_mode_selection(
-    document_id: int,
-    ocr_text: str,
-    doc_bytes: bytes,
-    default_mode: str,
-    doctype_id: int | None,
-) -> None:
-    """
-    # Feature: paperless-iq, Property 1: LLM input mode selection
-
-    For any document submitted for analysis, the content sent to the LLM must be
-    the Full_Document pages (as rendered images) when full-document mode is enabled
-    for that document's type, and the OCR_Text otherwise.  The two modes must never
-    be mixed.
-
-    Validates: Requirements 1.1, 1.2
-    """
-    config = _config_strategy(default_mode=default_mode)
-    provider = _make_mock_provider()
-    paperless = _make_mock_paperless(ocr_text=ocr_text, doc_bytes=doc_bytes)
-    paperless.get_document_metadata = AsyncMock(
-        return_value={"document_type": doctype_id, "content": ocr_text}
-    )
-
-    analyzer = DocumentAnalyzer(
-        provider=provider,
-        paperless_client=paperless,
-        config=config,
-        provider_name="openai",
-    )
-
-    # full_document mode now uses vision (PDF → images).  Mock the rendering
-    # layer so arbitrary bytes don't cause pypdfium2 parse errors.
-    _fake_page = b"\xff\xd8\xff" + b"\x00" * 16  # minimal JPEG-like bytes
-    with (
-        patch("backend.analyzer.get_page_count", return_value=1),
-        patch("backend.analyzer.render_pages", return_value=[_fake_page]),
-    ):
-        await analyzer.analyze(document_id)
-
-    # Determine expected mode
-    expected_mode = config.per_doctype_analysis_mode.get(doctype_id, default_mode) if doctype_id else default_mode
-
-    if expected_mode == "full_document":
-        # Vision path: document bytes downloaded and rendered as images.
-        paperless.get_document_bytes.assert_called_once_with(document_id)
-        paperless.get_document_ocr_text.assert_not_called()
-        # The provider must have been called with images (not decoded text).
-        call_kwargs = provider.complete.call_args[1] if provider.complete.call_args else {}
-        assert call_kwargs.get("images"), "full_document mode must pass images to the provider"
-    else:
-        # OCR mode: content comes from get_document_metadata(), NOT a separate
-        # get_document_ocr_text() call.
-        paperless.get_document_ocr_text.assert_not_called()
-        paperless.get_document_bytes.assert_not_called()
-        # The prompt must contain the OCR text
-        call_args = provider.complete.call_args
-        prompt_sent = call_args[0][0]
-        # Truncation may have occurred; check the text is a prefix of what was sent
-        assert ocr_text[:50] in prompt_sent or len(ocr_text) == 0 or ocr_text[:50] in prompt_sent
-
-
-@settings(max_examples=100, suppress_health_check=[HealthCheck.too_slow])
-@given(
-    document_id=_doc_id_strategy,
-    doctype_id=st.integers(min_value=1, max_value=999),
-    per_doctype_mode=_analysis_mode_strategy,
-    default_mode=_analysis_mode_strategy,
-)
-@pytest.mark.asyncio
-async def test_property_1_per_doctype_mode_overrides_default(
-    document_id: int,
-    doctype_id: int,
-    per_doctype_mode: str,
-    default_mode: str,
-) -> None:
-    """
-    # Feature: paperless-iq, Property 1: LLM input mode selection (per-doctype override)
-
-    Per-document-type mode must override the global default.
-
-    Validates: Requirements 1.3
-    """
-    config = PaperlessIQConfig(
-        llm_provider="openai",
-        llm_model="gpt-4o",
-        default_analysis_mode=default_mode,  # type: ignore[arg-type]
-        per_doctype_analysis_mode={doctype_id: per_doctype_mode},  # type: ignore[dict-item]
-    )
-    provider = _make_mock_provider()
-    paperless = _make_mock_paperless()
-    paperless.get_document_metadata = AsyncMock(
-        return_value={"document_type": doctype_id, "content": "sample ocr text"}
-    )
-
-    analyzer = DocumentAnalyzer(
-        provider=provider,
-        paperless_client=paperless,
-        config=config,
-        provider_name="openai",
-    )
-
-    _fake_page = b"\xff\xd8\xff" + b"\x00" * 16
-    with (
-        patch("backend.analyzer.get_page_count", return_value=1),
-        patch("backend.analyzer.render_pages", return_value=[_fake_page]),
-    ):
-        await analyzer.analyze(document_id)
-
-    if per_doctype_mode == "full_document":
-        # Vision path: bytes are downloaded and rendered as images.
-        paperless.get_document_bytes.assert_called_once()
-        paperless.get_document_ocr_text.assert_not_called()
-    else:
-        # OCR mode: content comes from the metadata response, no separate ocr call
-        paperless.get_document_ocr_text.assert_not_called()
-        paperless.get_document_bytes.assert_not_called()
 
 
 # ---------------------------------------------------------------------------

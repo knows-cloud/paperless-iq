@@ -1969,7 +1969,6 @@ class AnalyzeBody(BaseModel):
     document_id: int
     provider: str | None = None
     model: str | None = None
-    mode: str | None = None
 
 
 @app.post("/api/analyze", tags=["analyze"],
@@ -1994,7 +1993,6 @@ async def manual_analyze(body: AnalyzeBody, request: Request) -> dict:
                     document_id=body.document_id,
                     provider_override=body.provider,
                     model_override=body.model,
-                    mode_override=body.mode,
                 ),
                 label=f"Analyzing doc {body.document_id}",
             )
@@ -2003,7 +2001,6 @@ async def manual_analyze(body: AnalyzeBody, request: Request) -> dict:
                 document_id=body.document_id,
                 provider_override=body.provider,
                 model_override=body.model,
-                mode_override=body.mode,
             )
     except ConnectionError as exc:
         raise HTTPException(

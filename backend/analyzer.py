@@ -629,19 +629,6 @@ class DocumentAnalyzer:
 
         return "\n".join(lines)
 
-    def _resolve_analysis_mode(self, document_type_id: int | None) -> str:
-        """
-        Determine whether to use 'ocr' or 'full_document' for this document.
-        Per-doctype setting takes precedence over the global default.
-
-        Validates: Requirements 1.1, 1.2, 1.3
-        """
-        if document_type_id is not None:
-            per_doctype = self._config.per_doctype_analysis_mode.get(document_type_id)
-            if per_doctype is not None:
-                return per_doctype
-        return self._config.default_analysis_mode
-
     def _build_prompt(
         self,
         template: str,
@@ -687,18 +674,13 @@ class DocumentAnalyzer:
     async def analyze(self, document_id: int) -> MetadataSuggestion:
         """Run a full analysis for the given document ID.
 
-        Returns a MetadataSuggestion with status='pending'.
-        When the configured mode is 'full_document', delegates to analyze_vision().
+        Returns a MetadataSuggestion with status='pending'. This is the standard
+        OCR-text analysis; full-document (vision) analysis is on-demand only via
+        analyze_vision() / the /api/analyze/vision endpoint.
         """
         # 1. Fetch document metadata to determine type
         doc_meta = await self._paperless.get_document_metadata(document_id)
         document_type_id: int | None = doc_meta.get("document_type")
-
-        # 2. Route full_document mode to vision analysis
-        mode = self._resolve_analysis_mode(document_type_id)
-        if mode == "full_document":
-            result = await self.analyze_vision(document_id, include_content=False)
-            return result.suggestion
 
         # OCR text is already in the metadata response — avoids a second API call.
         content = doc_meta.get("content", "") or ""

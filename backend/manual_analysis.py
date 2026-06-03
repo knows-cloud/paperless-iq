@@ -9,7 +9,7 @@ Validates: Requirements 6.1, 6.2, 6.3, 6.4
 from __future__ import annotations
 
 import logging
-from typing import Any, Literal
+from typing import Any
 
 from backend.analyzer import DocumentAnalyzer, PaperlessNGXClient
 from backend.models import MetadataSuggestion, PaperlessIQConfig, VisionAnalysisResult
@@ -43,7 +43,6 @@ class ManualAnalysisService:
         document_id: int,
         provider_override: str | None = None,
         model_override: str | None = None,
-        mode_override: Literal["ocr", "full_document"] | None = None,
     ) -> MetadataSuggestion:
         """Run analysis for a single document with optional overrides.
 
@@ -57,8 +56,6 @@ class ManualAnalysisService:
             overrides["llm_provider"] = provider_override
         if model_override is not None:
             overrides["llm_model"] = model_override
-        if mode_override is not None:
-            overrides["default_analysis_mode"] = mode_override
 
         run_config = self._config.model_copy(update=overrides) if overrides else self._config
 

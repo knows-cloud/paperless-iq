@@ -27,8 +27,6 @@ _invalid_settings = st.one_of(
     st.fixed_dictionaries({"audit_retention_days": st.integers(max_value=29)}),
     # Unknown provider
     st.fixed_dictionaries({"llm_provider": st.just("unknown_provider")}),
-    # Invalid analysis mode
-    st.fixed_dictionaries({"default_analysis_mode": st.just("invalid_mode")}),
     # Invalid vector store backend
     st.fixed_dictionaries({"vector_store_backend": st.just("nonexistent")}),
     # Negative poll interval

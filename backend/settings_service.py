@@ -75,9 +75,8 @@ REDACTED_PLACEHOLDER = "__REDACTED__"
 # Environment variable → config field mapping
 # ---------------------------------------------------------------------------
 # Only "simple" scalar fields are mapped.  Prompt templates and complex dicts
-# (field_descriptions, per_field_prompt_templates, per_doctype_prompt_templates,
-# per_doctype_analysis_mode) are intentionally excluded — they'd be unwieldy
-# as env vars.
+# (field_descriptions, per_field_prompt_templates, per_doctype_prompt_templates)
+# are intentionally excluded — they'd be unwieldy as env vars.
 # ---------------------------------------------------------------------------
 
 _ENV_MAP: dict[str, tuple[str, type]] = {
@@ -89,7 +88,6 @@ _ENV_MAP: dict[str, tuple[str, type]] = {
     "llm_timeout_seconds":          ("PIQ_LLM_TIMEOUT_SECONDS", int),
     "vector_store_backend":        ("PIQ_VECTOR_STORE_BACKEND", str),
     "bedrock_kb_id":               ("PIQ_BEDROCK_KB_ID", str),
-    "default_analysis_mode":       ("PIQ_DEFAULT_ANALYSIS_MODE", str),
     "context_window_chars":        ("PIQ_CONTEXT_WINDOW_CHARS", int),
     "smart_entity_selection":      ("PIQ_SMART_ENTITY_SELECTION", bool),
     "similar_docs_count":          ("PIQ_SIMILAR_DOCS_COUNT", int),
