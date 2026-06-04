@@ -173,14 +173,13 @@ Settings are organised into eight tabs:
 | **Prompts & Fields** | Global system prompt, LLM output language, per-field instructions, custom fields |
 | **Metadata Rules** | Smart entity selection toggle, similar-docs count, frequency fallback, entity creation policies |
 | **Automation** | Enable/disable, auto-apply, poll interval, batch size, cron schedule, creation policies |
-| **Appearance** | Theme colours, typography, logo, nav icons, UI language, colour scheme (light/dark/auto) |
+| **Appearance** | Mantine primary colour, typography (font family and size), nav icons, UI language, colour scheme (light/dark/auto) |
 | **Memories** | Enable/disable long-term memory, list/edit/delete individual facts, clear all |
 | **Access Control** | Per-user permission flags, NG admin sync toggle, maintenance actions (reindex, reset tracking) |
 
 ### UI & UX
 - **Responsive mobile layout** — sidebar slides in from the left as a drawer on small screens; a backdrop overlay and auto-close on navigation
-- **Full theme customisation** — primary colour, sidebar gradient, body/card/chip colours, font family and size, custom logo, per-page nav icons
-- **Dark/light sidebar detection** — WCAG-based contrast calculation ensures text and chip colours are always legible regardless of chosen palette
+- **Mantine UI** — primary colour picker (all Mantine palette colours), light/dark/auto colour scheme, configurable font family and size, per-page nav icon customisation
 - **Authentication & access control** — HMAC-signed session tokens; login validated against Paperless-NGX; per-user permission flags (view queue, approve, analyze, discover, settings); Paperless-NGX admins optionally auto-granted full access; can be disabled for single-user setups
 - **Internationalisation** — UI language switchable (English, German, French, Spanish, Italian); LLM output language independently configurable
 
@@ -234,6 +233,38 @@ docker compose up -d --build paperless-iq
 
 Access the UI at `http://localhost:8082`.
 
+### Using Qdrant
+
+Qdrant is an optional vector backend that adds hybrid dense+sparse search. It ships as a separate service in the same compose file and is activated via a Docker profile.
+
+Add the `PIQ_VECTOR_STORE_BACKEND` variable to your `paperless-iq` service and uncomment the Qdrant service:
+
+```yaml
+  paperless-iq:
+    # ... (existing config from above) ...
+    environment:
+      # ... existing vars ...
+      PIQ_VECTOR_STORE_BACKEND: qdrant
+      PIQ_QDRANT_URL: http://qdrant:6333
+      PIQ_QDRANT_HYBRID_SEARCH: "true"   # optional: enables dense+sparse BM25 fusion
+
+  qdrant:
+    image: qdrant/qdrant:latest
+    restart: unless-stopped
+    volumes:
+      - qdrant-data:/qdrant/storage
+    networks:
+      - paperless_default
+```
+
+Add `qdrant-data` to the `volumes:` block, then start:
+
+```bash
+docker compose up -d --build paperless-iq qdrant
+```
+
+If you already have a ChromaDB index, go to **Settings → Access Control** and click **Migrate embeddings** (or `POST /api/vector/migrate`) to copy your existing vectors to Qdrant without re-embedding.
+
 ---
 
 ## Configuration
@@ -262,6 +293,12 @@ Set `SECRET_KEY` explicitly only if you need to restore an encrypted database fr
 > **Webhook secret** — Paperless IQ auto-generates a webhook secret on first startup and embeds it in the callback URL registered with Paperless-NGX. No manual configuration is required.
 
 ### Optional Environment Variables (`PIQ_*` — initial seed only)
+
+#### Connection
+
+| Variable | Default | Purpose |
+|----------|---------|---------|
+| `PIQ_PAPERLESS_PUBLIC_URL` | — | Browser-accessible URL of Paperless-NGX. `PAPERLESS_URL` is the internal Docker address used for API calls; set this when the two differ so that document deep-links in Discovery point to the right host. |
 
 #### LLM & Embeddings
 
@@ -333,14 +370,21 @@ Set `SECRET_KEY` explicitly only if you need to restore an encrypted database fr
 | `PIQ_BATCH_SIZE` | `10` | Documents per scheduled batch |
 | `PIQ_SCHEDULE_CRON` | — | Cron expression for batch runs |
 | `PIQ_AUDIT_RETENTION_DAYS` | `90` | Days before audit entries are pruned |
-| `PIQ_MEMORY_ENABLED` | `true` | Enable long-term memory extraction |
+
+### Docker Build Arguments
+
+These are passed at image-build time via `--build-arg` (or the `args:` block in your compose file), not at runtime.
+
+| Argument | Default | Purpose |
+|----------|---------|---------|
+| `PIQ_EXTRAS` | `qdrant-hybrid,rerank-local` | Comma-separated list of optional Python extras to bundle. `qdrant-hybrid` installs fastembed (sparse encoder for Qdrant hybrid search); `rerank-local` installs sentence-transformers + CPU-only torch (local cross-encoder reranker). Set to empty (`PIQ_EXTRAS=`) for the leanest image. |
 
 ---
 
 ## Architecture
 
 ```mermaid
-graph TD
+flowchart TD
     Browser["Browser — SPA\nReact 18 · TypeScript · Vite · TanStack Query · Mantine UI"]
 
     subgraph FastAPI["FastAPI Backend — Python 3.12 · SQLAlchemy 2 async · SQLite"]
