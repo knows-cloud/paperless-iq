@@ -138,6 +138,7 @@
   "vision.viewContent": "Inhalt anzeigen",
   "queue.applyContent": "Vorgeschlagenen Inhalt auf das Dokument anwenden",
   "queue.pendingCount": "{count} ausstehend",
+  "queue.newest": "neueste",
   "vision.keepOriginal": "Original behalten",
   "vision.replaceContent": "Inhalt ersetzen",
   "common.cancel": "Abbrechen",

@@ -63,7 +63,8 @@ export default function QueuePage() {
   const items = (data?.items ?? []) as Array<Record<string, unknown>>;
 
   // Group pending suggestions by document — one card per document, a tab per
-  // suggestion. Insertion order is preserved (queue is already sorted).
+  // suggestion. Within a group, order chronologically (oldest → newest) so the
+  // tabs read left-to-right by age; the newest is selected by default.
   const groups = useMemo(() => {
     const m = new Map<number, Array<Record<string, unknown>>>();
     for (const raw of items) {
@@ -71,8 +72,21 @@ export default function QueuePage() {
       const arr = m.get(docId);
       if (arr) arr.push(raw); else m.set(docId, [raw]);
     }
-    return [...m.entries()].map(([documentId, suggestions]) => ({ documentId, suggestions }));
+    return [...m.entries()].map(([documentId, suggestions]) => ({
+      documentId,
+      suggestions: suggestions
+        .slice()
+        .sort((a, b) => String(a.created_at).localeCompare(String(b.created_at))),
+    }));
   }, [items]);
+
+  // Compact local date/time for tab labels and the per-suggestion header.
+  const fmtDateTime = (iso: unknown): string => {
+    const d = new Date(String(iso));
+    return isNaN(d.getTime())
+      ? ""
+      : d.toLocaleString(undefined, { month: "short", day: "numeric", hour: "2-digit", minute: "2-digit" });
+  };
 
   useEffect(() => {
     const docIds = [...new Set(items.map(r => Number(r.document_id)))];
@@ -292,14 +306,23 @@ export default function QueuePage() {
               </Box>
             )}
 
-            <Tabs defaultValue={String(suggestions[0].id)}>
+            <Tabs defaultValue={String(suggestions[suggestions.length - 1].id)}>
               {suggestions.length > 1 && (
                 <Tabs.List mb="sm">
-                  {suggestions.map((raw, i) => (
-                    <Tabs.Tab key={String(raw.id)} value={String(raw.id)}>
-                      {`${i + 1}. ${String(raw.llm_provider ?? "")}`}
-                    </Tabs.Tab>
-                  ))}
+                  {suggestions.map((raw, i) => {
+                    const isNewest = i === suggestions.length - 1;
+                    return (
+                      <Tabs.Tab
+                        key={String(raw.id)}
+                        value={String(raw.id)}
+                        rightSection={isNewest ? (
+                          <Badge size="xs" variant="light" color="teal">{t("queue.newest")}</Badge>
+                        ) : undefined}
+                      >
+                        {fmtDateTime(raw.created_at) || `#${i + 1}`}
+                      </Tabs.Tab>
+                    );
+                  })}
                 </Tabs.List>
               )}
               {suggestions.map((raw) => {
@@ -317,7 +340,7 @@ export default function QueuePage() {
                   <Tabs.Panel key={id} value={id}>
                     {/* Per-suggestion actions */}
                     <Group gap="xs" mb="sm" wrap="wrap">
-                      <Text size="xs" c="dimmed">{String(raw.llm_provider ?? "")} · {String(raw.llm_model ?? "")}</Text>
+                      <Text size="xs" c="dimmed">{String(raw.llm_provider ?? "")} · {String(raw.llm_model ?? "")} · {fmtDateTime(raw.created_at)}</Text>
                       <Box style={{ flex: 1 }} />
                       <Button size="xs" variant="default" onClick={() => handleReanalyze(id)} loading={isReanalyzing}>
                         {t("queue.reanalyze")}

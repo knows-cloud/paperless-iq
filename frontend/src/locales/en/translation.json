@@ -138,6 +138,7 @@
   "vision.viewContent": "View content",
   "queue.applyContent": "Apply suggested content to the document",
   "queue.pendingCount": "{count} pending",
+  "queue.newest": "newest",
   "vision.keepOriginal": "Keep Original",
   "vision.replaceContent": "Replace Content",
   "common.cancel": "Cancel",

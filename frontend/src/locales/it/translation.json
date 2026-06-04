@@ -138,6 +138,7 @@
   "vision.viewContent": "Visualizza contenuto",
   "queue.applyContent": "Applica il contenuto suggerito al documento",
   "queue.pendingCount": "{count} in sospeso",
+  "queue.newest": "più recente",
   "vision.keepOriginal": "Mantieni originale",
   "vision.replaceContent": "Sostituisci contenuto",
   "common.cancel": "Annulla",
