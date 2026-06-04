@@ -37,6 +37,16 @@ both existing ones to keep and new ones to add. Current tags you omit will be re
 Do not include any explanation or markdown — only the raw JSON object.
 """
 
+# Phase-1 vision prompt: transcribe page images to text. Metadata is NOT requested
+# here — the assembled transcript is fed into the standard text analysis afterwards,
+# so vision and OCR analysis share one prompt and one entity-selection path.
+_TRANSCRIBE_PROMPT = (
+    "Transcribe ALL text visible in the following document page image(s) verbatim, "
+    "preserving the natural reading order. Include headings, labels, tables (as plain "
+    "text), and numbers. Do not summarise, translate, or add commentary — output only "
+    "the transcribed text."
+)
+
 
 def _build_output_schema(
     include_content: bool = False,
@@ -578,13 +588,24 @@ class DocumentAnalyzer:
                 if name and value is not None and str(value).strip():
                     current_lines.append(f"  {name}: {value}")
 
+            allow_new_tags = (
+                getattr(self._config, "tag_creation_policy", "existing_only") == "allow_new"
+            )
+            tag_policy_clause = (
+                "Prefer tags from the provided lists above; only propose a brand-new tag "
+                "(not in those lists) if they genuinely miss an important aspect of the "
+                "document."
+                if allow_new_tags else
+                "Use ONLY tags from the provided lists above — do not invent new tags."
+            )
             sections.append(
                 "Current metadata already on this document:\n"
                 + "\n".join(current_lines)
                 + "\n\n"
-                "Your 'tags' output must be the COMPLETE desired set — include all tags you want "
-                "to keep (from the current set above) plus any new ones to add. "
-                "Current tags you omit will be removed."
+                "Output the COMPLETE desired 'tags' set: keep the current tags above that "
+                "still apply and add any missing tags that are clearly relevant. "
+                + tag_policy_clause
+                + " Tags you omit will be removed."
             )
 
         return "\n\n".join(sections), all_tags, all_correspondents, all_document_types
@@ -628,19 +649,6 @@ class DocumentAnalyzer:
             lines.append(f"Instructions for {field_name}: {description}")
 
         return "\n".join(lines)
-
-    def _resolve_analysis_mode(self, document_type_id: int | None) -> str:
-        """
-        Determine whether to use 'ocr' or 'full_document' for this document.
-        Per-doctype setting takes precedence over the global default.
-
-        Validates: Requirements 1.1, 1.2, 1.3
-        """
-        if document_type_id is not None:
-            per_doctype = self._config.per_doctype_analysis_mode.get(document_type_id)
-            if per_doctype is not None:
-                return per_doctype
-        return self._config.default_analysis_mode
 
     def _build_prompt(
         self,
@@ -687,43 +695,43 @@ class DocumentAnalyzer:
     async def analyze(self, document_id: int) -> MetadataSuggestion:
         """Run a full analysis for the given document ID.
 
-        Returns a MetadataSuggestion with status='pending'.
-        When the configured mode is 'full_document', delegates to analyze_vision().
+        Returns a MetadataSuggestion with status='pending'. This is the standard
+        OCR-text analysis; full-document (vision) analysis is on-demand only via
+        analyze_vision() / the /api/analyze/vision endpoint.
         """
-        # 1. Fetch document metadata to determine type
         doc_meta = await self._paperless.get_document_metadata(document_id)
-        document_type_id: int | None = doc_meta.get("document_type")
-
-        # 2. Route full_document mode to vision analysis
-        mode = self._resolve_analysis_mode(document_type_id)
-        if mode == "full_document":
-            result = await self.analyze_vision(document_id, include_content=False)
-            return result.suggestion
-
         # OCR text is already in the metadata response — avoids a second API call.
         content = doc_meta.get("content", "") or ""
+        return await self._analyze_text(document_id, doc_meta, content, analysis_mode="ocr")
 
-        # 3. Fetch entity lists for prompt context
+    async def _analyze_text(
+        self,
+        document_id: int,
+        doc_meta: dict[str, Any],
+        content: str,
+        *,
+        analysis_mode: str,
+    ) -> MetadataSuggestion:
+        """Shared metadata-analysis path for both OCR analysis and (after
+        transcription) vision analysis.
+
+        Entity context is built from ``content``, so smart entity selection — and
+        therefore the focused tag set — works identically in both modes. Vision no
+        longer has a bespoke prompt: it transcribes first, then calls this.
+        """
+        document_type_id: int | None = doc_meta.get("document_type")
+
         entity_context, all_tags, all_correspondents, all_document_types = (
             await self._fetch_entity_context(document_content=content, doc_meta=doc_meta)
         )
-
-        # 4. Build per-field instructions
         field_instructions = self._build_field_instructions()
-
-        # 5. Resolve prompt template
         template = resolve_prompt_template(self._config, document_type_id)
-
-        # 6. Truncate to context window
         content = truncate_to_context_window(content, self._context_window_chars, document_id)
 
-        # 7. Build output schema for native structured output
         output_schema = _build_output_schema(
             include_content=False,
             custom_field_defs=self._custom_field_defs or None,
         )
-
-        # 8. Build prompt (no _SYSTEM_SUFFIX when schema is provided)
         prompt = self._build_prompt(
             template=template,
             content=content,
@@ -734,9 +742,9 @@ class DocumentAnalyzer:
         )
 
         logger.info(
-            "Sending doc %d to LLM: provider=%s model=%s mode=ocr "
-            "content=%d chars entity_ctx=%d chars total_prompt=%d chars (~%d tokens est.)",
-            document_id, self._provider_name, self._config.llm_model,
+            "Analyzing doc %d: provider=%s model=%s mode=%s content=%d chars "
+            "entity_ctx=%d chars total_prompt=%d chars (~%d tokens est.)",
+            document_id, self._provider_name, self._config.llm_model, analysis_mode,
             len(content), len(entity_context), len(prompt), len(prompt) // 4,
         )
 
@@ -752,7 +760,7 @@ class DocumentAnalyzer:
             parsed=parsed,
             llm_provider=self._provider_name,
             llm_model=self._config.llm_model,
-            analysis_mode="ocr",
+            analysis_mode=analysis_mode,
             prompt_used=prompt,
             raw_llm_response=raw_response,
         )
@@ -768,121 +776,84 @@ class DocumentAnalyzer:
 
         return suggestion
 
+    async def _transcribe_images(
+        self, document_id: int, page_images: list[bytes]
+    ) -> str:
+        """Phase 1 of vision analysis: transcribe page images to text.
+
+        Pages are sent in batches (``vision_pages_per_call``) to respect per-call
+        image limits (Bedrock Converse, Anthropic, Ollama memory). The batch
+        transcripts are concatenated in page order.
+        """
+        if not page_images:
+            return ""
+        batch_size = max(1, int(getattr(self._config, "vision_pages_per_call", 10)))
+        parts: list[str] = []
+        for start in range(0, len(page_images), batch_size):
+            batch = page_images[start:start + batch_size]
+            logger.info(
+                "Vision transcribe: doc %d — pages %d-%d of %d",
+                document_id, start + 1, start + len(batch), len(page_images),
+            )
+            # Plain-text output (no schema); allow a large budget for OCR-heavy pages.
+            text = await self._provider.complete(
+                _TRANSCRIBE_PROMPT,
+                self._max_tokens * 4,
+                images=batch,
+            )
+            if text and text.strip():
+                parts.append(text.strip())
+        return "\n\n".join(parts)
+
     async def analyze_vision(
         self,
         document_id: int,
-        include_content: bool = False,
+        include_content: bool = True,
         max_pages: int | None = None,
     ) -> VisionAnalysisResult:
-        """Analyze a document by rendering its pages as images and sending them to the LLM.
+        """Full-document analysis in two phases.
 
-        Returns a VisionAnalysisResult containing the suggestion plus, when
-        ``include_content=True``, the LLM-extracted text and the original OCR content.
+        1. Render the pages as images and **transcribe** them to text (batched).
+        2. Run the **standard text analysis** (``_analyze_text``) on that transcript,
+           so vision uses the same prompt and entity-selection path as OCR mode.
+
+        The transcript is always returned as ``extracted_content`` (suppressed only
+        when ``include_content`` is False). ``original_ocr_content`` is the document's
+        OCR text at analysis time, for the side-by-side diff.
         """
-        # 1. Fetch metadata (for entity context and original OCR content)
+        # 1. Fetch metadata + render pages at the configured DPI
         doc_meta = await self._paperless.get_document_metadata(document_id)
-        document_type_id: int | None = doc_meta.get("document_type")
         original_ocr_content: str = doc_meta.get("content", "") or ""
-
-        # 2. Download and render PDF pages
         pdf_bytes = await self._paperless.get_document_bytes(document_id)
         page_count = get_page_count(pdf_bytes)
-        page_images = render_pages(pdf_bytes, max_pages=max_pages)
+        dpi = int(getattr(self._config, "vision_render_dpi", 150))
+        page_images = render_pages(pdf_bytes, max_pages=max_pages, dpi=dpi)
 
         logger.info(
-            "Vision analysis: doc %d — %d total pages, rendering %d page(s)",
-            document_id, page_count, len(page_images),
+            "Vision analysis: doc %d — %d total pages, rendering %d page(s) at %d DPI",
+            document_id, page_count, len(page_images), dpi,
         )
 
-        # 3. Fetch entity lists (use original OCR content for similarity search)
-        entity_context, all_tags, all_correspondents, all_document_types = (
-            await self._fetch_entity_context(
-                document_content=original_ocr_content, doc_meta=doc_meta
-            )
+        # 2. Phase 1 — transcribe images to text
+        transcript = await self._transcribe_images(document_id, page_images)
+        logger.info("Vision transcript for doc %d: %d chars", document_id, len(transcript))
+
+        # 3. Phase 2 — metadata via the standard text path, using the transcript as
+        #    the document content so smart entity selection runs (focused tags).
+        analysis_meta = {**doc_meta, "content": transcript}
+        suggestion = await self._analyze_text(
+            document_id, analysis_meta, transcript, analysis_mode="full_document"
         )
 
-        # 4. Build per-field instructions and prompt template
-        field_instructions = self._build_field_instructions()
-        template = resolve_prompt_template(self._config, document_type_id)
-
-        # 5. Build vision-specific prompt — no text content to inject, images are the content
-        context_parts = [p for p in (entity_context, field_instructions) if p]
-        context_block = "\n\n".join(context_parts)
-        lang = self._config.target_language
-        lang_instruction = ""
-        if lang:
-            lang_instruction = (
-                f"\nIMPORTANT: All output values MUST be in {lang}.\n"
-            )
-
-        content_instruction = (
-            "\n\nExtract and return the full document text in the 'content' field."
-            if include_content else ""
-        )
-
-        # Replace {content} placeholder with a vision-specific instruction
-        vision_notice = "[Document provided as image(s) above — analyze the visual content]"
-        if "{content}" in template:
-            prompt = (
-                template.format(content=vision_notice)
-                + (f"\n\n{context_block}" if context_block else "")
-                + lang_instruction
-                + content_instruction
-            )
-        else:
-            prompt = (
-                template
-                + f"\n\n{vision_notice}"
-                + (f"\n\n{context_block}" if context_block else "")
-                + lang_instruction
-                + content_instruction
-            )
-
-        # 6. Build output schema (include content field when requested)
-        output_schema = _build_output_schema(
-            include_content=include_content,
-            custom_field_defs=self._custom_field_defs or None,
-        )
-
-        logger.info(
-            "Vision analysis: doc %d — provider=%s model=%s pages=%d include_content=%s",
-            document_id, self._provider_name, self._config.llm_model,
-            len(page_images), include_content,
-        )
-
-        raw_response = await self._provider.complete(
-            prompt,
-            self._max_tokens if not include_content else self._max_tokens * 4,
-            output_schema=output_schema,
-            images=page_images,
-        )
-        logger.info("Vision LLM response for doc %d: %d chars", document_id, len(raw_response))
-
-        parsed = _parse_llm_response(raw_response, structured_output_attempted=True)
-        extracted_content: str | None = parsed.pop("content", None) if include_content else None
-
-        suggestion = _build_suggestion(
-            document_id=document_id,
-            parsed=parsed,
-            llm_provider=self._provider_name,
-            llm_model=self._config.llm_model,
-            analysis_mode="full_document",
-            prompt_used=prompt,
-            raw_llm_response=raw_response,
-        )
-
-        suggestion = await _apply_creation_policy(
-            suggestion=suggestion,
-            config=self._config,
-            paperless_client=self._paperless,
-            all_tags=all_tags,
-            all_correspondents=all_correspondents,
-            all_document_types=all_document_types,
-        )
+        extracted_content = transcript or None
+        suggestion = suggestion.model_copy(update={
+            "extracted_content": extracted_content if include_content else None,
+            "original_ocr_content": original_ocr_content if include_content else None,
+        })
 
         return VisionAnalysisResult(
             suggestion=suggestion,
-            extracted_content=extracted_content,
+            extracted_content=extracted_content if include_content else None,
             original_ocr_content=original_ocr_content if include_content else None,
             page_count=page_count,
         )

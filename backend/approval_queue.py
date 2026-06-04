@@ -100,6 +100,8 @@ def _orm_to_pydantic(row: SuggestionORM) -> MetadataSuggestion:
         analysis_mode=row.analysis_mode,  # type: ignore[arg-type]
         prompt_used=row.prompt_used,
         raw_llm_response=row.raw_llm_response,
+        extracted_content=row.extracted_content,
+        original_ocr_content=row.original_ocr_content,
     )
 
 
@@ -121,6 +123,8 @@ def _pydantic_to_orm(suggestion: MetadataSuggestion) -> SuggestionORM:
         analysis_mode=suggestion.analysis_mode,
         prompt_used=suggestion.prompt_used,
         raw_llm_response=suggestion.raw_llm_response,
+        extracted_content=suggestion.extracted_content,
+        original_ocr_content=suggestion.original_ocr_content,
     )
 
 
@@ -198,6 +202,8 @@ class ApprovalQueueService:
         create_missing: bool = False,
         document_title: str | None = None,
         session_id: str | None = None,
+        apply_content: bool = False,
+        supersede_siblings: bool = True,
     ) -> MetadataSuggestion:
         """
         Approve a suggestion, optionally applying field edits.
@@ -237,6 +243,12 @@ class ApprovalQueueService:
         for field in editable_fields:
             patch_payload[field] = getattr(row, field)
 
+        # Content write-back (opt-in) — only when the suggestion carries transcribed
+        # content from full-document analysis and the approver kept it enabled.
+        content_applied = bool(apply_content and row.extracted_content)
+        if content_applied:
+            patch_payload["content"] = row.extracted_content
+
         # Write to Paperless NGX
         await self._patch_paperless(
             row.document_id, patch_payload,
@@ -266,6 +278,24 @@ class ApprovalQueueService:
                 )
                 self._session.add(audit)
 
+        # Audit the content write-back separately (content isn't an editable field).
+        # Values are truncated — the full document text would bloat the audit log.
+        if content_applied:
+            any_changes = True
+            self._session.add(AuditLogORM(
+                id=str(uuid4()),
+                document_id=row.document_id,
+                document_title=doc_title,
+                field_name="content",
+                previous_value=((row.original_ocr_content or "")[:500] or None),
+                new_value=(row.extracted_content or "")[:500],
+                change_source=change_source,
+                action_type="field_change",
+                session_id=session_id,
+                changed_at=now,
+                suggestion_id=row.id,
+            ))
+
         # Always write an "approved" event even when no fields changed
         approval_event = AuditLogORM(
             id=str(uuid4()),
@@ -283,6 +313,33 @@ class ApprovalQueueService:
         self._session.add(approval_event)
 
         row.status = "approved"
+
+        # Supersede the other pending suggestions for this document: approving one
+        # resolves the document, so the rest are rejected (one card → one decision).
+        if supersede_siblings:
+            siblings = await self._session.execute(
+                select(SuggestionORM).where(
+                    SuggestionORM.document_id == row.document_id,
+                    SuggestionORM.status == "pending",
+                    SuggestionORM.id != row.id,
+                )
+            )
+            for sib in siblings.scalars():
+                sib.status = "rejected"
+                self._session.add(AuditLogORM(
+                    id=str(uuid4()),
+                    document_id=sib.document_id,
+                    document_title=doc_title,
+                    field_name="_event",
+                    previous_value=None,
+                    new_value=f"superseded_by:{row.id}",
+                    change_source=change_source,
+                    action_type="rejected",
+                    session_id=session_id,
+                    changed_at=now,
+                    suggestion_id=sib.id,
+                ))
+
         await self._session.commit()
         await self._session.refresh(row)
         logger.info("Approved suggestion %s for document %d.", row.id, row.document_id)
@@ -352,9 +409,11 @@ class ApprovalQueueService:
 
         Validates: Requirements 7.5, 7.6
         """
+        # Bulk approve is an explicit multi-approve — don't supersede siblings, or
+        # approving one would reject the others in the same batch.
         results: list[MetadataSuggestion] = []
         for sid in suggestion_ids:
-            result = await self.approve(sid, change_source=change_source)
+            result = await self.approve(sid, change_source=change_source, supersede_siblings=False)
             results.append(result)
         return results
 
@@ -480,6 +539,11 @@ class ApprovalQueueService:
                 )
                 if cf_list:
                     patch["custom_fields"] = cf_list
+
+            # Document content (OCR text) — written back from full-document analysis
+            # when the approver opted in. Empty/None is ignored (never wipes content).
+            if payload.get("content"):
+                patch["content"] = payload["content"]
 
             if not patch:
                 logger.info("No fields to patch for document %d.", document_id)

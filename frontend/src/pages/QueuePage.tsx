@@ -2,14 +2,18 @@ import React, { useState, useMemo, useEffect, useCallback } from "react";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import {
   Title, Paper, Text, Group, Stack, Badge, Button, TextInput,
-  Box, Alert, Anchor, Loader,
+  Box, Alert, Anchor, Loader, Switch, Tabs,
 } from "@mantine/core";
 import { api, type PaperlessEntity, type PaperlessCustomField, type VisionAnalysisResult } from "../api";
 import TagInput from "../TagInput";
 import AutocompleteInput from "../AutocompleteInput";
 import CfNameEditor from "../CfNameEditor";
 import VisionAnalysisFlow from "../VisionAnalysisFlow";
+import { ContentDiffModal } from "../components/ContentDiffModal";
 import { useTranslation } from "react-i18next";
+
+// Fields compared to collapse identical suggestions and flag what differs.
+const COMPARE_FIELDS = ["title", "tags", "correspondent", "document_type", "storage_path", "custom_fields"] as const;
 
 interface QueueItem {
   id: string;
@@ -47,6 +51,8 @@ export default function QueuePage() {
   const [existingTagsMap, setExistingTagsMap] = useState<Record<number, string[]>>({});
   const [showEmptyConfirm, setShowEmptyConfirm] = useState(false);
   const [reanalyzingIds, setReanalyzingIds] = useState<Set<string>>(new Set());
+  const [contentView, setContentView] = useState<{ extracted: string | null; original: string | null } | null>(null);
+  const [contentApply, setContentApply] = useState<Record<string, boolean>>({});
   const [openPreviews, setOpenPreviews] = useState<Set<number>>(new Set());
   const [previewUrls, setPreviewUrls] = useState<Record<number, string>>({});
   const [previewErrors, setPreviewErrors] = useState<Record<number, string>>({});
@@ -58,6 +64,58 @@ export default function QueuePage() {
   }, []); // eslint-disable-line react-hooks/exhaustive-deps
 
   const items = (data?.items ?? []) as Array<Record<string, unknown>>;
+
+  // Group pending suggestions by document — one card per document, a tab per
+  // suggestion. Within a group: chronological (oldest → newest, newest selected
+  // by default); identical suggestions are collapsed into one tab (keeping the
+  // newest, with a ×N count); the fields that differ across the distinct
+  // suggestions are flagged so the user can spot what actually changed.
+  const groups = useMemo(() => {
+    const fieldVal = (raw: Record<string, unknown>, f: string): string => {
+      if (f === "tags") return JSON.stringify([...((raw.tags as string[]) ?? [])].sort());
+      if (f === "custom_fields") return JSON.stringify(raw.custom_fields ?? {});
+      return JSON.stringify((raw[f] as unknown) ?? null);
+    };
+    const contentKey = (raw: Record<string, unknown>) => COMPARE_FIELDS.map(f => fieldVal(raw, f)).join("|");
+
+    const byDoc = new Map<number, Array<Record<string, unknown>>>();
+    for (const raw of items) {
+      const docId = Number(raw.document_id);
+      const arr = byDoc.get(docId);
+      if (arr) arr.push(raw); else byDoc.set(docId, [raw]);
+    }
+
+    return [...byDoc.entries()].map(([documentId, rawList]) => {
+      const sorted = rawList.slice().sort((a, b) => String(a.created_at).localeCompare(String(b.created_at)));
+      // Collapse identical suggestions, keeping the newest of each cluster.
+      const clusters = new Map<string, Array<Record<string, unknown>>>();
+      for (const raw of sorted) {
+        const k = contentKey(raw);
+        const arr = clusters.get(k);
+        if (arr) arr.push(raw); else clusters.set(k, [raw]);
+      }
+      const suggestions = [...clusters.values()]
+        .map(arr => arr[arr.length - 1])
+        .sort((a, b) => String(a.created_at).localeCompare(String(b.created_at)));
+      const dupCounts: Record<string, number> = {};
+      for (const arr of clusters.values()) dupCounts[String(arr[arr.length - 1].id)] = arr.length;
+      const varyingFields = new Set<string>();
+      if (suggestions.length > 1) {
+        for (const f of COMPARE_FIELDS) {
+          if (new Set(suggestions.map(raw => fieldVal(raw, f))).size > 1) varyingFields.add(f);
+        }
+      }
+      return { documentId, suggestions, dupCounts, varyingFields };
+    });
+  }, [items]);
+
+  // Compact local date/time for tab labels and the per-suggestion header.
+  const fmtDateTime = (iso: unknown): string => {
+    const d = new Date(String(iso));
+    return isNaN(d.getTime())
+      ? ""
+      : d.toLocaleString(undefined, { month: "short", day: "numeric", hour: "2-digit", minute: "2-digit" });
+  };
 
   useEffect(() => {
     const docIds = [...new Set(items.map(r => Number(r.document_id)))];
@@ -120,6 +178,8 @@ export default function QueuePage() {
           custom_fields: item.custom_fields,
         },
         merge_tags: false, // we send the complete desired set
+        // Default ON; backend only writes content when the suggestion actually has it.
+        apply_content: contentApply[id] ?? true,
       });
     },
     onSuccess: () => qc.invalidateQueries({ queryKey: ["queue"] }),
@@ -220,53 +280,55 @@ export default function QueuePage() {
         <Text c="dimmed">{t("queue.empty")}</Text>
       )}
 
-      {items.map((raw) => {
-        const item = getItem(raw);
-        const id = item.id;
-        const isNewCorr = item.correspondent ? !corrNames.has(item.correspondent.toLowerCase()) : false;
-        const isNewDt = item.document_type ? !dtNames.has(item.document_type.toLowerCase()) : false;
-        const cfEntries = Object.entries(item.custom_fields ?? {});
-        const isNewCf = (name: string) => !cfNames.has(name.toLowerCase());
-        const currentTags = existingTagsMap[item.document_id] ?? [];
-        const suggestedTags = item.tags;
-        const overrides = tagOverrides[id] ?? {};
-        const isReanalyzing = reanalyzingIds.has(id);
-        const previewOpen = openPreviews.has(item.document_id);
-        const previewUrl = previewUrls[item.document_id];
-        const previewErr = previewErrors[item.document_id];
-        const previewIsLoading = previewLoading.has(item.document_id);
+      {groups.map((group) => {
+        const documentId = group.documentId;
+        const suggestions = group.suggestions;
+        const dupCounts = group.dupCounts;
+        const varyingFields = group.varyingFields;
+        const headerRaw = suggestions[0];
+        const fieldLabels: Record<string, string> = {
+          title: t("common.title"),
+          tags: t("analysis.tags_field"),
+          correspondent: t("analysis.correspondent"),
+          document_type: t("analysis.docType"),
+          storage_path: t("analysis.storagePath_field"),
+          custom_fields: t("analysis.customFields"),
+        };
+        // Marker appended to a field's label when that field differs across the
+        // document's distinct suggestions.
+        const varyMark = (f: string) =>
+          varyingFields.has(f)
+            ? <Badge size="xs" color="yellow" variant="light" ml={6} title={t("queue.variesIn")}>≠</Badge>
+            : null;
+        const headerTitle = (headerRaw.title as string) || `${t("queue.document")} #${documentId}`;
+        const previewOpen = openPreviews.has(documentId);
+        const previewUrl = previewUrls[documentId];
+        const previewErr = previewErrors[documentId];
+        const previewIsLoading = previewLoading.has(documentId);
 
         return (
-          <Paper key={id} withBorder p="md" radius="md">
-            {/* Header */}
+          <Paper key={documentId} withBorder p="md" radius="md">
+            {/* Document header */}
             <Group justify="space-between" align="flex-start" wrap="nowrap" mb="sm">
               <Box style={{ flex: 1, minWidth: 0 }}>
-                <Text fw={600}>{item.title || `${t("queue.document")} #${item.document_id}`}</Text>
-                {item.title && (
-                  <Text size="xs" c="dimmed">
-                    #{item.document_id}
-                    {paperlessUrl && (
-                      <Anchor href={`${paperlessUrl}/documents/${item.document_id}/details`} target="_blank" size="xs" ml={6}>
-                        {t("queue.openInPaperless")}
-                      </Anchor>
-                    )}
-                  </Text>
-                )}
+                <Text fw={600}>{headerTitle}</Text>
+                <Text size="xs" c="dimmed">
+                  #{documentId}
+                  {paperlessUrl && (
+                    <Anchor href={`${paperlessUrl}/documents/${documentId}/details`} target="_blank" size="xs" ml={6}>
+                      {t("queue.openInPaperless")}
+                    </Anchor>
+                  )}
+                  {suggestions.length > 1 && (
+                    <Badge ml={8} size="xs" variant="light" color="blue">
+                      {t("queue.pendingCount", { count: String(suggestions.length) })}
+                    </Badge>
+                  )}
+                </Text>
               </Box>
-              <Group gap="xs" style={{ flexShrink: 0 }}>
-                <Button size="xs" variant="default" onClick={() => togglePreview(item.document_id)}>
-                  {previewOpen ? `✕ ${t("queue.hidePreview")}` : `📄 ${t("queue.preview")}`}
-                </Button>
-                <Button size="xs" variant="default" onClick={() => handleReanalyze(id)} loading={isReanalyzing}>
-                  {t("queue.reanalyze")}
-                </Button>
-                <VisionAnalysisFlow
-                  documentId={item.document_id}
-                  pageWarningThreshold={pageWarningThreshold}
-                  onResult={result => handleVisionResult(raw, result)}
-                  size="xs"
-                />
-              </Group>
+              <Button size="xs" variant="default" onClick={() => togglePreview(documentId)}>
+                {previewOpen ? `✕ ${t("queue.hidePreview")}` : `📄 ${t("queue.preview")}`}
+              </Button>
             </Group>
 
             {/* Preview panel */}
@@ -278,30 +340,87 @@ export default function QueuePage() {
                   <Group p="sm" gap="sm">
                     <Text size="sm" c="red">{t("queue.previewError")} {previewErr}</Text>
                     {paperlessUrl && (
-                      <Anchor href={`${paperlessUrl}/documents/${item.document_id}/details`} target="_blank" size="sm">
+                      <Anchor href={`${paperlessUrl}/documents/${documentId}/details`} target="_blank" size="sm">
                         {t("queue.openInPaperless")}
                       </Anchor>
                     )}
                   </Group>
                 ) : previewUrl ? (
-                  <iframe src={previewUrl} title={`Preview #${item.document_id}`} style={{ width: "100%", height: 640, border: "none", display: "block" }} />
+                  <iframe src={previewUrl} title={`Preview #${documentId}`} style={{ width: "100%", height: 640, border: "none", display: "block" }} />
                 ) : null}
               </Box>
             )}
 
-            {/* Unified tag diff — gray=keep, strikethrough=remove, green=add */}
+            <Tabs defaultValue={String(suggestions[suggestions.length - 1].id)}>
+              {suggestions.length > 1 && (
+                <Tabs.List mb="sm">
+                  {suggestions.map((raw, i) => {
+                    const isNewest = i === suggestions.length - 1;
+                    const dup = dupCounts[String(raw.id)] ?? 1;
+                    return (
+                      <Tabs.Tab
+                        key={String(raw.id)}
+                        value={String(raw.id)}
+                        rightSection={isNewest ? (
+                          <Badge size="xs" variant="light" color="teal">{t("queue.newest")}</Badge>
+                        ) : undefined}
+                      >
+                        {(fmtDateTime(raw.created_at) || `#${i + 1}`) + (dup > 1 ? ` ×${dup}` : "")}
+                      </Tabs.Tab>
+                    );
+                  })}
+                </Tabs.List>
+              )}
+              {suggestions.map((raw) => {
+                const item = getItem(raw);
+                const id = item.id;
+                const isNewCorr = item.correspondent ? !corrNames.has(item.correspondent.toLowerCase()) : false;
+                const isNewDt = item.document_type ? !dtNames.has(item.document_type.toLowerCase()) : false;
+                const cfEntries = Object.entries(item.custom_fields ?? {});
+                const isNewCf = (name: string) => !cfNames.has(name.toLowerCase());
+                const currentTags = existingTagsMap[item.document_id] ?? [];
+                const suggestedTags = item.tags;
+                const overrides = tagOverrides[id] ?? {};
+                const isReanalyzing = reanalyzingIds.has(id);
+                return (
+                  <Tabs.Panel key={id} value={id}>
+                    {/* Per-suggestion actions */}
+                    <Group gap="xs" mb="sm" wrap="wrap">
+                      <Text size="xs" c="dimmed">{String(raw.llm_provider ?? "")} · {String(raw.llm_model ?? "")} · {fmtDateTime(raw.created_at)}</Text>
+                      <Box style={{ flex: 1 }} />
+                      <Button size="xs" variant="default" onClick={() => handleReanalyze(id)} loading={isReanalyzing}>
+                        {t("queue.reanalyze")}
+                      </Button>
+                      {Boolean(raw.extracted_content) && (
+                        <Button size="xs" variant="default" onClick={() => setContentView({ extracted: (raw.extracted_content as string) ?? null, original: (raw.original_ocr_content as string) ?? null })}>
+                          {t("vision.viewContent")}
+                        </Button>
+                      )}
+                      <VisionAnalysisFlow
+                        documentId={item.document_id}
+                        pageWarningThreshold={pageWarningThreshold}
+                        onResult={result => handleVisionResult(raw, result)}
+                        size="xs"
+                      />
+                    </Group>
+
+                    {varyingFields.size > 0 && (
+                      <Text size="xs" c="dimmed" mb="xs">
+                        {t("queue.variesIn")}: {[...varyingFields].map(f => fieldLabels[f]).join(", ")}
+                      </Text>
+                    )}
 
             {/* Edit form */}
             <Stack gap="xs">
               <TextInput
-                label="Title"
+                label={<>Title {varyMark("title")}</>}
                 size="xs"
                 value={item.title ?? ""}
                 onChange={e => updateField(id, raw, "title", e.target.value || null)}
               />
 
               <Box>
-                <Text size="xs" fw={600} c="dimmed" mb={4}>Tags</Text>
+                <Text size="xs" fw={600} c="dimmed" mb={4}>Tags {varyMark("tags")}</Text>
                 <Group gap={4} mb={4}>
                   {(() => {
                     // Build unified set: current ∪ suggested ∪ user-added (override=true)
@@ -371,7 +490,7 @@ export default function QueuePage() {
               </Box>
 
               <Box>
-                <Text size="xs" fw={600} c="dimmed" mb={4}>{t("analysis.correspondent")}</Text>
+                <Text size="xs" fw={600} c="dimmed" mb={4}>{t("analysis.correspondent")} {varyMark("correspondent")}</Text>
                 <AutocompleteInput value={item.correspondent ?? ""} suggestions={(corrsQ.data ?? []).map((c: PaperlessEntity) => c.name)}
                   onChange={v => updateField(id, raw, "correspondent", v || null)}
                   style={isNewCorr ? { color: "var(--mantine-color-red-6)", fontWeight: 700 } : undefined} />
@@ -379,7 +498,7 @@ export default function QueuePage() {
               </Box>
 
               <Box>
-                <Text size="xs" fw={600} c="dimmed" mb={4}>{t("analysis.docType")}</Text>
+                <Text size="xs" fw={600} c="dimmed" mb={4}>{t("analysis.docType")} {varyMark("document_type")}</Text>
                 <AutocompleteInput value={item.document_type ?? ""} suggestions={(dtQ.data ?? []).map((d: PaperlessEntity) => d.name)}
                   onChange={v => updateField(id, raw, "document_type", v || null)}
                   style={isNewDt ? { color: "var(--mantine-color-red-6)", fontWeight: 700 } : undefined} />
@@ -387,14 +506,14 @@ export default function QueuePage() {
               </Box>
 
               <Box>
-                <Text size="xs" fw={600} c="dimmed" mb={4}>{t("analysis.storagePath_field")}</Text>
+                <Text size="xs" fw={600} c="dimmed" mb={4}>{t("analysis.storagePath_field")} {varyMark("storage_path")}</Text>
                 <AutocompleteInput value={item.storage_path ?? ""} suggestions={(spQ.data ?? []).map((s: PaperlessEntity) => s.name)}
                   onChange={v => updateField(id, raw, "storage_path", v || null)} />
               </Box>
 
               {cfEntries.length > 0 && (
                 <Box>
-                  <Text size="xs" fw={600} c="dimmed" mb={4}>{t("analysis.customFields")}</Text>
+                  <Text size="xs" fw={600} c="dimmed" mb={4}>{t("analysis.customFields")} {varyMark("custom_fields")}</Text>
                   {cfEntries.map(([key, val]) => (
                     <CfNameEditor key={key} name={key} value={val} isNew={isNewCf(key)}
                       suggestions={(cfQ.data ?? []).map((c: PaperlessCustomField) => c.name)}
@@ -408,6 +527,15 @@ export default function QueuePage() {
 
             {/* Approve / Reject */}
             <Box mt="md">
+              {Boolean(raw.extracted_content) && (
+                <Switch
+                  size="sm"
+                  mb="xs"
+                  checked={contentApply[id] ?? true}
+                  onChange={e => setContentApply(prev => ({ ...prev, [id]: e.currentTarget.checked }))}
+                  label={t("queue.applyContent")}
+                />
+              )}
               <Group gap="xs">
                 <Button size="sm"
                   onClick={() => approve.mutate({ id, item, docId: item.document_id })}
@@ -426,9 +554,25 @@ export default function QueuePage() {
                 </Text>
               )}
             </Box>
+                  </Tabs.Panel>
+                );
+              })}
+            </Tabs>
           </Paper>
         );
       })}
+
+      <ContentDiffModal
+        opened={contentView !== null}
+        onClose={() => setContentView(null)}
+        originalOcr={contentView?.original}
+        extracted={contentView?.extracted}
+        footer={
+          <Button size="sm" variant="default" onClick={() => setContentView(null)}>
+            {t("common.close")}
+          </Button>
+        }
+      />
     </Stack>
   );
 }

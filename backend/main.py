@@ -523,11 +523,15 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
 
     async with engine.begin() as conn:
         await conn.run_sync(Base.metadata.create_all)
-        # Add columns introduced in audit log overhaul — safe for existing DBs.
+        # Add columns introduced after initial release — safe for existing DBs
+        # (create_all only creates missing tables, it never alters existing ones).
         for col_ddl in [
             "ALTER TABLE audit_log ADD COLUMN document_title TEXT",
             "ALTER TABLE audit_log ADD COLUMN action_type VARCHAR(50) DEFAULT 'field_change'",
             "ALTER TABLE audit_log ADD COLUMN session_id VARCHAR(36)",
+            # Suggested content from full-document analysis (Step 1, vision rework).
+            "ALTER TABLE suggestions ADD COLUMN extracted_content TEXT",
+            "ALTER TABLE suggestions ADD COLUMN original_ocr_content TEXT",
         ]:
             try:
                 await conn.execute(text(col_ddl))
@@ -912,6 +916,7 @@ async def auth_me(request: Request) -> dict:
 
 class ApproveBody(BaseModel):
     edits: dict[str, Any] | None = None
+    apply_content: bool = False
 
 
 class BulkIdsBody(BaseModel):
@@ -972,6 +977,7 @@ async def approve_suggestion(
             merge_tags=False,    # frontend computes the complete final tag set
             create_missing=True, # user reviewed and approved — always create missing entities
             change_source=change_source,
+            apply_content=body.apply_content,
         )
     except ValueError as exc:
         raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(exc))
@@ -1979,7 +1985,6 @@ class AnalyzeBody(BaseModel):
     document_id: int
     provider: str | None = None
     model: str | None = None
-    mode: str | None = None
 
 
 @app.post("/api/analyze", tags=["analyze"],
@@ -2004,7 +2009,6 @@ async def manual_analyze(body: AnalyzeBody, request: Request) -> dict:
                     document_id=body.document_id,
                     provider_override=body.provider,
                     model_override=body.model,
-                    mode_override=body.mode,
                 ),
                 label=f"Analyzing doc {body.document_id}",
             )
@@ -2013,7 +2017,6 @@ async def manual_analyze(body: AnalyzeBody, request: Request) -> dict:
                 document_id=body.document_id,
                 provider_override=body.provider,
                 model_override=body.model,
-                mode_override=body.mode,
             )
     except ConnectionError as exc:
         raise HTTPException(

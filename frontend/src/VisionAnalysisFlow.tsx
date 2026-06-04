@@ -10,10 +10,10 @@
 
 import { useState } from "react";
 import {
-  Button, Modal, Stack, Checkbox, Text, Group, Loader, ScrollArea,
-  Box, Alert,
+  Button, Modal, Stack, Checkbox, Text, Group, Loader, Alert,
 } from "@mantine/core";
 import { api, type VisionAnalysisResult } from "./api";
+import { ContentDiffModal } from "./components/ContentDiffModal";
 import { useTranslation } from "react-i18next";
 
 interface Props {
@@ -34,7 +34,8 @@ type FlowStep =
   | "fetchingCount" // fetching page count in background
   | "pageWarning"   // page-count warning modal
   | "analyzing"     // LLM call in progress
-  | "diff";         // content diff modal
+  | "diff"          // content diff modal
+  | "noContent";    // include_content was on but nothing was transcribed
 
 export default function VisionAnalysisFlow({
   documentId,
@@ -46,7 +47,7 @@ export default function VisionAnalysisFlow({
 }: Props) {
   const { t } = useTranslation();
   const [step, setStep] = useState<FlowStep>("idle");
-  const [includeContent, setIncludeContent] = useState(false);
+  const [includeContent, setIncludeContent] = useState(true);
   const [pageCount, setPageCount] = useState<number | null>(null);
   const [_maxPages, setMaxPages] = useState<number | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -75,6 +76,11 @@ export default function VisionAnalysisFlow({
       if (includeContent && result.extracted_content) {
         setDiffResult(result);
         setStep("diff");
+      } else if (includeContent) {
+        // Content was requested but the model returned nothing — make it explicit
+        // rather than silently dropping it.
+        setDiffResult(result);
+        setStep("noContent");
       } else {
         onResult(result);
         reset();
@@ -214,53 +220,13 @@ export default function VisionAnalysisFlow({
       </Modal>
 
       {/* ── Content diff modal ── */}
-      <Modal
+      <ContentDiffModal
         opened={step === "diff"}
         onClose={() => { onResult(diffResult!); reset(); }}
-        title={t("vision.contentDiffTitle")}
-        size="xl"
-      >
-        <Stack gap="md">
-          <Text size="sm" c="dimmed">{t("vision.contentDiffDescription")}</Text>
-          <Group align="flex-start" gap="md" grow>
-            <Box style={{ flex: 1 }}>
-              <Text size="xs" fw={600} c="dimmed" mb={4}>{t("vision.originalOcr")}</Text>
-              <ScrollArea h={400}>
-                <Box
-                  p="xs"
-                  style={{
-                    background: "var(--mantine-color-default-border)",
-                    borderRadius: "var(--mantine-radius-sm)",
-                    fontFamily: "monospace",
-                    fontSize: "var(--mantine-font-size-xs)",
-                    whiteSpace: "pre-wrap",
-                    wordBreak: "break-word",
-                  }}
-                >
-                  {diffResult?.original_ocr_content || t("vision.noContent")}
-                </Box>
-              </ScrollArea>
-            </Box>
-            <Box style={{ flex: 1 }}>
-              <Text size="xs" fw={600} c="teal" mb={4}>{t("vision.visionExtracted")}</Text>
-              <ScrollArea h={400}>
-                <Box
-                  p="xs"
-                  style={{
-                    background: "var(--mantine-color-teal-0)",
-                    borderRadius: "var(--mantine-radius-sm)",
-                    fontFamily: "monospace",
-                    fontSize: "var(--mantine-font-size-xs)",
-                    whiteSpace: "pre-wrap",
-                    wordBreak: "break-word",
-                  }}
-                >
-                  {diffResult?.extracted_content || t("vision.noContent")}
-                </Box>
-              </ScrollArea>
-            </Box>
-          </Group>
-          <Group justify="flex-end" gap="xs">
+        originalOcr={diffResult?.original_ocr_content}
+        extracted={diffResult?.extracted_content}
+        footer={
+          <>
             <Button
               variant="default"
               size="sm"
@@ -274,6 +240,25 @@ export default function VisionAnalysisFlow({
               onClick={handleReplaceContent}
             >
               {t("vision.replaceContent")}
+            </Button>
+          </>
+        }
+      />
+
+      {/* ── No-content notice ── */}
+      <Modal
+        opened={step === "noContent"}
+        onClose={() => { onResult(diffResult!); reset(); }}
+        title={t("vision.noContentTitle")}
+        size="sm"
+      >
+        <Stack gap="md">
+          <Alert color="orange" variant="light">
+            {t("vision.noContentNotice")}
+          </Alert>
+          <Group justify="flex-end">
+            <Button size="sm" onClick={() => { onResult(diffResult!); reset(); }}>
+              {t("common.ok") }
             </Button>
           </Group>
         </Stack>

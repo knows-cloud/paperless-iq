@@ -80,6 +80,8 @@ export interface MetadataSuggestionResponse {
   custom_fields: Record<string, unknown>;
   llm_provider: string;
   llm_model: string;
+  extracted_content?: string | null;
+  original_ocr_content?: string | null;
 }
 
 export interface VisionAnalysisResult {
@@ -147,7 +149,7 @@ export const api = {
     const qs = params ? "?" + new URLSearchParams(params).toString() : "";
     return request<{ items: unknown[]; total: number }>(`/queue${qs}`);
   },
-  approveItem: (id: string, opts?: { edits?: Record<string, unknown>; merge_tags?: boolean; create_missing?: boolean }) =>
+  approveItem: (id: string, opts?: { edits?: Record<string, unknown>; merge_tags?: boolean; create_missing?: boolean; apply_content?: boolean }) =>
     request(`/queue/${id}/approve`, { method: "POST", body: JSON.stringify(opts ?? {}) }),
   rejectItem: (id: string) =>
     request(`/queue/${id}/reject`, { method: "POST" }),

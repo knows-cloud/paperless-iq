@@ -9,7 +9,7 @@ Validates: Requirements 6.2, 6.4
 from __future__ import annotations
 
 from typing import Any
-from unittest.mock import AsyncMock, patch
+from unittest.mock import AsyncMock
 
 import pytest
 from hypothesis import HealthCheck, given, settings
@@ -28,7 +28,6 @@ _model_names = st.text(
     min_size=3,
     max_size=20,
 )
-_analysis_modes = st.sampled_from(["ocr", "full_document"])
 
 
 def _mock_provider() -> AsyncMock:
@@ -59,40 +58,34 @@ def _mock_paperless_client() -> AsyncMock:
 @given(
     base_provider=_provider_names,
     base_model=_model_names,
-    base_mode=_analysis_modes,
     override_provider=st.one_of(st.none(), _provider_names),
     override_model=st.one_of(st.none(), _model_names),
-    override_mode=st.one_of(st.none(), _analysis_modes),
     document_id=st.integers(min_value=1, max_value=100_000),
 )
 @pytest.mark.asyncio
 async def test_property_15_manual_analysis_override(
     base_provider: str,
     base_model: str,
-    base_mode: str,
     override_provider: str | None,
     override_model: str | None,
-    override_mode: str | None,
     document_id: int,
 ) -> None:
     """
     # Feature: paperless-iq, Property 15: Manual analysis override
 
-    When overrides are specified, analysis must use the overridden values.
-    The global config must remain unchanged after the run.
+    When provider/model overrides are specified, analysis must use the overridden
+    values. The global config must remain unchanged after the run.
 
     Validates: Requirements 6.2
     """
     config = PaperlessIQConfig(
         llm_provider=base_provider,  # type: ignore[arg-type]
         llm_model=base_model,
-        default_analysis_mode=base_mode,  # type: ignore[arg-type]
     )
 
     # Snapshot original config values
     original_provider = config.llm_provider
     original_model = config.llm_model
-    original_mode = config.default_analysis_mode
 
     # Build providers dict with mocks for all possible providers
     providers: dict[str, Any] = {}
@@ -107,19 +100,11 @@ async def test_property_15_manual_analysis_override(
         paperless_client=paperless,
     )
 
-    # full_document mode now uses vision (PDF → images).  Patch the rendering
-    # layer so the mock bytes don't reach pypdfium2.
-    _fake_page = b"\xff\xd8\xff" + b"\x00" * 16
-    with (
-        patch("backend.analyzer.get_page_count", return_value=1),
-        patch("backend.analyzer.render_pages", return_value=[_fake_page]),
-    ):
-        suggestion = await svc.analyze(
-            document_id=document_id,
-            provider_override=override_provider,
-            model_override=override_model,
-            mode_override=override_mode,  # type: ignore[arg-type]
-        )
+    suggestion = await svc.analyze(
+        document_id=document_id,
+        provider_override=override_provider,
+        model_override=override_model,
+    )
 
     # The analysis must have used the overridden provider
     expected_provider = override_provider or base_provider
@@ -133,7 +118,6 @@ async def test_property_15_manual_analysis_override(
     # Global config must be unchanged
     assert config.llm_provider == original_provider, "Global provider was modified"
     assert config.llm_model == original_model, "Global model was modified"
-    assert config.default_analysis_mode == original_mode, "Global mode was modified"
 
 
 # ---------------------------------------------------------------------------

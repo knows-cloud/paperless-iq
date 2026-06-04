@@ -177,22 +177,20 @@ export function AIProviderTab({
               description={t("aiProvider.contextWindow.description")}
               style={{ flex: 2, minWidth: "200px" }}
             />
-            <Select
-              label={t("aiProvider.analysisMode.label")}
-              name="default_analysis_mode"
-              defaultValue={String(s.default_analysis_mode ?? "ocr")}
-              data={[
-                { value: "ocr", label: t("aiProvider.analysisMode.ocr") },
-                { value: "full_document", label: t("aiProvider.analysisMode.vision") },
-              ]}
-              style={{ flex: 1, minWidth: "160px" }}
-            />
             <NumberInput
               label={t("aiProvider.visionThreshold.label")}
               name="vision_max_pages_warning"
               min={1}
               defaultValue={Number(s.vision_max_pages_warning ?? 5)}
               description={t("aiProvider.visionThreshold.description")}
+              style={{ flex: 1, minWidth: "160px" }}
+            />
+            <NumberInput
+              label={<InfoLabel label={t("aiProvider.visionDpi.label")} tip={t("aiProvider.visionDpi.tip")} />}
+              name="vision_render_dpi"
+              min={72}
+              max={400}
+              defaultValue={Number(s.vision_render_dpi ?? 150)}
               style={{ flex: 1, minWidth: "160px" }}
             />
             <NumberInput

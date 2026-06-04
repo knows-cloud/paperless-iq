@@ -35,6 +35,11 @@ class MetadataSuggestion(BaseModel):
     prompt_used: str
     raw_llm_response: str
 
+    # Suggested content from full-document analysis (None unless transcribed).
+    # original_ocr_content is the document's OCR text at analysis time, for the diff.
+    extracted_content: str | None = None
+    original_ocr_content: str | None = None
+
 
 class VisionAnalysisResult(BaseModel):
     """Result of a vision-based full-document analysis."""
@@ -137,9 +142,9 @@ class PaperlessIQConfig(BaseModel):
     qdrant_hybrid_search: bool = False  # dense + sparse (named vectors)
 
     # Analysis defaults
-    default_analysis_mode: Literal["ocr", "full_document"] = "ocr"
+    # Standard analysis is always OCR-text based; full-document (vision) analysis is
+    # on-demand only (via the vision flow / /api/analyze/vision), never the default.
     context_window_chars: int = 128_000  # max chars sent to LLM (truncates if exceeded)
-    per_doctype_analysis_mode: dict[int, Literal["ocr", "full_document"]] = {}
 
     # Smart entity selection (hybrid: vector similarity + frequency fallback)
     smart_entity_selection: bool = True
@@ -204,6 +209,8 @@ class PaperlessIQConfig(BaseModel):
 
     # Vision analysis
     vision_max_pages_warning: int = 5  # warn user (Keep/Limit/Cancel) when page count exceeds this
+    vision_render_dpi: int = 150  # DPI for rendering pages to images (higher = sharper text, larger images)
+    vision_pages_per_call: int = 10  # pages per transcription LLM call (respects per-call image limits)
 
     # Paperless NGX public URL for browser-facing links (may differ from PAPERLESS_URL which
     # uses the internal Docker hostname/network address)

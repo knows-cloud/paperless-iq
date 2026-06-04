@@ -11,3 +11,6 @@ data/
 .DS_Store
 docs/*_PLAN.md
 .vscode/
+
+# Claude Code agent worktrees / local state
+.claude/
