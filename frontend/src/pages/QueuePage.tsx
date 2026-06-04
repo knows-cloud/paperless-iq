@@ -12,6 +12,9 @@ import VisionAnalysisFlow from "../VisionAnalysisFlow";
 import { ContentDiffModal } from "../components/ContentDiffModal";
 import { useTranslation } from "react-i18next";
 
+// Fields compared to collapse identical suggestions and flag what differs.
+const COMPARE_FIELDS = ["title", "tags", "correspondent", "document_type", "storage_path", "custom_fields"] as const;
+
 interface QueueItem {
   id: string;
   document_id: number;
@@ -63,21 +66,47 @@ export default function QueuePage() {
   const items = (data?.items ?? []) as Array<Record<string, unknown>>;
 
   // Group pending suggestions by document — one card per document, a tab per
-  // suggestion. Within a group, order chronologically (oldest → newest) so the
-  // tabs read left-to-right by age; the newest is selected by default.
+  // suggestion. Within a group: chronological (oldest → newest, newest selected
+  // by default); identical suggestions are collapsed into one tab (keeping the
+  // newest, with a ×N count); the fields that differ across the distinct
+  // suggestions are flagged so the user can spot what actually changed.
   const groups = useMemo(() => {
-    const m = new Map<number, Array<Record<string, unknown>>>();
+    const fieldVal = (raw: Record<string, unknown>, f: string): string => {
+      if (f === "tags") return JSON.stringify([...((raw.tags as string[]) ?? [])].sort());
+      if (f === "custom_fields") return JSON.stringify(raw.custom_fields ?? {});
+      return JSON.stringify((raw[f] as unknown) ?? null);
+    };
+    const contentKey = (raw: Record<string, unknown>) => COMPARE_FIELDS.map(f => fieldVal(raw, f)).join("|");
+
+    const byDoc = new Map<number, Array<Record<string, unknown>>>();
     for (const raw of items) {
       const docId = Number(raw.document_id);
-      const arr = m.get(docId);
-      if (arr) arr.push(raw); else m.set(docId, [raw]);
+      const arr = byDoc.get(docId);
+      if (arr) arr.push(raw); else byDoc.set(docId, [raw]);
     }
-    return [...m.entries()].map(([documentId, suggestions]) => ({
-      documentId,
-      suggestions: suggestions
-        .slice()
-        .sort((a, b) => String(a.created_at).localeCompare(String(b.created_at))),
-    }));
+
+    return [...byDoc.entries()].map(([documentId, rawList]) => {
+      const sorted = rawList.slice().sort((a, b) => String(a.created_at).localeCompare(String(b.created_at)));
+      // Collapse identical suggestions, keeping the newest of each cluster.
+      const clusters = new Map<string, Array<Record<string, unknown>>>();
+      for (const raw of sorted) {
+        const k = contentKey(raw);
+        const arr = clusters.get(k);
+        if (arr) arr.push(raw); else clusters.set(k, [raw]);
+      }
+      const suggestions = [...clusters.values()]
+        .map(arr => arr[arr.length - 1])
+        .sort((a, b) => String(a.created_at).localeCompare(String(b.created_at)));
+      const dupCounts: Record<string, number> = {};
+      for (const arr of clusters.values()) dupCounts[String(arr[arr.length - 1].id)] = arr.length;
+      const varyingFields = new Set<string>();
+      if (suggestions.length > 1) {
+        for (const f of COMPARE_FIELDS) {
+          if (new Set(suggestions.map(raw => fieldVal(raw, f))).size > 1) varyingFields.add(f);
+        }
+      }
+      return { documentId, suggestions, dupCounts, varyingFields };
+    });
   }, [items]);
 
   // Compact local date/time for tab labels and the per-suggestion header.
@@ -254,7 +283,23 @@ export default function QueuePage() {
       {groups.map((group) => {
         const documentId = group.documentId;
         const suggestions = group.suggestions;
+        const dupCounts = group.dupCounts;
+        const varyingFields = group.varyingFields;
         const headerRaw = suggestions[0];
+        const fieldLabels: Record<string, string> = {
+          title: t("common.title"),
+          tags: t("analysis.tags_field"),
+          correspondent: t("analysis.correspondent"),
+          document_type: t("analysis.docType"),
+          storage_path: t("analysis.storagePath_field"),
+          custom_fields: t("analysis.customFields"),
+        };
+        // Marker appended to a field's label when that field differs across the
+        // document's distinct suggestions.
+        const varyMark = (f: string) =>
+          varyingFields.has(f)
+            ? <Badge size="xs" color="yellow" variant="light" ml={6} title={t("queue.variesIn")}>≠</Badge>
+            : null;
         const headerTitle = (headerRaw.title as string) || `${t("queue.document")} #${documentId}`;
         const previewOpen = openPreviews.has(documentId);
         const previewUrl = previewUrls[documentId];
@@ -311,6 +356,7 @@ export default function QueuePage() {
                 <Tabs.List mb="sm">
                   {suggestions.map((raw, i) => {
                     const isNewest = i === suggestions.length - 1;
+                    const dup = dupCounts[String(raw.id)] ?? 1;
                     return (
                       <Tabs.Tab
                         key={String(raw.id)}
@@ -319,7 +365,7 @@ export default function QueuePage() {
                           <Badge size="xs" variant="light" color="teal">{t("queue.newest")}</Badge>
                         ) : undefined}
                       >
-                        {fmtDateTime(raw.created_at) || `#${i + 1}`}
+                        {(fmtDateTime(raw.created_at) || `#${i + 1}`) + (dup > 1 ? ` ×${dup}` : "")}
                       </Tabs.Tab>
                     );
                   })}
@@ -358,17 +404,23 @@ export default function QueuePage() {
                       />
                     </Group>
 
+                    {varyingFields.size > 0 && (
+                      <Text size="xs" c="dimmed" mb="xs">
+                        {t("queue.variesIn")}: {[...varyingFields].map(f => fieldLabels[f]).join(", ")}
+                      </Text>
+                    )}
+
             {/* Edit form */}
             <Stack gap="xs">
               <TextInput
-                label="Title"
+                label={<>Title {varyMark("title")}</>}
                 size="xs"
                 value={item.title ?? ""}
                 onChange={e => updateField(id, raw, "title", e.target.value || null)}
               />
 
               <Box>
-                <Text size="xs" fw={600} c="dimmed" mb={4}>Tags</Text>
+                <Text size="xs" fw={600} c="dimmed" mb={4}>Tags {varyMark("tags")}</Text>
                 <Group gap={4} mb={4}>
                   {(() => {
                     // Build unified set: current ∪ suggested ∪ user-added (override=true)
@@ -438,7 +490,7 @@ export default function QueuePage() {
               </Box>
 
               <Box>
-                <Text size="xs" fw={600} c="dimmed" mb={4}>{t("analysis.correspondent")}</Text>
+                <Text size="xs" fw={600} c="dimmed" mb={4}>{t("analysis.correspondent")} {varyMark("correspondent")}</Text>
                 <AutocompleteInput value={item.correspondent ?? ""} suggestions={(corrsQ.data ?? []).map((c: PaperlessEntity) => c.name)}
                   onChange={v => updateField(id, raw, "correspondent", v || null)}
                   style={isNewCorr ? { color: "var(--mantine-color-red-6)", fontWeight: 700 } : undefined} />
@@ -446,7 +498,7 @@ export default function QueuePage() {
               </Box>
 
               <Box>
-                <Text size="xs" fw={600} c="dimmed" mb={4}>{t("analysis.docType")}</Text>
+                <Text size="xs" fw={600} c="dimmed" mb={4}>{t("analysis.docType")} {varyMark("document_type")}</Text>
                 <AutocompleteInput value={item.document_type ?? ""} suggestions={(dtQ.data ?? []).map((d: PaperlessEntity) => d.name)}
                   onChange={v => updateField(id, raw, "document_type", v || null)}
                   style={isNewDt ? { color: "var(--mantine-color-red-6)", fontWeight: 700 } : undefined} />
@@ -454,14 +506,14 @@ export default function QueuePage() {
               </Box>
 
               <Box>
-                <Text size="xs" fw={600} c="dimmed" mb={4}>{t("analysis.storagePath_field")}</Text>
+                <Text size="xs" fw={600} c="dimmed" mb={4}>{t("analysis.storagePath_field")} {varyMark("storage_path")}</Text>
                 <AutocompleteInput value={item.storage_path ?? ""} suggestions={(spQ.data ?? []).map((s: PaperlessEntity) => s.name)}
                   onChange={v => updateField(id, raw, "storage_path", v || null)} />
               </Box>
 
               {cfEntries.length > 0 && (
                 <Box>
-                  <Text size="xs" fw={600} c="dimmed" mb={4}>{t("analysis.customFields")}</Text>
+                  <Text size="xs" fw={600} c="dimmed" mb={4}>{t("analysis.customFields")} {varyMark("custom_fields")}</Text>
                   {cfEntries.map(([key, val]) => (
                     <CfNameEditor key={key} name={key} value={val} isNew={isNewCf(key)}
                       suggestions={(cfQ.data ?? []).map((c: PaperlessCustomField) => c.name)}

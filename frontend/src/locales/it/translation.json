@@ -139,6 +139,7 @@
   "queue.applyContent": "Applica il contenuto suggerito al documento",
   "queue.pendingCount": "{count} in sospeso",
   "queue.newest": "più recente",
+  "queue.variesIn": "Varia tra i suggerimenti",
   "vision.keepOriginal": "Mantieni originale",
   "vision.replaceContent": "Sostituisci contenuto",
   "common.cancel": "Annulla",

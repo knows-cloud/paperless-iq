@@ -139,6 +139,7 @@
   "queue.applyContent": "Apply suggested content to the document",
   "queue.pendingCount": "{count} pending",
   "queue.newest": "newest",
+  "queue.variesIn": "Differs across suggestions",
   "vision.keepOriginal": "Keep Original",
   "vision.replaceContent": "Replace Content",
   "common.cancel": "Cancel",
