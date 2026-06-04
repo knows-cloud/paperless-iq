@@ -1,24 +1,131 @@
 # Paperless IQ
 
-**Open-source AI layer for [Paperless-NGX](https://docs.paperless-ngx.com/).** Paperless IQ connects to your existing paperless-ngx instance and adds LLM-driven automatic metadata tagging, a RAG-powered conversational document search, and a background automation engine — all self-hosted, all with a human-in-the-loop approval workflow.
+**Add LLM intelligence to your [Paperless-NGX](https://docs.paperless-ngx.com/) — self-hosted, privacy-first, and built for non-English archives.**
 
-Works with local models via **Ollama**, **Amazon Bedrock** (Claude, Nova, Llama, Mistral, Titan), **Anthropic**, and **OpenAI**.
+Paperless IQ connects to your existing Paperless-NGX instance and gives it a brain: an LLM reads every document, suggests structured metadata, and lets you have natural conversations with your entire archive. No cloud dependency, no data leaving your server.
+
+---
+
+## How Paperless IQ compares to Paperless-NGX v3
+
+Paperless-NGX v3.0 (currently in beta) ships its own LLM integration: metadata suggestions for titles, tags, correspondents, and document types, plus a document chat feature backed by FAISS vector search. That's a meaningful step forward from the old rule-based classifier.
+
+Paperless IQ goes deeper on every dimension — more providers, more control, stronger retrieval, and features that Paperless-NGX v3 simply doesn't have.
+
+| | Paperless-NGX v3.0 (beta) | Paperless IQ |
+|---|---|---|
+| **LLM metadata suggestions** | Titles, dates, tags, correspondents, doc types | All of those + **custom fields** |
+| **LLM providers** | OpenAI-compatible APIs · Ollama | Ollama · Anthropic · OpenAI · **Amazon Bedrock** (Claude, Nova, Llama, Mistral) |
+| **Approval workflow** | Inline suggestions | Full queue — editable fields, suggestion stacking, batch approve/reject |
+| **Scanned / image-only PDFs** | Azure AI cloud OCR | **On-premise vision analysis** — LLM renders and reads pages directly |
+| **Document chat / RAG** | Yes, via FAISS ("hit-or-miss" per community) | ChromaDB · **Qdrant with hybrid dense+sparse search** · Bedrock KB |
+| **Long-term memory** | — | Facts extracted at session end, injected into future sessions |
+| **Per-field prompt control** | — | Per-field instructions + per-document-type prompt templates |
+| **Non-English metadata output** | — | Configurable output language, independent of UI language |
+| **Multilingual search quality** | — | **bge-reranker-v2-m3** cross-encoder covers 100+ languages |
+| **Re-ranking** | — | LLM · local cross-encoder · Amazon Bedrock Rerank |
+| **Search tuning** | — | Chunk size/overlap · HNSW parameters · overfetch · min-score |
+| **Audit log** | — | Field-level history with configurable retention |
+| **Runs fully air-gapped** | Yes (with Ollama) | Yes — Ollama + local ChromaDB/Qdrant, no outbound calls |
+
+---
+
+## Feature Highlights
+
+### Full Document Analysis — understands what you have
+
+Every document is sent to the LLM with its OCR text. The LLM returns structured JSON: title, tags, correspondent, document type, storage path, and any custom fields. Suggestions land in an approval queue so nothing touches your archive without your sign-off.
+
+**Smart entity selection** keeps prompts tight and accuracy high: instead of listing all 500 of your tags, ChromaDB or Qdrant finds the 10–20 documents most similar to the one being analysed, and only the entities that appear on those documents go into the prompt. The LLM picks from a focused, relevant shortlist — not a phone book.
+
+**Per-field instructions** let you teach the LLM your conventions: "always use the full legal company name for correspondent", "storage path format: `invoices/YYYY/MM`". Per-document-type prompt overrides handle invoices differently from contracts, letters differently from receipts.
+
+### Vision Analysis — for scans that OCR can't handle
+
+For image-only PDFs and scans where Tesseract produces poor or empty text, Paperless IQ can render each page as an image and send it to a vision-capable LLM. Analysis happens in two phases:
+
+1. **Transcription** — the vision LLM reads the rendered pages and produces clean text
+2. **Metadata analysis** — that text feeds the standard analysis pipeline, including smart entity selection
+
+DPI and batch size (pages per LLM call) are tunable. Works with any vision-capable model: Ollama multimodal models, Claude 3/4 via Anthropic or Bedrock, GPT-4o via OpenAI.
+
+### Built for Multilingual Archives
+
+Non-English documents are a first-class use case, not an afterthought:
+
+- **LLM output language** is independently configurable — analyse German invoices and have the suggested title come back in German, or in English, regardless of the document's language
+- **Per-field instructions** can encode language-specific conventions (e.g. "correspondent name should use the German legal form")
+- **Multilingual reranker** — the optional cross-encoder reranker defaults to `BAAI/bge-reranker-v2-m3`, a model explicitly trained across 100+ languages, so Discovery search quality doesn't degrade for non-English document collections
+- **UI available in English, German, French, Spanish, and Italian** — switch language independently of the LLM output language
+
+### Discovery — conversational search with long-term memory
+
+Ask questions about your document archive in natural language and get answers grounded in your actual documents, with inline source citations.
+
+Discovery is more than a search box:
+
+- **Multi-turn conversations** with query reformulation — follow-ups like "when does that one expire?" are rewritten into standalone search queries before hitting the vector store
+- **Automatic conversation compression** — sessions are unlimited; older turns are summarised into a rolling prose summary so the context window stays bounded
+- **Long-term memory** — when you close a session, the LLM extracts memorable facts ("Telekom contract ends 2025-08, €30/month") and stores them. Duplicate facts are deduplicated by cosine similarity, not accumulated. The next session starts with those facts already in context.
+- **Memory management** — Settings → Memories lists every stored fact with inline edit and delete
+
+### Qdrant — production-grade vector search
+
+Beyond the built-in ChromaDB store, Paperless IQ supports Qdrant as a drop-in replacement — locally via Docker or cloud-hosted.
+
+With Qdrant you get:
+
+- **Hybrid search** — combines dense semantic vectors with sparse BM25 keyword vectors via Reciprocal Rank Fusion; better recall on exact terms (invoice numbers, names, dates) without sacrificing semantic quality
+- **HNSW tuning** — `ef`, `M`, and `construction_ef` are all configurable, so you can trade index size and build time for query-time accuracy
+- **Scalar and binary quantisation** — reduce memory footprint for large archives
+- **Seamless migration** — switching backends migrates your existing embeddings without re-embedding anything
+
+### Four LLM Providers, Zero Lock-in
+
+Run entirely on your own hardware, or use any major cloud provider:
+
+| Provider | Completions | Embeddings |
+|----------|-------------|------------|
+| **Ollama** (local) | ✓ | ✓ |
+| **Amazon Bedrock** | ✓ (all families via Converse API — Claude, Nova, Llama, Mistral) | ✓ (Titan v1/v2, Cohere) |
+| **Anthropic** | ✓ | — |
+| **OpenAI** | ✓ | ✓ (text-embedding-3-small) |
+
+Switch providers live without losing your index — embeddings migrate automatically. Provider credentials are Fernet-encrypted at rest.
+
+### Fine-tunable to Your Archive
+
+Most tools give you one knob. Paperless IQ gives you a control panel:
+
+- **Chunk size and overlap** — configurable text chunking for indexing and retrieval
+- **Overfetch + min-score** — retrieve more candidates than you need, then filter by minimum similarity score
+- **Re-ranking** — optionally re-score the top-K retrieved chunks with a cross-encoder: `llm` (uses your configured LLM), `local` (bge-reranker-v2-m3 runs on-device), or `api` (Amazon Bedrock Rerank)
+- **Context window cap** — limit how many characters the LLM sees per request
+- **Embedding concurrency** — control how many parallel embedding requests the backend sends
+- **LLM timeout** — prevent runaway requests from blocking the queue
 
 ---
 
 ## Features
 
 ### AI Metadata Analysis
-- **Automatic metadata suggestions** — document OCR text or full content is sent to an LLM which returns structured metadata: title, tags, correspondent, document type, storage path, and custom fields
-- **Smart entity selection** — ChromaDB vector similarity finds similar previously-processed documents and sends only the relevant subset of tags / correspondents / types to the LLM, reducing prompt size and improving accuracy
-- **Per-field instructions** — tell the LLM exactly how to populate each metadata field (e.g. "always use the full legal name for correspondent")
+- **Automatic metadata suggestions** — document OCR text or vision-transcribed content is sent to an LLM which returns structured metadata: title, tags, correspondent, document type, storage path, and custom fields
+- **Smart entity selection** — vector similarity finds similar previously-processed documents and sends only the relevant subset of tags / correspondents / types to the LLM, reducing prompt size and improving accuracy
+- **Per-field instructions** — tell the LLM exactly how to populate each metadata field
 - **Per-document-type prompt overrides** — different prompt templates for invoices vs. contracts vs. letters
 - **New value detection** — suggested values that don't exist in Paperless-NGX are highlighted; creation policies control whether they can be created on approval
-- **Analysis modes** — `ocr` (fast, just OCR text) or `full_document` (sends full extracted content)
 - **Context window control** — configurable character limit caps what gets sent to the LLM
+
+### Vision Analysis
+- **On-demand vision analysis** — renders document pages as images and sends them to a vision LLM; works on image-only PDFs where OCR produces poor or empty text
+- **Two-phase pipeline** — Phase 1 transcribes pages to text; Phase 2 runs the standard metadata analysis on that transcript, including smart entity selection
+- **Configurable rendering** — DPI (default 150) and pages per LLM call (default 10) are tunable to balance quality against API cost
+- **Provider-agnostic** — any vision-capable model works: Ollama multimodal, Claude via Anthropic or Bedrock, GPT-4o via OpenAI
 
 ### Approval Workflow
 - **Approval queue** — every suggestion is staged for review before anything is written to Paperless-NGX
+- **Suggestion stacking** — multiple analysis runs on the same document are shown as tabs, ordered chronologically with the newest active; approving one supersedes its siblings
+- **Duplicate highlighting** — when a re-analysis produces a suggestion similar to an earlier one, changed fields are highlighted so you can see exactly what differs
 - **Editable suggestions** — edit title, tags, correspondent, document type, storage path, and custom fields inline before approving
 - **Keep existing tags** — merge suggested tags with a document's current tags instead of replacing them
 - **Batch actions** — approve or reject multiple suggestions at once
@@ -28,10 +135,19 @@ Works with local models via **Ollama**, **Amazon Bedrock** (Claude, Nova, Llama,
 - **RAG-powered chat** — ask natural language questions about your document archive; answers are grounded in your actual documents with inline source citations
 - **Multi-turn conversations** — follow-up questions work correctly; the model maintains context across turns using a server-side session with a sliding window of recent exchanges
 - **Automatic summarisation** — when a conversation grows long, older turns are compressed into a rolling prose summary so the context window stays bounded without losing history
-- **Query reformulation** — follow-up questions ("when does the first one expire?") are rewritten into standalone search queries before hitting the vector store, so retrieval stays accurate throughout the conversation
-- **Long-term memory** — at the end of each conversation, key facts are extracted by the LLM ("Telekom contract ends 2025-08, €30/month") and stored as individual memory entries; similar facts are deduplicated via cosine similarity rather than accumulating duplicates
+- **Query reformulation** — follow-up questions are rewritten into standalone search queries before hitting the vector store, so retrieval stays accurate throughout the conversation
+- **Long-term memory** — at the end of each conversation, key facts are extracted by the LLM and stored as individual memory entries; similar facts are deduplicated via cosine similarity rather than accumulating duplicates
 - **Memory injection** — relevant memories are semantically retrieved and injected into the system prompt of every new conversation so the model has prior context from day one
 - **Memory management** — Settings → Memories tab lists every stored fact with inline edit and delete; a global toggle enables/disables the feature
+
+### Vector Store & Search Quality
+- **Three backends** — ChromaDB (embedded, zero-config), Qdrant (local Docker or Qdrant Cloud), Amazon Bedrock Knowledge Base
+- **Qdrant hybrid search** — dense + sparse BM25 vectors fused with Reciprocal Rank Fusion for better recall on exact terms
+- **Re-ranking** — optional cross-encoder re-ranking via LLM, local bge-reranker-v2-m3, or Amazon Bedrock Rerank API
+- **HNSW tuning** — configurable `ef`, `M`, and `construction_ef` for both ChromaDB and Qdrant
+- **Qdrant quantisation** — scalar or binary quantisation to reduce memory footprint
+- **Live backend switching** — changing vector store backends migrates embeddings automatically without re-embedding
+- **Overfetch and min-score** — retrieve more candidates than needed, then filter by minimum similarity score
 
 ### Automation
 - **Inbox monitoring** — polls a configurable Paperless-NGX inbox tag for new documents and processes them automatically
@@ -39,7 +155,7 @@ Works with local models via **Ollama**, **Amazon Bedrock** (Claude, Nova, Llama,
 - **Configurable concurrency** — batch size, poll interval, and per-provider embedding concurrency are all tunable
 
 ### Manual Analysis
-- **On-demand analysis** — trigger analysis for any document in your archive with optional per-run overrides for provider, model, and analysis mode
+- **On-demand analysis** — trigger text or vision analysis for any document in your archive with optional per-run overrides for provider, model, and analysis mode
 - **Bulk analysis** — select and queue multiple documents at once
 - **Tag filter** — narrow the document list by tag before selecting
 
@@ -53,23 +169,13 @@ Settings are organised into eight tabs:
 | Tab | Contents |
 |-----|----------|
 | **Connection** | Paperless-NGX public URL, connection test, inbox tag, webhook registration |
-| **AI Provider** | LLM provider + model + credentials, context window, analysis mode, embedding provider, vector store backend |
+| **AI Provider** | LLM provider + model + credentials, context window, timeout, embedding provider, vector store backend, re-ranking |
 | **Prompts & Fields** | Global system prompt, LLM output language, per-field instructions, custom fields |
 | **Metadata Rules** | Smart entity selection toggle, similar-docs count, frequency fallback, entity creation policies |
 | **Automation** | Enable/disable, auto-apply, poll interval, batch size, cron schedule, creation policies |
 | **Appearance** | Theme colours, typography, logo, nav icons, UI language, colour scheme (light/dark/auto) |
 | **Memories** | Enable/disable long-term memory, list/edit/delete individual facts, clear all |
 | **Access Control** | Per-user permission flags, NG admin sync toggle, maintenance actions (reindex, reset tracking) |
-
-### LLM Providers
-| Provider | Completions | Embeddings |
-|----------|-------------|------------|
-| **Ollama** (local) | ✓ | ✓ |
-| **Amazon Bedrock** | ✓ (all model families via Converse API — Claude, Nova, Llama, Mistral) | ✓ (Titan v1/v2, Cohere) |
-| **Anthropic** | ✓ | — |
-| **OpenAI** | ✓ | ✓ (text-embedding-3-small) |
-
-All provider health checks are credential-only — no live API calls are made during status polling.
 
 ### UI & UX
 - **Responsive mobile layout** — sidebar slides in from the left as a drawer on small screens; a backdrop overlay and auto-close on navigation
@@ -157,22 +263,69 @@ Set `SECRET_KEY` explicitly only if you need to restore an encrypted database fr
 
 ### Optional Environment Variables (`PIQ_*` — initial seed only)
 
+#### LLM & Embeddings
+
 | Variable | Default | Purpose |
 |----------|---------|---------|
 | `PIQ_LLM_PROVIDER` | `ollama` | `ollama` · `anthropic` · `openai` · `bedrock` |
 | `PIQ_LLM_MODEL` | `llama3` | Model name (provider-specific) |
 | `PIQ_LLM_CREDENTIALS` | — | API key (Anthropic/OpenAI) or JSON credentials (Bedrock) |
 | `PIQ_OLLAMA_URL` | `http://localhost:11434` | Ollama server URL |
+| `PIQ_LLM_TIMEOUT_SECONDS` | `120` | LLM request timeout |
 | `PIQ_EMBED_PROVIDER` | `ollama` | Embedding provider: `ollama` · `openai` · `bedrock` |
 | `PIQ_EMBEDDING_MODEL` | `nomic-embed-text` | Embedding model name |
-| `PIQ_DEFAULT_ANALYSIS_MODE` | `ocr` | `ocr` or `full_document` |
+| `PIQ_EMBED_CONCURRENCY` | `4` | Parallel embedding requests |
 | `PIQ_CONTEXT_WINDOW_CHARS` | `128000` | Max characters sent to LLM per request |
+
+#### Analysis & Entity Selection
+
+| Variable | Default | Purpose |
+|----------|---------|---------|
 | `PIQ_SMART_ENTITY_SELECTION` | `true` | Use vector similarity for entity pre-selection |
 | `PIQ_SIMILAR_DOCS_COUNT` | `10` | Similar documents to retrieve for entity selection |
 | `PIQ_FREQUENCY_FALLBACK_COUNT` | `20` | Top-N frequent entities used as fallback |
 | `PIQ_TAG_CREATION_POLICY` | `existing_only` | `existing_only` or `allow_new` |
 | `PIQ_CORRESPONDENT_CREATION_POLICY` | `existing_only` | `existing_only` or `allow_new` |
 | `PIQ_DOCTYPE_CREATION_POLICY` | `existing_only` | `existing_only` or `allow_new` |
+| `PIQ_TARGET_LANGUAGE` | — | Language for LLM responses (e.g. `German`) |
+
+#### Vector Store
+
+| Variable | Default | Purpose |
+|----------|---------|---------|
+| `PIQ_VECTOR_STORE_BACKEND` | `local` | `local` (ChromaDB) · `qdrant` · `bedrock_kb` |
+| `PIQ_BEDROCK_KB_ID` | — | Bedrock Knowledge Base ID |
+| `PIQ_QDRANT_MODE` | `local` | `local` · `cloud` |
+| `PIQ_QDRANT_URL` | `http://qdrant:6333` | Qdrant server URL |
+| `PIQ_QDRANT_API_KEY` | — | Qdrant Cloud API key (encrypted at rest) |
+| `PIQ_QDRANT_COLLECTION` | `paperless_iq_chunks` | Qdrant collection for document chunks |
+| `PIQ_QDRANT_MEMORY_COLLECTION` | `piq_memories` | Qdrant collection for long-term memories |
+
+#### Search Quality Tuning
+
+| Variable | Default | Purpose |
+|----------|---------|---------|
+| `PIQ_SEARCH_OVERFETCH_MULTIPLIER` | `3` | Retrieve N× more candidates before filtering |
+| `PIQ_SEARCH_MIN_SCORE` | `0.0` | Minimum similarity score threshold |
+| `PIQ_CHUNK_SIZE` | `1000` | Text chunk size for indexing |
+| `PIQ_CHUNK_OVERLAP` | `200` | Overlap between consecutive chunks |
+| `PIQ_CHUNK_STRATEGY` | `fixed` | Chunking strategy |
+| `PIQ_RERANK_ENABLED` | `false` | Enable cross-encoder re-ranking |
+| `PIQ_RERANK_METHOD` | `llm` | `llm` · `local` (bge-reranker-v2-m3) · `api` (Bedrock) |
+| `PIQ_RERANK_TOP_K` | `20` | Candidates passed to the reranker |
+| `PIQ_RERANK_MODEL` | `BAAI/bge-reranker-v2-m3` | Local cross-encoder model |
+| `PIQ_CHROMA_HNSW_SEARCH_EF` | `100` | ChromaDB HNSW search ef |
+| `PIQ_CHROMA_HNSW_M` | `16` | ChromaDB HNSW M parameter |
+| `PIQ_CHROMA_HNSW_CONSTRUCTION_EF` | `100` | ChromaDB HNSW construction ef |
+| `PIQ_QDRANT_HNSW_EF` | `128` | Qdrant HNSW ef |
+| `PIQ_QDRANT_HNSW_M` | `16` | Qdrant HNSW M parameter |
+| `PIQ_QDRANT_QUANTIZATION` | `none` | `none` · `scalar` · `binary` |
+| `PIQ_QDRANT_HYBRID_SEARCH` | `false` | Enable dense + sparse BM25 hybrid search |
+
+#### Automation
+
+| Variable | Default | Purpose |
+|----------|---------|---------|
 | `PIQ_INBOX_TAG_ID` | — | Paperless-NGX tag ID for the inbox |
 | `PIQ_AUTO_APPLY` | `false` | Skip the approval queue |
 | `PIQ_AUTOMATION_ENABLED` | `false` | Enable inbox polling and scheduled runs |
@@ -180,9 +333,6 @@ Set `SECRET_KEY` explicitly only if you need to restore an encrypted database fr
 | `PIQ_BATCH_SIZE` | `10` | Documents per scheduled batch |
 | `PIQ_SCHEDULE_CRON` | — | Cron expression for batch runs |
 | `PIQ_AUDIT_RETENTION_DAYS` | `90` | Days before audit entries are pruned |
-| `PIQ_TARGET_LANGUAGE` | — | Language for LLM responses (e.g. `German`) |
-| `PIQ_VECTOR_STORE_BACKEND` | `local` | `local` (ChromaDB) or `bedrock_kb` |
-| `PIQ_BEDROCK_KB_ID` | — | Bedrock Knowledge Base ID |
 | `PIQ_MEMORY_ENABLED` | `true` | Enable long-term memory extraction |
 
 ---
@@ -201,7 +351,7 @@ graph TD
     end
 
     LLM["LLM Provider Layer\nOllama · Bedrock · Anthropic · OpenAI"]
-    Storage["Storage\nSQLite (ORM) · ChromaDB (on disk)"]
+    Storage["Storage\nSQLite (ORM) · ChromaDB or Qdrant (vector)"]
     NGX["Paperless-NGX\nREST API (token-authenticated)"]
 
     Browser -->|"HTTP / REST + SSE"| FastAPI
@@ -217,22 +367,22 @@ graph TD
 
 **Metadata analysis**
 1. Inbox monitor detects new document → queues for analysis
-2. Analyzer fetches OCR text from Paperless-NGX
-3. Smart entity selection queries ChromaDB for similar documents, pre-filters the entity lists
+2. Analyzer fetches OCR text from Paperless-NGX (or renders pages for vision analysis)
+3. Smart entity selection queries the vector store for similar documents, pre-filters the entity lists
 4. Prompt is assembled and sent to the configured LLM provider
 5. LLM returns structured JSON → parsed into a `MetadataSuggestion`
-6. Suggestion stored in SQLite and shown in the approval queue
+6. Suggestion stored in SQLite and shown in the approval queue (stacked with any previous suggestions for the same document)
 7. On approval → writes metadata back to Paperless-NGX via API → audit log entry
 
 **Discovery conversation**
 1. User sends a question → backend creates or resumes a `ConversationSession`
 2. If there is conversation history, the question is reformulated as a standalone search query
-3. Relevant long-term memories are retrieved from the ChromaDB `piq_memories` collection and injected into the system prompt
-4. ChromaDB `paperless_iq_chunks` collection is queried for relevant document passages
+3. Relevant long-term memories are retrieved from the vector store and injected into the system prompt
+4. The vector store is queried for relevant document passages (with optional hybrid search and re-ranking)
 5. LLM is called with: system message (instructions + memories + prior summary) + recent conversation turns + fresh document context
 6. Answer is returned with source citations
 7. New Q&A pair is appended to the session; if the window exceeds 8 turns, older turns are compressed into a rolling summary
-8. On session close → LLM extracts memorable facts → deduplicated against existing memories → stored in `user_memories` table + `piq_memories` Chroma collection
+8. On session close → LLM extracts memorable facts → deduplicated against existing memories → stored in the database and vector store
 
 ---
 
