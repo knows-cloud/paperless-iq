@@ -3,11 +3,15 @@
 from __future__ import annotations
 
 import hashlib
+import logging
+from types import SimpleNamespace
+from unittest.mock import MagicMock
 
 import pytest
 
 from backend.memory_store import (
     ChromaMemoryStore,
+    MemoryStore,
     QdrantMemoryStore,
     SIMILARITY_THRESHOLD,
     make_memory_store,
@@ -121,3 +125,99 @@ def test_make_memory_store_selects_qdrant() -> None:
     })()
     store = make_memory_store(cfg, _MockLLMProvider())
     assert isinstance(store, QdrantMemoryStore)
+
+
+# ---------------------------------------------------------------------------
+# _embed() error surfacing — the base MemoryStore must log and re-raise so the
+# real provider failure (e.g. an unreachable embed provider) is diagnosable.
+# ---------------------------------------------------------------------------
+
+
+class _FailingProvider:
+    def __init__(self, exc: Exception | None = None) -> None:
+        self._exc = exc or ConnectionRefusedError("embed provider unreachable")
+
+    async def embed(self, text: str) -> list[float]:
+        raise self._exc
+
+
+@pytest.mark.asyncio
+async def test_embed_failure_is_logged_at_error_level(caplog) -> None:
+    store = MemoryStore(_FailingProvider())
+    with caplog.at_level(logging.ERROR, logger="backend.memory_store"):
+        with pytest.raises(ConnectionRefusedError):
+            await store._embed("some text")
+    assert any(
+        "MemoryStore._embed() failed" in r.message and "_FailingProvider" in r.message
+        for r in caplog.records
+    ), f"Expected error log not found. Records: {[r.message for r in caplog.records]}"
+
+
+@pytest.mark.asyncio
+async def test_embed_failure_re_raises_original_exception() -> None:
+    store = MemoryStore(_FailingProvider(RuntimeError("embed model not found")))
+    with pytest.raises(RuntimeError, match="embed model not found"):
+        await store._embed("some text")
+
+
+@pytest.mark.asyncio
+async def test_embed_success_returns_vector() -> None:
+    store = MemoryStore(_MockLLMProvider())
+    result = await store._embed("hello world")
+    assert isinstance(result, list) and result and all(isinstance(v, float) for v in result)
+
+
+# ---------------------------------------------------------------------------
+# Memory-extraction prompt — language instruction + source-document references.
+# ---------------------------------------------------------------------------
+
+
+async def _captured_extraction_prompt(target_language) -> str:
+    """Run _extract_memories_from_session with a mocked provider and return the
+    extraction prompt it produced."""
+    captured: list[str] = []
+
+    async def _mock_complete(prompt: str, max_tokens: int) -> str:
+        captured.append(prompt)
+        return "NONE"
+
+    provider = MagicMock()
+    provider.complete = _mock_complete
+    session = SimpleNamespace(
+        id="sess-test",
+        summary=None,
+        turns=[
+            {"role": "user", "content": "When does my Telekom contract end?"},
+            {"role": "assistant", "content": "Your contract ends August 2025 [1]."},
+        ],
+    )
+    config = SimpleNamespace(memory_enabled=True, target_language=target_language)
+
+    from backend.main import _extract_memories_from_session
+    await _extract_memories_from_session(session, provider, MagicMock(), config)
+    assert captured, "provider.complete was never called"
+    return captured[0]
+
+
+@pytest.mark.asyncio
+async def test_prompt_includes_language_when_target_language_set() -> None:
+    prompt = await _captured_extraction_prompt("German")
+    assert "German" in prompt
+
+
+@pytest.mark.asyncio
+async def test_prompt_has_no_language_instruction_when_unset() -> None:
+    prompt = await _captured_extraction_prompt(None)
+    assert "Write every fact in" not in prompt
+
+
+@pytest.mark.asyncio
+async def test_prompt_instructs_source_document_reference() -> None:
+    prompt = (await _captured_extraction_prompt(None)).lower()
+    assert "source document" in prompt or "title" in prompt
+
+
+@pytest.mark.asyncio
+async def test_prompt_contains_doc_ref_example() -> None:
+    prompt = await _captured_extraction_prompt(None)
+    assert "(" in prompt and ")" in prompt

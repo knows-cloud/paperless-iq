@@ -1442,16 +1442,30 @@ async def _extract_memories_from_session(session, provider, memory_store, config
     if not parts:
         return 0
 
+    # Build language instruction — mirror analyzer.py pattern
+    lang = (getattr(config, "target_language", None) or "").strip()
+    lang_instruction = (
+        f"Write every fact in {lang}.\n"
+        if lang
+        else ""
+    )
+
     extraction_prompt = (
         "Analyze this conversation and extract memorable facts about the user's document archive.\n"
         "Output ONLY concrete, specific facts useful for future conversations — one per line.\n"
-        "Each fact should be concise (under 120 characters). "
-        "Skip questions, greetings, and vague statements.\n"
+        "Rules for each fact:\n"
+        "- Keep it atomic and under 150 characters.\n"
+        "- Include the source document title or type in parentheses when it is clear from the\n"
+        "  conversation (e.g. \"(Telekom invoice)\", \"(Allianz policy letter)\").\n"
+        "- Include key identifiers: contract numbers, dates, amounts, parties.\n"
+        "- Skip questions, greetings, navigational turns, and vague statements.\n"
+        + lang_instruction +
         "If no memorable facts were established, output exactly: NONE\n\n"
         "Good examples:\n"
-        "- Telekom mobile contract ends 2025-08, 24 months, €30/month\n"
-        "- Allianz home insurance #AH-123456, renews annually in March\n"
-        "- Landlord: Meyer Immobilien GmbH\n\n"
+        "- Mobile contract ends 2025-08, 24 months, €30/month (Telekom invoice)\n"
+        "- Home insurance policy #AH-123456, renews annually in March (Allianz letter)\n"
+        "- Landlord is Meyer Immobilien GmbH (rental contract)\n"
+        "- Net salary €3 420/month as of 2024-01 (pay slip Jan 2024)\n\n"
         f"Conversation:\n{chr(10).join(parts)}\n\nFacts:"
     )
 
