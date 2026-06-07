@@ -3026,7 +3026,7 @@ async def register_webhook(request: Request) -> dict:
 
         logger.info(
             "Webhook register — name=%r triggers=%d actions=%d existing_id=%s",
-            payload["name"], len(triggers), len(actions), existing_id,
+            _PAPERLESS_IQ_WORKFLOW_NAME, len(triggers), len(actions), existing_id,
         )
 
         if existing_id is not None:
