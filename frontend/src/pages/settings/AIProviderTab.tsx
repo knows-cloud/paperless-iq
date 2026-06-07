@@ -264,21 +264,16 @@ export function AIProviderTab({
           )}
 
           {selectedEmbedProvider === "bedrock" && (
-            <Select
+            <TextInput
               label={t("aiProvider.embeddings.bedrock.model.label")}
               name="embedding_model"
-              value={embedModel || "amazon.titan-embed-text-v1"}
-              onChange={v => {
-                setEmbedModel(v ?? "amazon.titan-embed-text-v1");
-                localStorage.setItem(`piq_embed_model_${selectedEmbedProvider}`, v ?? "");
+              value={embedModel}
+              onChange={e => {
+                setEmbedModel(e.target.value);
+                localStorage.setItem(`piq_embed_model_${selectedEmbedProvider}`, e.target.value);
               }}
+              placeholder="amazon.titan-embed-text-v2:0"
               description={t("aiProvider.embeddings.bedrock.model.description")}
-              data={[
-                { value: "amazon.titan-embed-text-v2:0", label: t("aiProvider.embeddings.bedrock.titanV2") },
-                { value: "cohere.embed-multilingual-v3", label: t("aiProvider.embeddings.bedrock.cohereMulti") },
-                { value: "cohere.embed-english-v3",      label: t("aiProvider.embeddings.bedrock.cohereEn") },
-                { value: "amazon.titan-embed-text-v1",   label: t("aiProvider.embeddings.bedrock.titanV1") },
-              ]}
             />
           )}
 
