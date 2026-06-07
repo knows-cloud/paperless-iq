@@ -3024,12 +3024,10 @@ async def register_webhook(request: Request) -> dict:
             "actions": actions,
         }
 
-        _safe_actions = [
-            {**a, "webhook": {**a["webhook"], "url": _re.sub(r"(key=)[^&]*", r"\1[REDACTED]", a["webhook"]["url"])}}
-            if a.get("webhook") else a
-            for a in payload.get("actions", [])
-        ]
-        logger.info("Webhook register — sending payload: %s", {**payload, "actions": _safe_actions})
+        logger.info(
+            "Webhook register — name=%r triggers=%d actions=%d existing_id=%s",
+            payload["name"], len(triggers), len(actions), existing_id,
+        )
 
         if existing_id is not None:
             r = await client.put(
@@ -3052,18 +3050,13 @@ async def register_webhook(request: Request) -> dict:
             )
 
         stored = r.json()
-        # Log the stored action/webhook data specifically so we can verify the URL was saved.
         for action in stored.get("actions", []):
             logger.info(
-                "Webhook register — stored action id=%s type=%s webhook=%s",
-                action.get("id"), action.get("type"), action.get("webhook"),
+                "Webhook register — stored action id=%s type=%s",
+                action.get("id"), action.get("type"),
             )
 
-    logger.info(
-        "Webhook workflow %s (callback: %s).",
-        verb,
-        _re.sub(r"(key=)[^&]*", r"\1[REDACTED]", callback_url),
-    )
+    logger.info("Webhook workflow %s.", verb)
     return {
         "detail": f"Workflow '{_PAPERLESS_IQ_WORKFLOW_NAME}' {verb}.",
         "callback_url": callback_url,
@@ -3380,6 +3373,15 @@ async def get_theme() -> dict:
 if _FRONTEND_DIR.is_dir():
     app.mount("/assets", StaticFiles(directory=_FRONTEND_DIR / "assets"), name="static")
 
+    # Pre-scan dist at startup so the catch-all handler never constructs a path
+    # from user input — the dict maps request path → trusted resolved Path object,
+    # breaking any taint chain between the URL and the FileResponse sink.
+    _STATIC_FILES: dict[str, Path] = {
+        p.relative_to(_FRONTEND_DIR).as_posix(): p
+        for p in _FRONTEND_DIR.rglob("*")
+        if p.is_file() and p.relative_to(_FRONTEND_DIR).as_posix() != "index.html"
+    }
+
     @app.get("/{full_path:path}", include_in_schema=False)
     async def serve_spa(full_path: str) -> HTMLResponse:
         """Serve the SPA index.html for any non-API route.
@@ -3389,12 +3391,8 @@ if _FRONTEND_DIR.is_dir():
         JS/CSS assets use content-hash filenames and are served by the /assets
         StaticFiles mount — those can be cached indefinitely.
         """
-        file_path = (_FRONTEND_DIR / full_path).resolve()
-        if (
-            file_path.is_relative_to(_FRONTEND_DIR)
-            and file_path.is_file()
-            and full_path != "index.html"
-        ):
-            return FileResponse(file_path)
+        safe_path = _STATIC_FILES.get(full_path)
+        if safe_path is not None:
+            return FileResponse(safe_path)
         html = (_FRONTEND_DIR / "index.html").read_text(encoding="utf-8")
         return HTMLResponse(content=html, headers={"Cache-Control": "no-store"})
