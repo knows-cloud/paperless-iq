@@ -10,7 +10,7 @@ export const LLM_MODEL_DEFAULTS: Record<string, string> = {
 
 export const EMBED_MODEL_DEFAULTS: Record<string, string> = {
   ollama:  "nomic-embed-text",
-  bedrock: "amazon.titan-embed-text-v1",
+  bedrock: "amazon.titan-embed-text-v2:0",
   openai:  "text-embedding-3-small",
 };
 
