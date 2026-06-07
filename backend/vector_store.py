@@ -238,6 +238,14 @@ class _EmbeddingBackedStore:
         """Return True if the embedding provider is reachable."""
         return await self._llm.health_check()
 
+    async def embed_probe(self) -> bool:
+        """Attempt a real minimal embed call — same code path as production embeds."""
+        try:
+            await self._llm.embed("test")
+            return True
+        except Exception:
+            return False
+
     @property
     def embed_concurrency(self) -> int:
         """The current embedding concurrency limit (read-only)."""

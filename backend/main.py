@@ -416,26 +416,43 @@ async def _background_index(
                         "document_type": dt_id_to_name.get(doc.get("document_type") or 0, ""),
                         "custom_fields": custom_fields,
                     }
-                    try:
-                        await vector_store.upsert(doc_id, content, meta)
-                        indexed += 1
-                        if queue:
-                            queue.set_embedding_progress(
-                                total_to_index, already_done + indexed + inbox_skipped
-                            )
-                    except Exception as exc:
-                        exc_str = str(exc)
-                        if "dimension" in exc_str.lower() and "got" in exc_str.lower():
-                            logger.warning(
-                                "Embedding dimension mismatch while indexing document %d: %s\n"
-                                "  → The vector store was built with a different embedding model.\n"
-                                "  → Go to Settings → Processing and click 'Reindex Vector Store' to rebuild it.",
-                                doc_id, exc_str,
-                            )
-                            # Stop indexing — every remaining document will fail too
-                            return
-                        logger.debug("Failed to index document %d", doc_id, exc_info=True)
-                        await asyncio.sleep(2.0)  # back off on failure
+                    for _attempt in range(1, 4):
+                        try:
+                            if queue:
+                                await queue.await_embed_available()
+                            await vector_store.upsert(doc_id, content, meta)
+                            if queue:
+                                queue.record_embed_success()
+                            indexed += 1
+                            if queue:
+                                queue.set_embedding_progress(
+                                    total_to_index, already_done + indexed + inbox_skipped
+                                )
+                            break  # success — move to next document
+                        except Exception as exc:
+                            exc_str = str(exc)
+                            if "dimension" in exc_str.lower() and "got" in exc_str.lower():
+                                logger.warning(
+                                    "Embedding dimension mismatch while indexing document %d: %s\n"
+                                    "  → The vector store was built with a different embedding model.\n"
+                                    "  → Go to Settings → Processing and click 'Reindex Vector Store' to rebuild it.",
+                                    doc_id, exc_str,
+                                )
+                                return  # stop — every remaining document will fail too
+                            if queue:
+                                queue.record_embed_failure()
+                            if _attempt < 3:
+                                logger.warning(
+                                    "Embed attempt %d/3 failed for document %d, retrying in %ds.",
+                                    _attempt, doc_id, _attempt * 2,
+                                )
+                                await asyncio.sleep(float(_attempt * 2))
+                            else:
+                                logger.warning(
+                                    "All 3 embed attempts failed for document %d. "
+                                    "Tasks will resume automatically when the embed service recovers.",
+                                    doc_id,
+                                )
                 url = data.get("next")
                 # Yield to event loop between pages
                 await asyncio.sleep(0.1)
@@ -445,6 +462,44 @@ async def _background_index(
             queue.set_embedding_progress(total_to_index, total_to_index)  # mark complete
     except Exception:
         logger.warning("Background indexing failed.", exc_info=True)
+
+
+async def _embed_health_monitor(app: FastAPI, queue: OllamaQueue) -> None:
+    """Restore the embed circuit-breaker when the service comes back online.
+
+    When the circuit is closed this loop is essentially free — it sleeps 30s
+    and checks a local flag. When the circuit is open it sends a real minimal
+    embed call (same path as production embeds) with exponential backoff:
+    30 s → 60 → 120 → 240 → 300 s cap. Using a real call means recovery is
+    confirmed by the actual embed endpoint, not just credential presence.
+    """
+    _MIN_INTERVAL = 30
+    _MAX_INTERVAL = 300
+    poll_interval = _MIN_INTERVAL
+
+    while True:
+        try:
+            await asyncio.sleep(poll_interval)
+            if queue.embed_available:
+                poll_interval = _MIN_INTERVAL  # reset when healthy
+                continue
+            vs = getattr(app.state, "vector_store", None)
+            if vs is None:
+                continue
+            ok = await asyncio.wait_for(vs.embed_probe(), timeout=10.0)
+            if ok:
+                queue.record_embed_success()  # resets failure counter + closes circuit
+                poll_interval = _MIN_INTERVAL
+            else:
+                poll_interval = min(poll_interval * 2, _MAX_INTERVAL)
+                logger.debug(
+                    "Embed health check failed — circuit still open. Next check in %ds.",
+                    poll_interval,
+                )
+        except asyncio.CancelledError:
+            raise
+        except Exception:
+            logger.debug("Embed health monitor error.", exc_info=True)
 
 
 async def _audit_cleanup_loop() -> None:
@@ -632,6 +687,9 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
         if vector_store and paperless_client:
             await _heal_dim_mismatch(vector_store, embed_provider)
             asyncio.create_task(_background_index(paperless_client, vector_store, config, ollama_queue))
+            app.state.embed_health_monitor_task = asyncio.create_task(
+                _embed_health_monitor(app, ollama_queue)
+            )
 
         # Initialise long-term memory store (matches the configured vector backend)
         try:
@@ -663,7 +721,7 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     yield
 
     # Shutdown: cancel automation tasks
-    for task_name in ("inbox_task", "scheduler_task", "session_expiry_task", "audit_cleanup_task"):
+    for task_name in ("inbox_task", "scheduler_task", "session_expiry_task", "audit_cleanup_task", "embed_health_monitor_task"):
         task: asyncio.Task[Any] | None = getattr(app.state, task_name, None)
         if task is not None and not task.done():
             task.cancel()
@@ -2387,6 +2445,8 @@ async def update_settings(request: Request, body: dict[str, Any] = Body(...)) ->
     old_qdrant_mode = _old.qdrant_mode
     old_embed_provider = _old.embed_provider
     old_embedding_model = _old.embedding_model
+    old_chunk_size = _old.chunk_size
+    old_chunk_strategy = _old.chunk_strategy
 
     try:
         await _settings_svc.update_and_persist(body)
@@ -2410,6 +2470,10 @@ async def update_settings(request: Request, body: dict[str, Any] = Body(...)) ->
     embed_changed = (
         new_config.embed_provider != old_embed_provider
         or new_config.embedding_model != old_embedding_model
+    )
+    chunk_changed = (
+        new_config.chunk_size != old_chunk_size
+        or new_config.chunk_strategy != old_chunk_strategy
     )
     # Resolved while rebuilding the store below; surfaced to the UI at the end.
     reindex_required = False
@@ -2551,6 +2615,12 @@ async def update_settings(request: Request, body: dict[str, Any] = Body(...)) ->
         result["reindex_reason"] = reindex_reason or (
             f"Vector backend is now '{new_config.vector_store_backend}'. "
             "Re-index to populate the new store."
+        )
+    elif chunk_changed and not embed_changed:
+        result["needs_reindex"] = True
+        result["reindex_reason"] = (
+            "Chunk settings changed. Existing documents keep their old chunk structure "
+            "until re-indexed."
         )
 
     return result
@@ -2865,7 +2935,7 @@ async def trigger_reindex_since(
         if oq:
             oq.set_embedding_progress(total, 0)
         for i, doc_id in enumerate(doc_ids, 1):
-            await _reindex_document(doc_id, vs, pc)
+            await _reindex_document(doc_id, vs, pc, oq)
             if oq:
                 oq.set_embedding_progress(total, i)
         if oq:
@@ -2886,7 +2956,7 @@ async def trigger_reindex_since(
 _PAPERLESS_IQ_WORKFLOW_NAME = "Paperless IQ — Live Reindex"
 
 
-async def _reindex_document(doc_id: int, vs: VectorStore, pc: PaperlessNGXClient) -> None:
+async def _reindex_document(doc_id: int, vs: VectorStore, pc: PaperlessNGXClient, queue: OllamaQueue | None = None) -> None:
     """Fetch current document metadata from Paperless NGX and upsert into the vector store."""
     base = pc._base_url
     headers = pc._headers
@@ -2942,8 +3012,30 @@ async def _reindex_document(doc_id: int, vs: VectorStore, pc: PaperlessNGXClient
         "document_type": dt_id_to_name.get(doc.get("document_type") or 0, ""),
         "custom_fields": custom_fields,
     }
-    await vs.upsert(doc_id, content, meta)
-    logger.info("Webhook reindex: document %d re-indexed.", doc_id)
+    for _attempt in range(1, 4):
+        if queue:
+            await queue.await_embed_available()
+        try:
+            await vs.upsert(doc_id, content, meta)
+            if queue:
+                queue.record_embed_success()
+            logger.info("Webhook reindex: document %d re-indexed.", doc_id)
+            return
+        except Exception:
+            if queue:
+                queue.record_embed_failure()
+            if _attempt < 3:
+                logger.warning(
+                    "Reindex attempt %d/3 failed for document %d, retrying in %ds.",
+                    _attempt, doc_id, _attempt * 2,
+                )
+                await asyncio.sleep(float(_attempt * 2))
+            else:
+                logger.warning(
+                    "All 3 reindex attempts failed for document %d — "
+                    "will resume when embed service recovers.",
+                    doc_id,
+                )
 
 
 @app.post("/api/webhook/register", tags=["system"],
@@ -3153,7 +3245,8 @@ async def paperless_webhook(request: Request) -> dict:
         return {"detail": "No document_id; skipped."}
 
     logger.info("Webhook queuing reindex of document %s.", doc_id)
-    asyncio.create_task(_reindex_document(doc_id, vs, pc))
+    _oq: OllamaQueue | None = getattr(request.app.state, "ollama_queue", None)
+    asyncio.create_task(_reindex_document(doc_id, vs, pc, _oq))
 
     # Fire-and-forget audit event — uses its own session to avoid coupling with request lifecycle.
     async def _audit_webhook() -> None:

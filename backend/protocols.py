@@ -109,6 +109,15 @@ class VectorStore(Protocol):
         """Return True if the backend's embedding provider is reachable."""
         ...
 
+    async def embed_probe(self) -> bool:
+        """Attempt a real minimal embed call to verify the service actually works.
+
+        Unlike embed_health_check(), which may only verify credentials, this
+        sends a genuine embed request (1-token text) and returns True on success.
+        Used by the circuit-breaker recovery monitor.
+        """
+        ...
+
     async def get_indexed_chunk_counts(self) -> tuple[dict[int, int], dict[int, int]]:
         """Return ``(per_doc_chunk_count, per_doc_expected_total)`` for the
         currently indexed vectors, used to detect partially-indexed documents."""

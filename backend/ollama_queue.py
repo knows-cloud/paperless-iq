@@ -52,6 +52,12 @@ class OllamaQueue:
         self._embedding_total: int = 0
         self._embedding_done: int = 0
         self._analysis_queue_labels: list[str] = []  # waiting analysis tasks
+        # Embed circuit-breaker: cleared when the embed service is unreachable;
+        # all embed callers await this event so they pause rather than fail-loop.
+        self._embed_available = asyncio.Event()
+        self._embed_available.set()  # available initially
+        self._consecutive_embed_failures: int = 0
+        self._EMBED_FAILURE_THRESHOLD = 3  # failures before opening the circuit
 
     def start(self) -> None:
         """Start the queue worker."""
@@ -103,6 +109,43 @@ class OllamaQueue:
     def health_cache_age(self) -> float:
         return time.monotonic() - self._last_health_time if self._last_health_time else 999.0
 
+    # ------------------------------------------------------------------
+    # Embed circuit-breaker
+    # ------------------------------------------------------------------
+
+    def record_embed_failure(self) -> None:
+        """Record one embed failure; open the circuit after 3 consecutive failures."""
+        self._consecutive_embed_failures += 1
+        if self._consecutive_embed_failures >= self._EMBED_FAILURE_THRESHOLD:
+            self.mark_embed_unavailable()
+
+    def record_embed_success(self) -> None:
+        """Reset the failure counter and close the circuit if it was open."""
+        self._consecutive_embed_failures = 0
+        self.mark_embed_available()
+
+    def mark_embed_unavailable(self) -> None:
+        """Open the circuit: pause all embed callers until recovery."""
+        if self._embed_available.is_set():
+            logger.warning("Embed service unreachable — embed tasks will pause until recovery.")
+        self._embed_available.clear()
+        self.update_health_cache("embed", False)
+
+    def mark_embed_available(self) -> None:
+        """Close the circuit: wake all callers waiting for embed recovery."""
+        if not self._embed_available.is_set():
+            logger.info("Embed service recovered — resuming paused embed tasks.")
+        self._embed_available.set()
+        self.update_health_cache("embed", True)
+
+    async def await_embed_available(self) -> None:
+        """Block until the embed service is available (no-op when healthy)."""
+        await self._embed_available.wait()
+
+    @property
+    def embed_available(self) -> bool:
+        return self._embed_available.is_set()
+
     def set_embedding_progress(self, total: int, done: int) -> None:
         self._embedding_total = total
         self._embedding_done = done
@@ -119,6 +162,8 @@ class OllamaQueue:
             "embedding_total": self._embedding_total,
             "embedding_done": self._embedding_done,
             "queue_size": self._queue.qsize(),
+            "embed_available": self._embed_available.is_set(),
+            "embed_consecutive_failures": self._consecutive_embed_failures,
         }
 
     async def _worker(self) -> None:
