@@ -398,8 +398,11 @@ class SettingsService:
                 PaperlessIQConfig(**test_data)
                 valid_values[key] = value
                 applied.append(key)
-            except (ValidationError, ValueError) as exc:
-                skipped.append({"field": key, "reason": str(exc)})
+            except ValidationError as exc:
+                reasons = [e["msg"] for e in exc.errors()[:3]]
+                skipped.append({"field": key, "reason": "; ".join(reasons)})
+            except ValueError:
+                skipped.append({"field": key, "reason": "Invalid value for this field"})
 
         if valid_values:
             current = self._config.model_dump()

@@ -2354,7 +2354,8 @@ async def test_paperless_connection() -> JSONResponse:
     except httpx.TimeoutException:
         return JSONResponse(content={"status": "error", "detail": "Connection to Paperless NGX timed out."})
     except Exception as exc:
-        return JSONResponse(content={"status": "error", "detail": str(exc)})
+        logger.exception("Connection test failed unexpectedly: %s", exc)
+        return JSONResponse(content={"status": "error", "detail": "An unexpected error occurred. Check server logs for details."})
 
 
 # ---------------------------------------------------------------------------
@@ -3023,7 +3024,12 @@ async def register_webhook(request: Request) -> dict:
             "actions": actions,
         }
 
-        logger.info("Webhook register — sending payload: %s", payload)
+        _safe_actions = [
+            {**a, "webhook": {**a["webhook"], "url": _re.sub(r"(key=)[^&]*", r"\1[REDACTED]", a["webhook"]["url"])}}
+            if a.get("webhook") else a
+            for a in payload.get("actions", [])
+        ]
+        logger.info("Webhook register — sending payload: %s", {**payload, "actions": _safe_actions})
 
         if existing_id is not None:
             r = await client.put(
@@ -3054,7 +3060,9 @@ async def register_webhook(request: Request) -> dict:
             )
 
     logger.info(
-        "Webhook workflow %s (callback: %s).", verb, callback_url
+        "Webhook workflow %s (callback: %s).",
+        verb,
+        _re.sub(r"(key=)[^&]*", r"\1[REDACTED]", callback_url),
     )
     return {
         "detail": f"Workflow '{_PAPERLESS_IQ_WORKFLOW_NAME}' {verb}.",
@@ -3381,8 +3389,12 @@ if _FRONTEND_DIR.is_dir():
         JS/CSS assets use content-hash filenames and are served by the /assets
         StaticFiles mount — those can be cached indefinitely.
         """
-        file_path = _FRONTEND_DIR / full_path
-        if file_path.is_file() and full_path != "index.html":
+        file_path = (_FRONTEND_DIR / full_path).resolve()
+        if (
+            file_path.is_relative_to(_FRONTEND_DIR)
+            and file_path.is_file()
+            and full_path != "index.html"
+        ):
             return FileResponse(file_path)
         html = (_FRONTEND_DIR / "index.html").read_text(encoding="utf-8")
         return HTMLResponse(content=html, headers={"Cache-Control": "no-store"})
