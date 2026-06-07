@@ -85,6 +85,7 @@ _ENV_MAP: dict[str, tuple[str, type]] = {
     "llm_model":                   ("PIQ_LLM_MODEL", str),
     "llm_credentials":             ("PIQ_LLM_CREDENTIALS", str),
     "ollama_url":                   ("PIQ_OLLAMA_URL", str),
+    "openai_base_url":              ("PIQ_OPENAI_BASE_URL", str),
     "llm_timeout_seconds":          ("PIQ_LLM_TIMEOUT_SECONDS", int),
     "vector_store_backend":        ("PIQ_VECTOR_STORE_BACKEND", str),
     "bedrock_kb_id":               ("PIQ_BEDROCK_KB_ID", str),

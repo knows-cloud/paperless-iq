@@ -106,6 +106,7 @@ class PaperlessIQConfig(BaseModel):
     llm_model: str
     llm_credentials: EncryptedBlob = b""  # never returned to UI
     ollama_url: str = "http://localhost:11434"  # Ollama server URL (only used when provider is ollama)
+    openai_base_url: str | None = None  # custom base URL for OpenAI-compatible APIs (open-webui, LM Studio, etc.)
     llm_timeout_seconds: int = 120  # max seconds to wait for LLM response (0 = no limit)
 
     # Vector store

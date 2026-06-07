@@ -290,6 +290,42 @@ class TestOpenAISDKCalls:
         )
         assert result == [0.1, 0.2, 0.3]
 
+    @pytest.mark.asyncio
+    async def test_embed_uses_custom_embed_model(self, encrypted_api_key: str):
+        provider = OpenAIProvider(
+            api_key_enc=encrypted_api_key,
+            model="gpt-4o",
+            secret_key=TEST_SECRET_KEY,
+            embed_model="text-embedding-ada-002",
+        )
+        mock_embedding = MagicMock()
+        mock_embedding.embedding = [0.5, 0.6]
+        mock_response = MagicMock()
+        mock_response.data = [mock_embedding]
+        mock_client = AsyncMock()
+        mock_client.embeddings.create = AsyncMock(return_value=mock_response)
+
+        with patch.object(provider, "_client", return_value=mock_client):
+            await provider.embed("embed this")
+
+        mock_client.embeddings.create.assert_called_once_with(
+            model="text-embedding-ada-002",
+            input="embed this",
+        )
+
+    def test_base_url_forwarded_to_client(self, encrypted_api_key: str):
+        provider = OpenAIProvider(
+            api_key_enc=encrypted_api_key,
+            model="gpt-4o",
+            secret_key=TEST_SECRET_KEY,
+            base_url="http://localhost:3000/v1",
+        )
+        with patch("backend.providers.openai_provider.openai.AsyncOpenAI") as mock_cls:
+            mock_cls.return_value = MagicMock()
+            provider._client()
+        _, kwargs = mock_cls.call_args
+        assert kwargs.get("base_url") == "http://localhost:3000/v1"
+
 
 # ---------------------------------------------------------------------------
 # 9. SDK call construction — Bedrock complete() and embed()

@@ -52,7 +52,11 @@ def build_providers(
             )
         else:
             provider = OpenAIProvider(
-                api_key_enc=api_key_enc, model=model, secret_key=secret_key
+                api_key_enc=api_key_enc,
+                model=model,
+                secret_key=secret_key,
+                base_url=getattr(config, "openai_base_url", None) or None,
+                embed_model=getattr(config, "embedding_model", None) or "text-embedding-3-small",
             )
 
     elif provider_name == "bedrock":
