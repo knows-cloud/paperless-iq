@@ -18,11 +18,13 @@ class OpenAIProvider:
         model: str,
         secret_key: str,
         base_url: str | None = None,
+        embed_model: str = "text-embedding-3-small",
     ) -> None:
         self._api_key_enc = api_key_enc
         self._model = model
         self._secret_key = secret_key
         self._base_url = base_url
+        self._embed_model = embed_model
 
     def _client(self) -> openai.AsyncOpenAI:
         api_key = decrypt_credential(self._api_key_enc, self._secret_key)
@@ -79,10 +81,10 @@ class OpenAIProvider:
         )
 
     async def embed(self, text: str) -> list[float]:
-        """Generate embeddings using text-embedding-3-small."""
+        """Generate embeddings using the configured embed model."""
         client = self._client()
         response = await client.embeddings.create(
-            model="text-embedding-3-small",
+            model=self._embed_model,
             input=text,
         )
         return response.data[0].embedding

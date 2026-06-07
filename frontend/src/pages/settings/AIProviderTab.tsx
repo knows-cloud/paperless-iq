@@ -167,6 +167,16 @@ export function AIProviderTab({
             />
           )}
 
+          {selectedProvider === "openai" && (
+            <TextInput
+              label={t("aiProvider.openai.baseUrl.label")}
+              name="openai_base_url"
+              defaultValue={String(s.openai_base_url ?? "")}
+              placeholder="https://your-server/v1"
+              description={t("aiProvider.openai.baseUrl.description")}
+            />
+          )}
+
           <Divider label={t("aiProvider.context.divider")} labelPosition="left" />
           <div style={{ display: "flex", gap: "1rem", flexWrap: "wrap" }}>
             <NumberInput
@@ -283,9 +293,29 @@ export function AIProviderTab({
           )}
 
           {selectedEmbedProvider === "openai" && (
-            <Text size="sm" c="dimmed" p="sm" style={{ background: "var(--mantine-color-teal-0)", borderRadius: "var(--mantine-radius-sm)" }}>
-              {t("aiProvider.embeddings.openai.hint")}
-            </Text>
+            <>
+              <TextInput
+                label={t("aiProvider.embeddings.model.label")}
+                name="embedding_model"
+                value={embedModel}
+                onChange={e => {
+                  setEmbedModel(e.target.value);
+                  localStorage.setItem(`piq_embed_model_${selectedEmbedProvider}`, e.target.value);
+                }}
+                placeholder="text-embedding-3-small"
+                description={t("aiProvider.embeddings.model.description")}
+              />
+              <NumberInput
+                label={<InfoLabel label={t("aiProvider.embeddings.concurrency.label")} tip={t("aiProvider.embeddings.concurrency.tip")} />}
+                name="embed_concurrency"
+                min={1}
+                max={16}
+                defaultValue={Number(s.embed_concurrency ?? 1)}
+              />
+              <Text size="sm" c="dimmed" p="sm" style={{ background: "var(--mantine-color-teal-0)", borderRadius: "var(--mantine-radius-sm)" }}>
+                {t("aiProvider.embeddings.openai.hint")}
+              </Text>
+            </>
           )}
         </Stack>
       </Paper>
