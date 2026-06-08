@@ -2476,8 +2476,11 @@ async def update_settings(request: Request, body: dict[str, Any] = Body(...)) ->
         or new_config.chunk_strategy != old_chunk_strategy
     )
     # Resolved while rebuilding the store below; surfaced to the UI at the end.
+    # reindex_reason_code is a stable key the frontend maps to a localized string;
+    # reindex_reason carries the English fallback (and dynamic migration messages).
     reindex_required = False
     reindex_reason = ""
+    reindex_reason_code = ""
 
     # Re-build LLM providers with the updated config
     try:
@@ -2510,6 +2513,7 @@ async def update_settings(request: Request, body: dict[str, Any] = Body(...)) ->
                     if backend_changed:
                         if embed_changed:
                             reindex_required = True
+                            reindex_reason_code = "embed_changed_with_backend"
                             reindex_reason = (
                                 "Embedding model changed alongside the backend; existing "
                                 "vectors can't be reused. Re-index to populate the new store."
@@ -2518,6 +2522,7 @@ async def update_settings(request: Request, body: dict[str, Any] = Body(...)) ->
                             mig = await migrate_embeddings(old_vs, new_vs)
                             await migrate_memories(old_mem, new_mem)
                             reindex_required = mig.needs_reindex
+                            # Dynamic migration message — no stable code; raw string only.
                             reindex_reason = mig.reason if mig.needs_reindex else ""
                             logger.info(
                                 "Backend migration: migrated=%d needs_reindex=%s (%s)",
@@ -2525,6 +2530,7 @@ async def update_settings(request: Request, body: dict[str, Any] = Body(...)) ->
                             )
                         else:
                             reindex_required = True
+                            reindex_reason_code = "no_store_to_migrate"
                             reindex_reason = (
                                 "No existing store to migrate from; re-index to populate "
                                 "the new backend."
@@ -2534,6 +2540,7 @@ async def update_settings(request: Request, body: dict[str, Any] = Body(...)) ->
                         # stale (and may have a different dimension). Warn the user so
                         # they can trigger a reindex; don't wipe automatically.
                         reindex_required = True
+                        reindex_reason_code = "embed_changed"
                         reindex_reason = (
                             "Embedding model changed. Existing vectors are stale and may "
                             "have a different dimension. Re-index the vector store to "
@@ -2612,16 +2619,23 @@ async def update_settings(request: Request, body: dict[str, Any] = Body(...)) ->
     # when it couldn't carry the embeddings over.
     if reindex_required:
         result["needs_reindex"] = True
+        result["reindex_reason_code"] = reindex_reason_code or "backend_changed"
         result["reindex_reason"] = reindex_reason or (
             f"Vector backend is now '{new_config.vector_store_backend}'. "
             "Re-index to populate the new store."
         )
+        # Migration (copying vectors without re-embedding) is only valid when the
+        # backend changed AND the embedding model is unchanged — otherwise the old
+        # vectors are stale / wrong-dimension and only a full re-index is correct.
+        result["can_migrate"] = backend_changed and not embed_changed
     elif chunk_changed and not embed_changed:
         result["needs_reindex"] = True
+        result["reindex_reason_code"] = "chunk_changed"
         result["reindex_reason"] = (
             "Chunk settings changed. Existing documents keep their old chunk structure "
             "until re-indexed."
         )
+        result["can_migrate"] = False
 
     return result
 

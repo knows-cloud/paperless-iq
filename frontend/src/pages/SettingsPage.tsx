@@ -62,6 +62,8 @@ export default function SettingsPage() {
   // needs_reindex banner (set on successful settings save)
   const [needsReindex, setNeedsReindex] = useState(false);
   const [reindexReason, setReindexReason] = useState("");
+  const [reindexReasonCode, setReindexReasonCode] = useState("");
+  const [canMigrate, setCanMigrate] = useState(false);
 
   // Prompts & Fields tab
   const [promptText, setPromptText] = useState("");
@@ -172,6 +174,8 @@ export default function SettingsPage() {
       if (data?.needs_reindex) {
         setNeedsReindex(true);
         setReindexReason(String(data.reindex_reason ?? ""));
+        setReindexReasonCode(String(data.reindex_reason_code ?? ""));
+        setCanMigrate(Boolean(data.can_migrate));
       } else {
         setNeedsReindex(false);
       }
@@ -413,29 +417,35 @@ export default function SettingsPage() {
             withCloseButton
             onClose={() => setNeedsReindex(false)}
           >
-            <Text size="sm" mb="xs">{reindexReason || t("aiProvider.vectorStore.needsReindexDefault")}</Text>
+            <Text size="sm" mb="xs">{
+              reindexReasonCode
+                ? t(`aiProvider.vectorStore.reindexReason.${reindexReasonCode}`)
+                : (reindexReason || t("aiProvider.vectorStore.needsReindexDefault"))
+            }</Text>
             <Group gap="sm">
-              <Button
-                size="xs"
-                variant="filled"
-                color="yellow"
-                onClick={async () => {
-                  setMaintenanceMsg(null);
-                  try {
-                    const res = await api.migrateVectorStore();
-                    if (res.needs_reindex) {
-                      setMaintenanceMsg(t("aiProvider.vectorStore.migrateNeedsReindex"));
-                    } else {
-                      setMaintenanceMsg(t("aiProvider.vectorStore.migrateDone", { count: res.migrated }));
-                      setNeedsReindex(false);
+              {canMigrate && (
+                <Button
+                  size="xs"
+                  variant="filled"
+                  color="yellow"
+                  onClick={async () => {
+                    setMaintenanceMsg(null);
+                    try {
+                      const res = await api.migrateVectorStore();
+                      if (res.needs_reindex) {
+                        setMaintenanceMsg(t("aiProvider.vectorStore.migrateNeedsReindex"));
+                      } else {
+                        setMaintenanceMsg(t("aiProvider.vectorStore.migrateDone", { count: res.migrated }));
+                        setNeedsReindex(false);
+                      }
+                    } catch {
+                      setMaintenanceMsg(t("aiProvider.vectorStore.migrateFailed"));
                     }
-                  } catch {
-                    setMaintenanceMsg(t("aiProvider.vectorStore.migrateFailed"));
-                  }
-                }}
-              >
-                {t("aiProvider.vectorStore.migrateBtn")}
-              </Button>
+                  }}
+                >
+                  {t("aiProvider.vectorStore.migrateBtn")}
+                </Button>
+              )}
               <Button
                 size="xs"
                 variant="outline"
