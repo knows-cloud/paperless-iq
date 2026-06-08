@@ -14,9 +14,12 @@ import backend.orm_models  # noqa: F401 — registers all ORM models on Base.met
 # Alembic Config object
 config = context.config
 
-# Set up logging from alembic.ini
+# Set up logging from alembic.ini. disable_existing_loggers=False is essential:
+# this env runs at app startup (via backend.db_migrate.run_migrations), and the
+# default True would silence every logger created before migrations ran —
+# including the app's own module loggers.
 if config.config_file_name is not None:
-    fileConfig(config.config_file_name)
+    fileConfig(config.config_file_name, disable_existing_loggers=False)
 
 # Metadata for autogenerate support
 target_metadata = Base.metadata

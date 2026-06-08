@@ -46,16 +46,31 @@ def _run_migrations_sync() -> None:
     engine = create_engine(sync_url)
     try:
         tables = set(inspect(engine).get_table_names())
+        # Read the current revision directly. The detection below keys off
+        # whether the DB is *stamped at a revision*, not merely whether the
+        # alembic_version table exists: a half-initialised DB can have an empty
+        # alembic_version table (table created, no row committed — SQLite DDL is
+        # non-transactional, so a crashed first migration leaves exactly this).
+        # Treating "table present but empty" as "not stamped" prevents an upgrade
+        # from re-running the baseline CREATE TABLEs against an existing schema.
+        current_rev: str | None = None
+        if "alembic_version" in tables:
+            with engine.connect() as conn:
+                row = conn.exec_driver_sql(
+                    "SELECT version_num FROM alembic_version LIMIT 1"
+                ).fetchone()
+                current_rev = row[0] if row else None
     finally:
         engine.dispose()
 
     cfg = _alembic_config()
 
-    if "alembic_version" not in tables and _SENTINEL_TABLE in tables:
-        # Existing pre-Alembic database: adopt it at the baseline without
-        # re-creating tables, then let upgrade apply anything newer.
+    if current_rev is None and _SENTINEL_TABLE in tables:
+        # Existing pre-Alembic (or half-stamped) database that already holds the
+        # schema: adopt it at the baseline without re-creating tables, then let
+        # upgrade apply anything newer.
         logger.info(
-            "Existing pre-Alembic database detected — stamping baseline %s",
+            "Existing un-stamped database detected — stamping baseline %s",
             _BASELINE_REVISION,
         )
         command.stamp(cfg, _BASELINE_REVISION)
