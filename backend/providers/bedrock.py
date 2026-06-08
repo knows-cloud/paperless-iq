@@ -212,24 +212,46 @@ class BedrockProvider:
         Supported model families and their request/response formats:
           - amazon.titan-embed-text-v1   : inputText → embedding[]  (1536-dim)
           - amazon.titan-embed-text-v2:0 : inputText → embedding[]  (1024-dim default)
-          - cohere.embed-english-v3      : texts[]   → embeddings[][] (1024-dim)
-          - cohere.embed-multilingual-v3 : texts[]   → embeddings[][] (1024-dim)
+          - cohere.embed-english-v3      : texts[]   → embeddings[][]        (1024-dim)
+          - cohere.embed-multilingual-v3 : texts[]   → embeddings[][]        (1024-dim)
+          - cohere.embed-v4:0            : texts[]   → embeddings[][] or     (1536-dim)
+                                           embeddings{type:[][]} by response_type
+
+        The family is matched as a substring, not a prefix: cross-Region
+        inference-profile IDs prepend a region group (e.g. "eu.cohere.embed-v4:0",
+        "us.amazon.titan-..."), and v4 in particular is only invokable through an
+        inference profile. A prefix check would misroute those to the wrong body.
         """
         model = self._embed_model
 
-        is_cohere = model.startswith("cohere.")
-        is_titan_v2 = model == "amazon.titan-embed-text-v2:0"
+        is_cohere = "cohere." in model
+        is_titan_v2 = "titan-embed-text-v2" in model
 
         if is_cohere:
             # Cohere expects a list of texts; input_type "search_document" optimises
             # for retrieval (use "search_query" when embedding a query instead).
+            # This body is valid for both Embed v3 and v4 — embedding_types is left
+            # unset so v4 returns float vectors; the parser below handles both the
+            # flat ("embeddings_floats") and keyed ("embeddings_by_type") shapes.
             body = json.dumps({"texts": [text], "input_type": "search_document"})
         elif is_titan_v2:
             # Titan v2 supports normalisation and configurable dimensions (256/512/1024)
             body = json.dumps({"inputText": text, "dimensions": 1024, "normalize": True})
-        else:
-            # Titan v1 (and any unknown Titan variant)
+        elif "titan-embed" in model:
+            # Titan v1 and older Titan embed variants
             body = json.dumps({"inputText": text})
+        else:
+            # Refuse unknown models rather than silently sending the Titan body —
+            # that would produce wrong embeddings (or a cryptic provider error) with
+            # no signal. Raising surfaces it in the "Embedding paused" banner so the
+            # user can pick a supported model instead.
+            raise ValueError(
+                f"Unsupported Bedrock embedding model '{model}'. Supported families: "
+                "amazon.titan-embed-text-v1, amazon.titan-embed-text-v2:0, "
+                "cohere.embed-english-v3, cohere.embed-multilingual-v3, cohere.embed-v4:0 "
+                "(or their cross-Region inference-profile IDs). "
+                "Set a supported model in Settings → AI Provider."
+            )
 
         loop = asyncio.get_running_loop()
 
@@ -256,7 +278,15 @@ class BedrockProvider:
                 raise
 
         if is_cohere:
-            return result["embeddings"][0]
+            embeddings = result["embeddings"]
+            if isinstance(embeddings, dict):
+                # v4 "embeddings_by_type": {"float": [[...]], "int8": [[...]]}.
+                # Prefer float; fall back to whatever type was returned.
+                vectors = embeddings.get("float") or next(iter(embeddings.values()))
+            else:
+                # v3 / v4 "embeddings_floats": [[...]]
+                vectors = embeddings
+            return vectors[0]
         return result["embedding"]
 
     async def health_check(self) -> bool:
