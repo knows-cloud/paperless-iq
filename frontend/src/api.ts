@@ -4,7 +4,7 @@ const BASE = "/api";
 
 const TOKEN_KEY = "piq_session_token";
 
-export function getStoredToken(): string | null {
+function getStoredToken(): string | null {
   return localStorage.getItem(TOKEN_KEY);
 }
 
@@ -185,9 +185,6 @@ export const api = {
   search: (q: string, topN = 5) =>
     request<{ results: unknown[]; query: string }>(`/search?q=${encodeURIComponent(q)}&top_n=${topN}`),
 
-  createDiscoverSession: () =>
-    request<{ session_id: string }>("/discover/sessions", { method: "POST" }),
-
   deleteDiscoverSession: (sessionId: string) =>
     request<{ deleted: string }>(`/discover/sessions/${sessionId}`, { method: "DELETE" }),
 
@@ -238,7 +235,6 @@ export const api = {
   getTheme: () => request<{ primary_color: string; sidebar_from: string; sidebar_to: string; font: string; font_size: string; text_color: string; bg_color: string; card_color: string; card_alt_hex: string; card_alt_opacity: number; nav_icons: Record<string, string>; ui_language: string; chip_color: string }>("/theme"),
   getStatus: () => request<{ llm_online: boolean; embed_online: boolean; queue_pending: number; queue_processing: number; embedded_chunks: number; total_documents: number; processing: Record<string, unknown>; paperless_url: string; paperless_public_url: string }>("/status"),
   getDocumentPreview: (id: number) => requestBlob(`/documents/${id}/preview`),
-  getDocumentThumb: (id: number) => requestBlob(`/documents/${id}/thumb`),
   triggerReindex: () => request<{ detail: string }>("/reindex", { method: "POST" }),
   migrateVectorStore: () => request<{ migrated: number; memories_migrated: number; needs_reindex: boolean; detail: string }>("/vector/migrate", { method: "POST" }),
   reindexSince: (date: string) => request<{ detail: string; count: number }>("/reindex/since", {

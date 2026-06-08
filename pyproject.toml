@@ -42,3 +42,14 @@ dev = [
     "pytest>=9.0.3",
     "pytest-asyncio>=1.3.0",
 ]
+
+[tool.ruff]
+target-version = "py312"
+# Alembic-generated files have their own conventions; don't lint them.
+extend-exclude = ["backend/alembic", ".venv"]
+
+[tool.ruff.lint.per-file-ignores]
+# logging.basicConfig() must run before backend modules are imported so their
+# module-level loggers inherit the config — this intentionally puts statements
+# between imports (E402). See the comment at the top of main.py.
+"backend/main.py" = ["E402"]

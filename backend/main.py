@@ -27,7 +27,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, Response
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
-from sqlalchemy import delete as sa_delete, func, select, text, update as sa_update
+from sqlalchemy import delete as sa_delete, func, select, update as sa_update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from backend.analyzer import PaperlessNGXClient
@@ -51,7 +51,6 @@ from backend.inbox_monitor import InboxMonitor, Scheduler
 from backend.manual_analysis import ManualAnalysisService
 from backend.models import MetadataSuggestion
 from backend.ollama_queue import OllamaQueue, Priority
-from backend.models import UserPermissions
 from backend.orm_models import (
     ConversationSessionORM,
     DocumentTrackingORM,
@@ -71,18 +70,6 @@ logger = logging.getLogger(__name__)
 
 # Global settings service instance
 _settings_svc = SettingsService()
-
-
-_CLOUD_EMBED_PROVIDERS = {"bedrock", "openai", "anthropic"}
-
-
-def _embed_concurrency_for(provider_name: str) -> int:
-    """Return a safe embedding concurrency for the given provider.
-
-    Cloud APIs (Bedrock, OpenAI, Anthropic) can handle many parallel calls.
-    Local Ollama should stay sequential (1) to avoid burying the server.
-    """
-    return 10 if provider_name in _CLOUD_EMBED_PROVIDERS else 1
 
 
 def _resolve_embed_provider(config: Any, providers: dict) -> Any | None:
@@ -573,26 +560,10 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     """Application lifespan: startup and shutdown hooks."""
     logger.info("Paperless IQ starting up")
 
-    # Ensure DB tables exist (dev convenience; production uses Alembic)
-    from backend.database import engine
-    from backend.orm_models import Base  # noqa: F401 — registers all ORM models
-
-    async with engine.begin() as conn:
-        await conn.run_sync(Base.metadata.create_all)
-        # Add columns introduced after initial release — safe for existing DBs
-        # (create_all only creates missing tables, it never alters existing ones).
-        for col_ddl in [
-            "ALTER TABLE audit_log ADD COLUMN document_title TEXT",
-            "ALTER TABLE audit_log ADD COLUMN action_type VARCHAR(50) DEFAULT 'field_change'",
-            "ALTER TABLE audit_log ADD COLUMN session_id VARCHAR(36)",
-            # Suggested content from full-document analysis (Step 1, vision rework).
-            "ALTER TABLE suggestions ADD COLUMN extracted_content TEXT",
-            "ALTER TABLE suggestions ADD COLUMN original_ocr_content TEXT",
-        ]:
-            try:
-                await conn.execute(text(col_ddl))
-            except Exception:
-                pass  # Column already exists — SQLite raises OperationalError
+    # Bring the database schema to head via Alembic. Existing pre-Alembic
+    # databases are auto-adopted (stamped at the baseline) on first run.
+    from backend.db_migrate import run_migrations
+    await run_migrations()
 
     # Load persisted settings from DB (seeds from env vars on first run)
     await _settings_svc.load_from_db()
@@ -1341,24 +1312,6 @@ async def proxy_document_preview(document_id: int, request: Request) -> Response
         raise HTTPException(status_code=500, detail=str(exc))
 
 
-@app.get("/api/documents/{document_id}/thumb", tags=["documents"])
-async def proxy_document_thumb(document_id: int, request: Request) -> Response:
-    """Proxy the document thumbnail (JPEG) from Paperless NGX."""
-    pc = getattr(request.app.state, "paperless_client", None)
-    if not pc:
-        raise HTTPException(status_code=503, detail="Paperless NGX not configured.")
-    try:
-        async with httpx.AsyncClient(headers=pc._headers, timeout=15) as client:
-            resp = await client.get(f"{pc._base_url}/api/documents/{document_id}/thumb/")
-            resp.raise_for_status()
-            content_type = resp.headers.get("content-type", "image/jpeg")
-            return Response(content=resp.content, media_type=content_type)
-    except httpx.HTTPStatusError as exc:
-        raise HTTPException(status_code=exc.response.status_code, detail="Could not fetch thumbnail from Paperless NGX.")
-    except Exception as exc:
-        raise HTTPException(status_code=500, detail=str(exc))
-
-
 # ---------------------------------------------------------------------------
 # Audit Log endpoints
 # ---------------------------------------------------------------------------
@@ -1597,18 +1550,6 @@ class DiscoverBody(BaseModel):
 # Discovery session management
 # ---------------------------------------------------------------------------
 
-@app.post("/api/discover/sessions", tags=["search"],
-          dependencies=[Depends(require_perm("can_discover"))])
-async def create_discover_session() -> dict:
-    """Create a new Discovery conversation session and return its ID."""
-    async with AsyncSessionLocal() as db:
-        session = ConversationSessionORM()
-        db.add(session)
-        await db.commit()
-        await db.refresh(session)
-    return {"session_id": session.id}
-
-
 @app.delete("/api/discover/sessions/{session_id}", tags=["search"],
             dependencies=[Depends(require_perm("can_discover"))])
 async def delete_discover_session(session_id: str, request: Request) -> dict:
@@ -1767,7 +1708,7 @@ async def discover(body: DiscoverBody, request: Request) -> dict:
             if relevant_ids:
                 async with AsyncSessionLocal() as db:
                     rows = await db.execute(
-                        sa_select(UserMemoryORM).where(UserMemoryORM.id.in_(relevant_ids))
+                        select(UserMemoryORM).where(UserMemoryORM.id.in_(relevant_ids))
                     )
                     injected_memories = [row.text for row in rows.scalars()]
         except Exception:
@@ -2774,15 +2715,19 @@ async def get_status(request: Request) -> dict:
             embedded_count = await vs_store.count()
         except Exception:
             pass
-    # Count total documents in Paperless NGX (excluding inbox tag)
+    # Count indexable documents in Paperless NGX — excluding inbox-tagged docs,
+    # which are never embedded (see _automation_loop), so the indexed/total ratio
+    # reflects only curated documents eligible for smart search.
     pc = getattr(request.app.state, "paperless_client", None)
     if pc:
         try:
-            inbox_tag_id = config.inbox_tag_id
+            params: dict[str, Any] = {"page_size": 1}
+            if _settings_svc.config.inbox_tag_id:
+                params["tags__id__none"] = _settings_svc.config.inbox_tag_id
             async with httpx.AsyncClient(headers=pc._headers, timeout=10) as client:
                 resp = await client.get(
                     f"{pc._base_url}/api/documents/",
-                    params={"page_size": 1},
+                    params=params,
                 )
                 if resp.status_code == 200:
                     total_eligible = resp.json().get("count", 0)
@@ -3273,11 +3218,18 @@ async def paperless_webhook(request: Request) -> dict:
     # Fire-and-forget audit event — uses its own session to avoid coupling with request lifecycle.
     async def _audit_webhook() -> None:
         try:
+            doc_title: str | None = None
+            try:
+                doc_meta = await pc.get_document_metadata(doc_id)
+                doc_title = doc_meta.get("title") or None
+            except Exception:
+                pass
             async with AsyncSessionLocal() as _db:
                 await AuditLogService(_db).record_event(
                     action_type="webhook_received",
                     change_source="webhook",
                     document_id=doc_id,
+                    document_title=doc_title,
                     new_value="reindex queued",
                 )
         except Exception:
