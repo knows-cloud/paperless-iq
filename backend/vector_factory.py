@@ -38,6 +38,7 @@ def make_vector_store(
     """Build the configured vector store, or None when it can't be satisfied."""
     backend = getattr(config, "vector_store_backend", "local")
     reranker = build_reranker(config, providers)
+    embed_batch_size = getattr(config, "embed_batch_size", 1)
 
     if backend == "qdrant":
         return QdrantVectorStore(
@@ -48,6 +49,7 @@ def make_vector_store(
             chunk_size=config.chunk_size,
             chunk_overlap=config.chunk_overlap,
             embed_concurrency=embed_concurrency,
+            embed_batch_size=embed_batch_size,
             chunk_strategy=config.chunk_strategy,
             overfetch_multiplier=config.search_overfetch_multiplier,
             min_score=config.search_min_score,
@@ -71,6 +73,7 @@ def make_vector_store(
         llm_provider=embed_provider,
         persist_directory="/data/chroma",
         embed_concurrency=embed_concurrency,
+        embed_batch_size=embed_batch_size,
         chunk_size=config.chunk_size,
         chunk_overlap=config.chunk_overlap,
         chunk_strategy=config.chunk_strategy,

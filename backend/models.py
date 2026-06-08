@@ -154,6 +154,10 @@ class PaperlessIQConfig(BaseModel):
     embed_provider: Literal["ollama", "bedrock", "openai"] = "ollama"  # provider used for embeddings
     embedding_model: str = "nomic-embed-text"  # embedding model name (used when embed_provider=ollama)
     embed_concurrency: int = 1  # parallel embed calls; 1 is safe for local Ollama, raise for remote/GPU
+    # Texts per embedding API call. Only Cohere-on-Bedrock supports true multi-text
+    # batching (up to 96 per call); for every other model the store falls back to
+    # one text per call regardless of this value, so it's a no-op there.
+    embed_batch_size: int = 32
 
     # Prompt templates
     global_prompt_template: str = (

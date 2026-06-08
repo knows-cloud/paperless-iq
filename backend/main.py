@@ -361,6 +361,62 @@ async def _background_index(
         # inbox_skipped: docs seen in this run that are excluded by the inbox tag
         # (they are NOT in already_indexed, so we add them on top of already_done)
         inbox_skipped = 0
+        # Process documents concurrently. The vector store's embed semaphore is the
+        # real throttle on simultaneous API calls (shared across all in-flight docs),
+        # so matching the doc-level limit to embed_concurrency overlaps documents
+        # without ever exceeding the configured embedding budget. For local Ollama
+        # (concurrency 1) this stays effectively sequential.
+        doc_concurrency = max(1, getattr(vector_store, "embed_concurrency", 1))
+        doc_sem = asyncio.Semaphore(doc_concurrency)
+        # Set once on a dimension mismatch: every remaining doc would fail the same
+        # way, so we stop the whole run rather than retry-storm through the archive.
+        fatal_mismatch = False
+
+        async def _process_doc(doc_id: int, content: str, meta: dict) -> None:
+            nonlocal indexed, fatal_mismatch
+            async with doc_sem:
+                for _attempt in range(1, 4):
+                    if fatal_mismatch:
+                        return
+                    try:
+                        if queue:
+                            await queue.await_embed_available()
+                        await vector_store.upsert(doc_id, content, meta)
+                        if queue:
+                            queue.record_embed_success()
+                        indexed += 1
+                        if queue:
+                            queue.set_embedding_progress(
+                                total_to_index, already_done + indexed + inbox_skipped
+                            )
+                        return  # success — move to next document
+                    except Exception as exc:
+                        exc_str = str(exc)
+                        if "dimension" in exc_str.lower() and "got" in exc_str.lower():
+                            logger.warning(
+                                "Embedding dimension mismatch while indexing document %d: %s\n"
+                                "  → The vector store was built with a different embedding model.\n"
+                                "  → Go to Settings → Processing and click 'Reindex Vector Store' to rebuild it.",
+                                doc_id, exc_str,
+                            )
+                            fatal_mismatch = True  # stop — every remaining document will fail too
+                            return
+                        if queue:
+                            queue.record_embed_failure(exc_str)
+                        if _attempt < 3:
+                            logger.warning(
+                                "Embed attempt %d/3 failed for document %d (%s), retrying in %ds.",
+                                _attempt, doc_id, exc_str, _attempt * 2,
+                            )
+                            await asyncio.sleep(float(_attempt * 2))
+                        else:
+                            logger.warning(
+                                "All 3 embed attempts failed for document %d (%s). "
+                                "Tasks will pause until the embed service recovers or the "
+                                "embedding settings are fixed.",
+                                doc_id, exc_str,
+                            )
+
         url: str | None = f"{base}/api/documents/?page_size=50&ordering=-added"
         async with httpx.AsyncClient(headers=headers, timeout=60) as client:
             while url:
@@ -368,6 +424,7 @@ async def _background_index(
                 if resp.status_code != 200:
                     break
                 data = resp.json()
+                pending: list = []
                 for doc in data.get("results", []):
                     doc_id = doc["id"]
                     doc_tags = doc.get("tags", [])
@@ -403,44 +460,13 @@ async def _background_index(
                         "document_type": dt_id_to_name.get(doc.get("document_type") or 0, ""),
                         "custom_fields": custom_fields,
                     }
-                    for _attempt in range(1, 4):
-                        try:
-                            if queue:
-                                await queue.await_embed_available()
-                            await vector_store.upsert(doc_id, content, meta)
-                            if queue:
-                                queue.record_embed_success()
-                            indexed += 1
-                            if queue:
-                                queue.set_embedding_progress(
-                                    total_to_index, already_done + indexed + inbox_skipped
-                                )
-                            break  # success — move to next document
-                        except Exception as exc:
-                            exc_str = str(exc)
-                            if "dimension" in exc_str.lower() and "got" in exc_str.lower():
-                                logger.warning(
-                                    "Embedding dimension mismatch while indexing document %d: %s\n"
-                                    "  → The vector store was built with a different embedding model.\n"
-                                    "  → Go to Settings → Processing and click 'Reindex Vector Store' to rebuild it.",
-                                    doc_id, exc_str,
-                                )
-                                return  # stop — every remaining document will fail too
-                            if queue:
-                                queue.record_embed_failure(exc_str)
-                            if _attempt < 3:
-                                logger.warning(
-                                    "Embed attempt %d/3 failed for document %d (%s), retrying in %ds.",
-                                    _attempt, doc_id, exc_str, _attempt * 2,
-                                )
-                                await asyncio.sleep(float(_attempt * 2))
-                            else:
-                                logger.warning(
-                                    "All 3 embed attempts failed for document %d (%s). "
-                                    "Tasks will pause until the embed service recovers or the "
-                                    "embedding settings are fixed.",
-                                    doc_id, exc_str,
-                                )
+                    pending.append(_process_doc(doc_id, content, meta))
+
+                # Embed this page's documents concurrently (bounded by doc_sem).
+                if pending:
+                    await asyncio.gather(*pending)
+                if fatal_mismatch:
+                    return  # dimension mismatch — abort the whole run
                 url = data.get("next")
                 # Yield to event loop between pages
                 await asyncio.sleep(0.1)
