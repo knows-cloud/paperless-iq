@@ -371,6 +371,63 @@ class TestBedrockSDKCalls:
         assert body["inputText"] == "embed this"
         assert result == [0.4, 0.5, 0.6]
 
+    @pytest.mark.asyncio
+    async def test_embed_cohere_v4_via_inference_profile(self, bedrock_provider: BedrockProvider):
+        """A cross-Region inference-profile ID must still route to the Cohere body.
+
+        Regression: a prefix check (model.startswith("cohere.")) misrouted
+        "eu.cohere.embed-v4:0" to the Titan inputText body → "Malformed request".
+        """
+        import json
+        bedrock_provider._embed_model = "eu.cohere.embed-v4:0"
+        mock_body = MagicMock()
+        # v4 text-only default shape: flat "embeddings_floats" list
+        mock_body.read.return_value = json.dumps({
+            "embeddings": [[0.1, 0.2, 0.3]],
+            "response_type": "embeddings_floats",
+        }).encode()
+        mock_client = MagicMock()
+        mock_client.invoke_model.return_value = {"body": mock_body}
+
+        with patch.object(bedrock_provider, "_runtime_client", return_value=mock_client):
+            result = await bedrock_provider.embed("embed this")
+
+        body = json.loads(mock_client.invoke_model.call_args[1]["body"])
+        assert body["texts"] == ["embed this"]          # Cohere body, not Titan
+        assert body["input_type"] == "search_document"
+        assert "inputText" not in body
+        assert result == [0.1, 0.2, 0.3]
+
+    @pytest.mark.asyncio
+    async def test_embed_cohere_v4_embeddings_by_type(self, bedrock_provider: BedrockProvider):
+        """v4 may return embeddings keyed by type — parser must extract the float vector."""
+        import json
+        bedrock_provider._embed_model = "cohere.embed-v4:0"
+        mock_body = MagicMock()
+        mock_body.read.return_value = json.dumps({
+            "embeddings": {"float": [[0.5, 0.6, 0.7]]},
+            "response_type": "embeddings_by_type",
+        }).encode()
+        mock_client = MagicMock()
+        mock_client.invoke_model.return_value = {"body": mock_body}
+
+        with patch.object(bedrock_provider, "_runtime_client", return_value=mock_client):
+            result = await bedrock_provider.embed("embed this")
+
+        assert result == [0.5, 0.6, 0.7]
+
+    @pytest.mark.asyncio
+    async def test_embed_unknown_model_raises_not_silent_titan(self, bedrock_provider: BedrockProvider):
+        """An unrecognized model must raise, never silently use the Titan body."""
+        bedrock_provider._embed_model = "some.unknown-embed-model:0"
+        mock_client = MagicMock()
+
+        with patch.object(bedrock_provider, "_runtime_client", return_value=mock_client):
+            with pytest.raises(ValueError, match="Unsupported Bedrock embedding model"):
+                await bedrock_provider.embed("embed this")
+
+        mock_client.invoke_model.assert_not_called()  # never reached the wrong body
+
 
 # ---------------------------------------------------------------------------
 # 10. SDK call construction — Ollama complete() and embed()
