@@ -1,7 +1,7 @@
 import type { ComponentType } from "react";
 
 /** "FileSearch" → "file-search"  (for display, matches tabler.io naming) */
-export function toKebab(name: string): string {
+function toKebab(name: string): string {
   return name.replace(/([A-Z])/g, (c, _, i) => (i > 0 ? "-" : "") + c.toLowerCase());
 }
 

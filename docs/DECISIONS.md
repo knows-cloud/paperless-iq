@@ -223,6 +223,19 @@ The bootstrap problem (first admin has no permissions yet) is solved by `sync_ng
 
 ---
 
+## D-21 · Schema changes go through Alembic; existing databases auto-adopt
+
+**Decision:** The database schema is managed exclusively by Alembic migrations under `backend/alembic/versions/`. At startup the FastAPI lifespan calls `backend/db_migrate.run_migrations()`, which brings the schema to `head`. Databases created before Alembic was adopted (built by the former `create_all` + inline `ALTER TABLE` approach, so they have no `alembic_version` table) are detected and **stamped** at the baseline revision before upgrading — they adopt Alembic without re-creating tables or losing data. Migrations run off the event loop in a worker thread because Alembic's env uses `asyncio.run` internally (see D-06).
+
+**Rationale:** Previously the lifespan ran `Base.metadata.create_all` plus a hand-maintained list of `ALTER TABLE` statements wrapped in `try/except pass`, while the Dockerfile separately ran `alembic upgrade head` against an empty `versions/` (a no-op). That meant: schema drift between fresh and upgraded DBs, silent failures, and no migration history. Consolidating on Alembic gives one source of truth, real up/down migrations, and a safe adoption path for existing deployments.
+
+**Rule:**
+- Never add `Base.metadata.create_all` or inline `ALTER TABLE` to runtime code. Generate a migration: `alembic revision --autogenerate -m "..."`, review it, commit it.
+- Tests create their own schema via `Base.metadata.create_all` in fixtures — that is the **only** sanctioned use of `create_all`, and tests must not call `run_migrations()`.
+- `backend/alembic/env.py` must `import backend.orm_models` so every model registers on `Base.metadata` before autogenerate runs.
+
+---
+
 ## D-15 · `_paperless_list` handles all entity pagination
 
 **Decision:** The private helper `_paperless_list(entity, extra_fields=None)` in `main.py` handles all pagination for Paperless NGX list endpoints. Functions like `list_tags`, `list_custom_fields`, `list_storage_paths` are one-liners that call this helper.

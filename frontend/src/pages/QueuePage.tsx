@@ -40,6 +40,9 @@ export default function QueuePage() {
   const paperlessUrl = (statusQ.data?.paperless_public_url || statusQ.data?.paperless_url || "").replace(/\/$/, "");
   const settingsQ = useQuery({ queryKey: ["settings"], queryFn: api.getSettings, staleTime: 60_000 });
   const pageWarningThreshold = Number((settingsQ.data as Record<string, unknown> | undefined)?.vision_max_pages_warning ?? 5);
+  // Shared query key → react-query dedupes across all document cards (one network call).
+  const visionSupportQ = useQuery({ queryKey: ["ollamaVisionSupport"], queryFn: api.getOllamaVisionSupport, staleTime: 5 * 60_000, retry: false });
+  const ollamaVisionWarning = visionSupportQ.data?.supported === false;
 
   const corrNames = useMemo(() => new Set((corrsQ.data ?? []).map((c: PaperlessEntity) => c.name.toLowerCase())), [corrsQ.data]);
   const dtNames = useMemo(() => new Set((dtQ.data ?? []).map((d: PaperlessEntity) => d.name.toLowerCase())), [dtQ.data]);
@@ -399,6 +402,7 @@ export default function QueuePage() {
                       <VisionAnalysisFlow
                         documentId={item.document_id}
                         pageWarningThreshold={pageWarningThreshold}
+                        ollamaVisionWarning={ollamaVisionWarning}
                         onResult={result => handleVisionResult(raw, result)}
                         size="xs"
                       />
