@@ -72,6 +72,8 @@
   "processing.systemStatus": "État du système",
   "processing.llm": "LLM",
   "processing.embedding": "Intégration",
+  "processing.embedPausedTitle": "Intégration en pause",
+  "processing.embedPausedBody": "L'intégration s'est arrêtée après des échecs répétés et attend que vous corrigiez la cause. Vérifiez le fournisseur et le modèle dans Paramètres → Fournisseur IA, puis enregistrez pour reprendre. L'erreur renvoyée par le fournisseur était :",
   "processing.approvalQueue": "File d'approbation",
   "processing.online": "en ligne",
   "processing.offline": "hors ligne",

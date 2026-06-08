@@ -58,6 +58,7 @@ class OllamaQueue:
         self._embed_available.set()  # available initially
         self._consecutive_embed_failures: int = 0
         self._EMBED_FAILURE_THRESHOLD = 3  # failures before opening the circuit
+        self._last_embed_error: str | None = None  # surfaced to the UI banner
 
     def start(self) -> None:
         """Start the queue worker."""
@@ -113,21 +114,41 @@ class OllamaQueue:
     # Embed circuit-breaker
     # ------------------------------------------------------------------
 
-    def record_embed_failure(self) -> None:
-        """Record one embed failure; open the circuit after 3 consecutive failures."""
+    def record_embed_failure(self, error: str = "") -> None:
+        """Record one embed failure; open the circuit after 3 consecutive failures.
+
+        ``error`` is the exception message, surfaced to the UI banner so the
+        user can see *why* embedding stalled (e.g. a bad model ID).
+        """
         self._consecutive_embed_failures += 1
+        if error:
+            self._last_embed_error = error
         if self._consecutive_embed_failures >= self._EMBED_FAILURE_THRESHOLD:
             self.mark_embed_unavailable()
 
     def record_embed_success(self) -> None:
-        """Reset the failure counter and close the circuit if it was open."""
+        """Reset the failure counter, clear the error, and close the circuit."""
         self._consecutive_embed_failures = 0
+        self._last_embed_error = None
         self.mark_embed_available()
+
+    def reset_embed_circuit(self) -> None:
+        """Force the circuit closed and clear state — used after embed settings change.
+
+        A config change (new model / provider) invalidates the previous failure,
+        so retry immediately rather than waiting out the health-monitor backoff.
+        """
+        self._consecutive_embed_failures = 0
+        self._last_embed_error = None
+        self._embed_available.set()
 
     def mark_embed_unavailable(self) -> None:
         """Open the circuit: pause all embed callers until recovery."""
         if self._embed_available.is_set():
-            logger.warning("Embed service unreachable — embed tasks will pause until recovery.")
+            logger.warning(
+                "Embed service unavailable — embed tasks will pause until recovery. Last error: %s",
+                self._last_embed_error or "unknown",
+            )
         self._embed_available.clear()
         self.update_health_cache("embed", False)
 
@@ -145,6 +166,10 @@ class OllamaQueue:
     @property
     def embed_available(self) -> bool:
         return self._embed_available.is_set()
+
+    @property
+    def last_embed_error(self) -> str | None:
+        return self._last_embed_error
 
     def set_embedding_progress(self, total: int, done: int) -> None:
         self._embedding_total = total
@@ -164,6 +189,7 @@ class OllamaQueue:
             "queue_size": self._queue.qsize(),
             "embed_available": self._embed_available.is_set(),
             "embed_consecutive_failures": self._consecutive_embed_failures,
+            "embed_last_error": self._last_embed_error,
         }
 
     async def _worker(self) -> None:

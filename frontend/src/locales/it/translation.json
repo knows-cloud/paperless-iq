@@ -72,6 +72,8 @@
   "processing.systemStatus": "Stato del sistema",
   "processing.llm": "LLM",
   "processing.embedding": "Incorporamento",
+  "processing.embedPausedTitle": "Incorporamento in pausa",
+  "processing.embedPausedBody": "L'incorporamento si è interrotto dopo ripetuti errori ed è in attesa che tu corregga la causa. Controlla il provider e il modello in Impostazioni → Provider IA, poi salva per riprendere. L'errore del provider era:",
   "processing.approvalQueue": "Coda di approvazione",
   "processing.online": "online",
   "processing.offline": "offline",

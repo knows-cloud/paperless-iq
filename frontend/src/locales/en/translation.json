@@ -72,6 +72,8 @@
   "processing.systemStatus": "System Status",
   "processing.llm": "LLM",
   "processing.embedding": "Embedding",
+  "processing.embedPausedTitle": "Embedding paused",
+  "processing.embedPausedBody": "Embedding stopped after repeated failures and is waiting for you to fix the cause. Check the embedding provider and model in Settings → AI Provider, then save to resume. The error from the provider was:",
   "processing.approvalQueue": "Approval queue",
   "processing.online": "online",
   "processing.offline": "offline",

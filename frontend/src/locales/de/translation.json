@@ -72,6 +72,8 @@
   "processing.systemStatus": "Systemstatus",
   "processing.llm": "LLM",
   "processing.embedding": "Einbettung",
+  "processing.embedPausedTitle": "Einbettung pausiert",
+  "processing.embedPausedBody": "Die Einbettung wurde nach wiederholten Fehlern gestoppt und wartet darauf, dass Sie die Ursache beheben. Prüfen Sie Anbieter und Modell unter Einstellungen → KI-Anbieter und speichern Sie, um fortzufahren. Die Fehlermeldung des Anbieters lautete:",
   "processing.approvalQueue": "Freigabe-Warteschlange",
   "processing.online": "online",
   "processing.offline": "offline",

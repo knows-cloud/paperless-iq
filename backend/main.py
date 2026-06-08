@@ -440,18 +440,19 @@ async def _background_index(
                                 )
                                 return  # stop — every remaining document will fail too
                             if queue:
-                                queue.record_embed_failure()
+                                queue.record_embed_failure(exc_str)
                             if _attempt < 3:
                                 logger.warning(
-                                    "Embed attempt %d/3 failed for document %d, retrying in %ds.",
-                                    _attempt, doc_id, _attempt * 2,
+                                    "Embed attempt %d/3 failed for document %d (%s), retrying in %ds.",
+                                    _attempt, doc_id, exc_str, _attempt * 2,
                                 )
                                 await asyncio.sleep(float(_attempt * 2))
                             else:
                                 logger.warning(
-                                    "All 3 embed attempts failed for document %d. "
-                                    "Tasks will resume automatically when the embed service recovers.",
-                                    doc_id,
+                                    "All 3 embed attempts failed for document %d (%s). "
+                                    "Tasks will pause until the embed service recovers or the "
+                                    "embedding settings are fixed.",
+                                    doc_id, exc_str,
                                 )
                 url = data.get("next")
                 # Yield to event loop between pages
@@ -2550,6 +2551,12 @@ async def update_settings(request: Request, body: dict[str, Any] = Body(...)) ->
                     vs = new_vs
                     request.app.state.vector_store = new_vs
                     request.app.state.memory_store = new_mem
+                    # New provider/model invalidates any prior embed failure — close
+                    # the circuit so indexing retries immediately instead of waiting
+                    # out the health-monitor backoff.
+                    _oq_reset: OllamaQueue | None = getattr(request.app.state, "ollama_queue", None)
+                    if _oq_reset is not None:
+                        _oq_reset.reset_embed_circuit()
                     logger.info(
                         "Vector + memory stores rebuilt after settings change "
                         "(backend: %s, embed_provider: %s).",
@@ -3035,20 +3042,21 @@ async def _reindex_document(doc_id: int, vs: VectorStore, pc: PaperlessNGXClient
                 queue.record_embed_success()
             logger.info("Webhook reindex: document %d re-indexed.", doc_id)
             return
-        except Exception:
+        except Exception as exc:
+            exc_str = str(exc)
             if queue:
-                queue.record_embed_failure()
+                queue.record_embed_failure(exc_str)
             if _attempt < 3:
                 logger.warning(
-                    "Reindex attempt %d/3 failed for document %d, retrying in %ds.",
-                    _attempt, doc_id, _attempt * 2,
+                    "Reindex attempt %d/3 failed for document %d (%s), retrying in %ds.",
+                    _attempt, doc_id, exc_str, _attempt * 2,
                 )
                 await asyncio.sleep(float(_attempt * 2))
             else:
                 logger.warning(
-                    "All 3 reindex attempts failed for document %d — "
-                    "will resume when embed service recovers.",
-                    doc_id,
+                    "All 3 reindex attempts failed for document %d (%s) — "
+                    "will resume when embed service recovers or settings are fixed.",
+                    doc_id, exc_str,
                 )
 
 

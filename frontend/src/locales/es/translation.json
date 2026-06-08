@@ -72,6 +72,8 @@
   "processing.systemStatus": "Estado del sistema",
   "processing.llm": "LLM",
   "processing.embedding": "Incrustación",
+  "processing.embedPausedTitle": "Incrustación en pausa",
+  "processing.embedPausedBody": "La incrustación se detuvo tras fallos repetidos y espera a que corrijas la causa. Revisa el proveedor y el modelo en Configuración → Proveedor de IA y guarda para reanudar. El error del proveedor fue:",
   "processing.approvalQueue": "Cola de aprobación",
   "processing.online": "en línea",
   "processing.offline": "sin conexión",
