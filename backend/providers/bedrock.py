@@ -23,6 +23,16 @@ _BEDROCK_CONFIG = Config(
     retries={"max_attempts": 0},  # no automatic retries — let caller decide
 )
 
+# Transient Bedrock errors worth a short in-process retry before bubbling up to
+# the indexer's circuit-breaker. These are capacity/throttle blips, not config
+# errors, so absorbing them here keeps the breaker closed during normal bursts.
+_TRANSIENT_EMBED_ERRORS = frozenset({
+    "ThrottlingException",
+    "ServiceUnavailableException",
+    "ModelTimeoutException",
+    "InternalServerException",
+})
+
 
 class BedrockProvider:
     """LLMProvider implementation backed by AWS Bedrock."""
@@ -206,8 +216,63 @@ class BedrockProvider:
             images=images,
         )
 
-    async def embed(self, text: str) -> list[float]:
-        """Generate embeddings using the configured Bedrock embedding model.
+    def embed_batch_limit(self) -> int:
+        """Max texts the current embed model accepts in a single API call.
+
+        Only Cohere accepts a list of texts (``texts[]``, up to 96 per call).
+        Titan takes a single ``inputText`` string, so it reports 1 and the store
+        keeps using the one-text-per-call path for it.
+        """
+        return 96 if "cohere." in self._embed_model else 1
+
+    async def _invoke_embed_model(self, body: str) -> dict:
+        """Invoke the embed model with token-refresh + transient-error retry.
+
+        Refreshes the client once on ExpiredTokenException, and retries transient
+        capacity/throttle errors with exponential backoff (1→2→4→8 s). Anything
+        else — or a transient error that outlasts the retries — propagates so the
+        indexer's circuit-breaker can take over.
+        """
+        model = self._embed_model
+        loop = asyncio.get_running_loop()
+        token_refreshed = False
+        delay = 1.0
+
+        for attempt in range(5):
+            client = self._runtime_client()
+
+            def _invoke() -> dict:
+                response = client.invoke_model(
+                    modelId=model,
+                    body=body,
+                    contentType="application/json",
+                    accept="application/json",
+                )
+                return json.loads(response["body"].read())
+
+            try:
+                return await loop.run_in_executor(None, _invoke)
+            except botocore.exceptions.ClientError as exc:
+                code = exc.response["Error"]["Code"]
+                if code == "ExpiredTokenException" and not token_refreshed:
+                    logger.info("Bedrock embed(): session token expired — refreshing client.")
+                    self._invalidate_runtime_client()
+                    token_refreshed = True
+                    continue
+                if code in _TRANSIENT_EMBED_ERRORS and attempt < 4:
+                    logger.warning(
+                        "Bedrock embed(): transient %s — retry %d/4 in %.0fs.",
+                        code, attempt + 1, delay,
+                    )
+                    await asyncio.sleep(delay)
+                    delay = min(delay * 2, 8.0)
+                    continue
+                raise
+        # Unreachable: the loop either returns or raises, but keep the type checker happy.
+        raise RuntimeError("Bedrock embed(): retry loop exhausted without result.")
+
+    def _embed_body(self, texts: list[str]) -> str:
+        """Build the invoke_model body for the configured embed model.
 
         Supported model families and their request/response formats:
           - amazon.titan-embed-text-v1   : inputText → embedding[]  (1536-dim)
@@ -221,73 +286,75 @@ class BedrockProvider:
         inference-profile IDs prepend a region group (e.g. "eu.cohere.embed-v4:0",
         "us.amazon.titan-..."), and v4 in particular is only invokable through an
         inference profile. A prefix check would misroute those to the wrong body.
+
+        Titan accepts only a single string, so a multi-text batch is rejected here
+        rather than silently embedding just the first text.
         """
         model = self._embed_model
 
-        is_cohere = "cohere." in model
-        is_titan_v2 = "titan-embed-text-v2" in model
-
-        if is_cohere:
+        if "cohere." in model:
             # Cohere expects a list of texts; input_type "search_document" optimises
             # for retrieval (use "search_query" when embedding a query instead).
             # This body is valid for both Embed v3 and v4 — embedding_types is left
             # unset so v4 returns float vectors; the parser below handles both the
             # flat ("embeddings_floats") and keyed ("embeddings_by_type") shapes.
-            body = json.dumps({"texts": [text], "input_type": "search_document"})
-        elif is_titan_v2:
-            # Titan v2 supports normalisation and configurable dimensions (256/512/1024)
-            body = json.dumps({"inputText": text, "dimensions": 1024, "normalize": True})
-        elif "titan-embed" in model:
-            # Titan v1 and older Titan embed variants
-            body = json.dumps({"inputText": text})
-        else:
-            # Refuse unknown models rather than silently sending the Titan body —
-            # that would produce wrong embeddings (or a cryptic provider error) with
-            # no signal. Raising surfaces it in the "Embedding paused" banner so the
-            # user can pick a supported model instead.
+            return json.dumps({"texts": texts, "input_type": "search_document"})
+
+        if len(texts) != 1:
             raise ValueError(
-                f"Unsupported Bedrock embedding model '{model}'. Supported families: "
-                "amazon.titan-embed-text-v1, amazon.titan-embed-text-v2:0, "
-                "cohere.embed-english-v3, cohere.embed-multilingual-v3, cohere.embed-v4:0 "
-                "(or their cross-Region inference-profile IDs). "
-                "Set a supported model in Settings → AI Provider."
+                f"Bedrock embed model '{model}' accepts one text per call, got {len(texts)}."
             )
+        text = texts[0]
 
-        loop = asyncio.get_running_loop()
+        if "titan-embed-text-v2" in model:
+            # Titan v2 supports normalisation and configurable dimensions (256/512/1024)
+            return json.dumps({"inputText": text, "dimensions": 1024, "normalize": True})
+        if "titan-embed" in model:
+            # Titan v1 and older Titan embed variants
+            return json.dumps({"inputText": text})
 
-        for attempt in range(2):
-            client = self._runtime_client()
+        # Refuse unknown models rather than silently sending the Titan body —
+        # that would produce wrong embeddings (or a cryptic provider error) with
+        # no signal. Raising surfaces it in the "Embedding paused" banner so the
+        # user can pick a supported model instead.
+        raise ValueError(
+            f"Unsupported Bedrock embedding model '{model}'. Supported families: "
+            "amazon.titan-embed-text-v1, amazon.titan-embed-text-v2:0, "
+            "cohere.embed-english-v3, cohere.embed-multilingual-v3, cohere.embed-v4:0 "
+            "(or their cross-Region inference-profile IDs). "
+            "Set a supported model in Settings → AI Provider."
+        )
 
-            def _invoke() -> dict:
-                response = client.invoke_model(
-                    modelId=model,
-                    body=body,
-                    contentType="application/json",
-                    accept="application/json",
-                )
-                return json.loads(response["body"].read())
+    @staticmethod
+    def _parse_cohere_embeddings(result: dict) -> list[list[float]]:
+        embeddings = result["embeddings"]
+        if isinstance(embeddings, dict):
+            # v4 "embeddings_by_type": {"float": [[...]], "int8": [[...]]}.
+            # Prefer float; fall back to whatever type was returned.
+            return embeddings.get("float") or next(iter(embeddings.values()))
+        # v3 / v4 "embeddings_floats": [[...]]
+        return embeddings
 
-            try:
-                result = await loop.run_in_executor(None, _invoke)
-                break
-            except botocore.exceptions.ClientError as exc:
-                if exc.response["Error"]["Code"] == "ExpiredTokenException" and attempt == 0:
-                    logger.info("Bedrock embed(): session token expired — refreshing client.")
-                    self._invalidate_runtime_client()
-                    continue
-                raise
-
-        if is_cohere:
-            embeddings = result["embeddings"]
-            if isinstance(embeddings, dict):
-                # v4 "embeddings_by_type": {"float": [[...]], "int8": [[...]]}.
-                # Prefer float; fall back to whatever type was returned.
-                vectors = embeddings.get("float") or next(iter(embeddings.values()))
-            else:
-                # v3 / v4 "embeddings_floats": [[...]]
-                vectors = embeddings
-            return vectors[0]
+    async def embed(self, text: str) -> list[float]:
+        """Generate an embedding vector for a single text."""
+        result = await self._invoke_embed_model(self._embed_body([text]))
+        if "cohere." in self._embed_model:
+            return self._parse_cohere_embeddings(result)[0]
         return result["embedding"]
+
+    async def embed_batch(self, texts: list[str]) -> list[list[float]]:
+        """Embed several texts in one API call (Cohere only; see embed_batch_limit).
+
+        Returns one vector per input text, in order. Callers should keep batches
+        within ``embed_batch_limit()`` — Cohere rejects oversized batches.
+        """
+        if not texts:
+            return []
+        result = await self._invoke_embed_model(self._embed_body(texts))
+        if "cohere." in self._embed_model:
+            return self._parse_cohere_embeddings(result)
+        # Non-batching models only ever reach here with a single text.
+        return [result["embedding"]]
 
     async def health_check(self) -> bool:
         """Return True if Bedrock credentials are configured.

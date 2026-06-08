@@ -428,6 +428,81 @@ class TestBedrockSDKCalls:
 
         mock_client.invoke_model.assert_not_called()  # never reached the wrong body
 
+    def test_embed_batch_limit_cohere_vs_titan(self, bedrock_provider: BedrockProvider):
+        """Only Cohere reports a multi-text batch limit; Titan stays at 1."""
+        bedrock_provider._embed_model = "cohere.embed-multilingual-v3"
+        assert bedrock_provider.embed_batch_limit() == 96
+        bedrock_provider._embed_model = "eu.cohere.embed-v4:0"
+        assert bedrock_provider.embed_batch_limit() == 96
+        bedrock_provider._embed_model = "amazon.titan-embed-text-v2:0"
+        assert bedrock_provider.embed_batch_limit() == 1
+
+    @pytest.mark.asyncio
+    async def test_embed_batch_cohere_single_call(self, bedrock_provider: BedrockProvider):
+        """Cohere batches all texts into one invoke_model call and returns each vector."""
+        import json
+        bedrock_provider._embed_model = "cohere.embed-multilingual-v3"
+        mock_body = MagicMock()
+        mock_body.read.return_value = json.dumps({
+            "embeddings": [[0.1, 0.2], [0.3, 0.4], [0.5, 0.6]],
+            "response_type": "embeddings_floats",
+        }).encode()
+        mock_client = MagicMock()
+        mock_client.invoke_model.return_value = {"body": mock_body}
+
+        with patch.object(bedrock_provider, "_runtime_client", return_value=mock_client):
+            result = await bedrock_provider.embed_batch(["a", "b", "c"])
+
+        # One API call for the whole batch, not three
+        assert mock_client.invoke_model.call_count == 1
+        body = json.loads(mock_client.invoke_model.call_args[1]["body"])
+        assert body["texts"] == ["a", "b", "c"]
+        assert result == [[0.1, 0.2], [0.3, 0.4], [0.5, 0.6]]
+
+    @pytest.mark.asyncio
+    async def test_embed_retries_transient_then_succeeds(self, bedrock_provider: BedrockProvider, monkeypatch):
+        """A transient ServiceUnavailableException is absorbed by the inner retry."""
+        import json
+        import botocore.exceptions
+        # Skip real backoff sleeps
+        monkeypatch.setattr("backend.providers.bedrock.asyncio.sleep", AsyncMock())
+        bedrock_provider._embed_model = "amazon.titan-embed-text-v1"
+
+        mock_body = MagicMock()
+        mock_body.read.return_value = json.dumps({"embedding": [1.0, 2.0]}).encode()
+        transient = botocore.exceptions.ClientError(
+            {"Error": {"Code": "ServiceUnavailableException", "Message": "busy"}},
+            "InvokeModel",
+        )
+        mock_client = MagicMock()
+        mock_client.invoke_model.side_effect = [transient, {"body": mock_body}]
+
+        with patch.object(bedrock_provider, "_runtime_client", return_value=mock_client):
+            result = await bedrock_provider.embed("retry me")
+
+        assert mock_client.invoke_model.call_count == 2  # failed once, then succeeded
+        assert result == [1.0, 2.0]
+
+    @pytest.mark.asyncio
+    async def test_embed_raises_after_exhausting_transient_retries(self, bedrock_provider: BedrockProvider, monkeypatch):
+        """Sustained throttling propagates so the indexer's circuit-breaker can act."""
+        import botocore.exceptions
+        monkeypatch.setattr("backend.providers.bedrock.asyncio.sleep", AsyncMock())
+        bedrock_provider._embed_model = "amazon.titan-embed-text-v1"
+
+        throttle = botocore.exceptions.ClientError(
+            {"Error": {"Code": "ThrottlingException", "Message": "slow down"}},
+            "InvokeModel",
+        )
+        mock_client = MagicMock()
+        mock_client.invoke_model.side_effect = throttle
+
+        with patch.object(bedrock_provider, "_runtime_client", return_value=mock_client):
+            with pytest.raises(botocore.exceptions.ClientError):
+                await bedrock_provider.embed("never works")
+
+        assert mock_client.invoke_model.call_count == 5  # 5 attempts, then gives up
+
 
 # ---------------------------------------------------------------------------
 # 10. SDK call construction — Ollama complete() and embed()

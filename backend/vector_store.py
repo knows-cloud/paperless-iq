@@ -225,14 +225,71 @@ def _assemble_chunk_results(
 class _EmbeddingBackedStore:
     """Shared embedding plumbing for stores that embed via an ``LLMProvider``.
 
-    Subclasses set ``_llm`` and ``_embed_concurrency`` in their constructor.
+    Subclasses set ``_llm``, ``_embed_concurrency``, ``_embed_batch_size`` and
+    ``_embed_sem`` in their constructor.
     """
 
     _llm: LLMProvider
     _embed_concurrency: int
+    _embed_batch_size: int
+    _embed_sem: asyncio.Semaphore
 
     async def _embed(self, text: str) -> list[float]:
         return await self._llm.embed(text)
+
+    def _effective_batch_size(self) -> int:
+        """Texts per API call, clamped to what the provider's model supports.
+
+        Falls back to 1 (one call per text) when the provider doesn't expose
+        ``embed_batch`` or its model can't batch (e.g. Titan reports limit 1).
+        """
+        limit_fn = getattr(self._llm, "embed_batch_limit", None)
+        batch_fn = getattr(self._llm, "embed_batch", None)
+        if limit_fn is None or batch_fn is None:
+            return 1
+        return max(1, min(self._embed_batch_size, limit_fn()))
+
+    async def _embed_many(self, texts: list[str]) -> list[list[float] | None]:
+        """Embed many texts, returning one vector per input (None where it failed).
+
+        Bounds concurrent API calls with ``_embed_sem``. When the provider's model
+        supports multi-text batching, texts are grouped into batches of up to
+        ``_effective_batch_size()`` and each batch is one API call; otherwise each
+        text is embedded individually. A failed batch/text yields None for the
+        affected slots rather than aborting the whole document.
+        """
+        results: list[list[float] | None] = [None] * len(texts)
+        batch_size = self._effective_batch_size()
+
+        if batch_size <= 1:
+            async def _one(idx: int, text: str) -> None:
+                async with self._embed_sem:
+                    try:
+                        results[idx] = await self._embed(text)
+                    except Exception:
+                        logger.debug("Failed to embed text %d", idx, exc_info=True)
+
+            await asyncio.gather(*[_one(i, t) for i, t in enumerate(texts)])
+            return results
+
+        batch_fn = self._llm.embed_batch  # type: ignore[attr-defined]
+
+        async def _batch(start: int, group: list[str]) -> None:
+            async with self._embed_sem:
+                try:
+                    vecs = await batch_fn(group)
+                except Exception:
+                    logger.debug("Failed to embed batch at offset %d", start, exc_info=True)
+                    return
+                for j, vec in enumerate(vecs):
+                    results[start + j] = vec
+
+        tasks = [
+            _batch(start, texts[start:start + batch_size])
+            for start in range(0, len(texts), batch_size)
+        ]
+        await asyncio.gather(*tasks)
+        return results
 
     async def embed_health_check(self) -> bool:
         """Return True if the embedding provider is reachable."""
@@ -269,6 +326,7 @@ class ChromaVectorStore(_EmbeddingBackedStore):
         chunk_size: int = DEFAULT_CHUNK_SIZE,
         chunk_overlap: int = DEFAULT_CHUNK_OVERLAP,
         embed_concurrency: int = 1,
+        embed_batch_size: int = 1,
         chunk_strategy: str = "char",
         overfetch_multiplier: int = 5,
         min_score: float = 0.0,
@@ -299,6 +357,7 @@ class ChromaVectorStore(_EmbeddingBackedStore):
         }
         self._embed_sem = asyncio.Semaphore(embed_concurrency)
         self._embed_concurrency = embed_concurrency
+        self._embed_batch_size = embed_batch_size
         self._client = chromadb.PersistentClient(path=persist_directory)
         self._collection = self._client.get_or_create_collection(
             name=collection_name,
@@ -321,30 +380,31 @@ class ChromaVectorStore(_EmbeddingBackedStore):
         base_meta = _build_base_meta(doc_id, metadata)
         total = len(chunks)
         loop = asyncio.get_running_loop()
-        succeeded = 0
 
-        async def _embed_and_store(i: int, chunk: str) -> None:
-            nonlocal succeeded
-            async with self._embed_sem:
-                try:
-                    embedding = await self._embed(embed_prefix + chunk)
-                except Exception:
-                    logger.debug("Failed to embed chunk %d of doc %d", i, doc_id, exc_info=True)
-                    return
-            chunk_id = f"{doc_id}_{i}"
-            chunk_meta = {**base_meta, "chunk_index": i, "total_chunks": total}
-            await loop.run_in_executor(
-                None,
-                lambda cid=chunk_id, emb=embedding, ch=chunk, cm=chunk_meta: self._collection.upsert(
-                    ids=[cid], embeddings=[emb], documents=[ch], metadatas=[cm],
-                ),
-            )
-            succeeded += 1
+        embeddings = await self._embed_many([embed_prefix + chunk for chunk in chunks])
 
-        await asyncio.gather(*[_embed_and_store(i, chunk) for i, chunk in enumerate(chunks)])
-        if succeeded == 0:
+        ids: list[str] = []
+        vectors: list[list[float]] = []
+        documents: list[str] = []
+        metadatas: list[dict] = []
+        for i, (chunk, emb) in enumerate(zip(chunks, embeddings)):
+            if emb is None:
+                continue
+            ids.append(f"{doc_id}_{i}")
+            vectors.append(emb)
+            documents.append(chunk)
+            metadatas.append({**base_meta, "chunk_index": i, "total_chunks": total})
+
+        if not ids:
             raise RuntimeError(f"All {total} chunk embeddings failed for document {doc_id}")
-        logger.info("Upserted %d/%d chunks for document %d.", succeeded, total, doc_id)
+
+        await loop.run_in_executor(
+            None,
+            lambda: self._collection.upsert(
+                ids=ids, embeddings=vectors, documents=documents, metadatas=metadatas,
+            ),
+        )
+        logger.info("Upserted %d/%d chunks for document %d.", len(ids), total, doc_id)
 
     async def delete(self, doc_id: int) -> None:
         """Remove all chunks for a document."""
@@ -675,6 +735,7 @@ class QdrantVectorStore(_EmbeddingBackedStore):
         chunk_size: int = DEFAULT_CHUNK_SIZE,
         chunk_overlap: int = DEFAULT_CHUNK_OVERLAP,
         embed_concurrency: int = 1,
+        embed_batch_size: int = 1,
         chunk_strategy: str = "char",
         overfetch_multiplier: int = 5,
         min_score: float = 0.0,
@@ -707,6 +768,7 @@ class QdrantVectorStore(_EmbeddingBackedStore):
         self._sparse_encoder: Any = None
         self._embed_sem = asyncio.Semaphore(embed_concurrency)
         self._embed_concurrency = embed_concurrency
+        self._embed_batch_size = embed_batch_size
         self._collection = collection_name
         if url == ":memory:":
             self._client = AsyncQdrantClient(location=":memory:")
@@ -868,16 +930,12 @@ class QdrantVectorStore(_EmbeddingBackedStore):
         base_meta = _build_base_meta(doc_id, metadata)
         total = len(chunks)
 
-        async def _embed_chunk(i: int, chunk: str) -> tuple[int, list[float] | None, str]:
-            async with self._embed_sem:
-                try:
-                    return i, await self._embed(embed_prefix + chunk), chunk
-                except Exception:
-                    logger.debug("Failed to embed chunk %d of doc %d", i, doc_id, exc_info=True)
-                    return i, None, chunk
-
-        embedded = await asyncio.gather(*[_embed_chunk(i, c) for i, c in enumerate(chunks)])
-        ok = [(i, emb, chunk) for (i, emb, chunk) in embedded if emb is not None]
+        embeddings = await self._embed_many([embed_prefix + chunk for chunk in chunks])
+        ok = [
+            (i, emb, chunk)
+            for i, (chunk, emb) in enumerate(zip(chunks, embeddings))
+            if emb is not None
+        ]
 
         # tag_ids as a real list enables a server-side must_not filter for
         # exclude_tag_id (Qdrant-specific; derived from the canonical

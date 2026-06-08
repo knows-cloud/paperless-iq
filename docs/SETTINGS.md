@@ -148,7 +148,8 @@ the chat LLM** — embedding models are small and fast.
 |---------|-----|---------|-----------------|
 | Embedding provider | `embed_provider` | `ollama` | `ollama`, `bedrock`, or `openai`. |
 | Embedding model | `embedding_model` | `nomic-embed-text` | Per-provider defaults: ollama `nomic-embed-text`, bedrock `amazon.titan-embed-text-v1`, openai `text-embedding-3-small`. 🔁 **Changing the model requires re-indexing** — the vector dimension must match the index, or search fails with a dimension-mismatch error. |
-| Parallel embeddings | `embed_concurrency` | `1` | Chunks embedded concurrently. `1` is safe for a local Ollama. Raise to **4–8** when Ollama runs on a remote/GPU host to speed up indexing. |
+| Parallel embeddings | `embed_concurrency` | `1` | Embedding API calls in flight at once. For Ollama this is chunks-per-document; for cloud providers it now also overlaps **whole documents** during indexing. `1` is safe for a local Ollama. Raise to **4–8** for a remote/GPU Ollama, and to **~8** for Bedrock (the Bedrock embeddings panel defaults this to 8). The vector store's embed semaphore caps total concurrent calls, so raising it never exceeds this number regardless of how many documents are being indexed. |
+| Embedding batch size | `embed_batch_size` | `32` | Texts sent per embedding API call. **Only Cohere Embed models on Bedrock** batch multiple texts in one call (up to 96) — this cuts request count and cost during indexing. Titan and all non-Bedrock providers ignore it and always send one text per call. |
 
 ### Similarity Search Tuning
 
