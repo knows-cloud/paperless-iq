@@ -14,7 +14,7 @@ import hashlib
 from typing import Any
 
 import pytest
-from hypothesis import HealthCheck, given, settings
+from hypothesis import given
 from hypothesis import strategies as st
 
 from backend.models import SearchResult
@@ -98,7 +98,6 @@ def _make_store() -> ChromaVectorStore:
 # Property 9: Embedding round-trip
 # ---------------------------------------------------------------------------
 
-@settings(max_examples=100, suppress_health_check=[HealthCheck.too_slow], deadline=None)
 @given(
     doc_id=_doc_id_strategy,
     text=_doc_text,
@@ -142,7 +141,6 @@ async def test_property_9_embedding_round_trip(
 # Property 10: Search result count bound
 # ---------------------------------------------------------------------------
 
-@settings(max_examples=100, suppress_health_check=[HealthCheck.too_slow], deadline=None)
 @given(
     num_docs=st.integers(min_value=1, max_value=15),
     top_n=st.integers(min_value=1, max_value=20),
@@ -174,7 +172,6 @@ async def test_property_10_search_result_count_bound(
 # Property 11: Search result structure
 # ---------------------------------------------------------------------------
 
-@settings(max_examples=100, suppress_health_check=[HealthCheck.too_slow], deadline=None)
 @given(
     doc_id=_doc_id_strategy,
     text=_doc_text,
@@ -210,7 +207,6 @@ async def test_property_11_search_result_structure(
 # Property 12: Vector store backend re-index completeness
 # ---------------------------------------------------------------------------
 
-@settings(max_examples=100, suppress_health_check=[HealthCheck.too_slow], deadline=None)
 @given(
     doc_ids=st.lists(
         st.integers(min_value=1, max_value=10_000),

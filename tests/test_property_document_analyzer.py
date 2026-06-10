@@ -20,7 +20,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 from uuid import uuid4
 
 import pytest
-from hypothesis import HealthCheck, given, settings
+from hypothesis import given
 from hypothesis import strategies as st
 
 from backend.analyzer import (
@@ -107,7 +107,6 @@ def _make_mock_paperless(ocr_text: str = "ocr content", doc_bytes: bytes = b"pdf
 # Property 2: Context window truncation
 # ---------------------------------------------------------------------------
 
-@settings(max_examples=100, suppress_health_check=[HealthCheck.too_slow])
 @given(
     text=_long_text_strategy,
     context_limit=st.integers(min_value=10, max_value=500),
@@ -130,7 +129,6 @@ def test_property_2_truncation_respects_limit(
     assert len(result) <= context_limit
 
 
-@settings(max_examples=100, suppress_health_check=[HealthCheck.too_slow])
 @given(
     text=_long_text_strategy,
     context_limit=st.integers(min_value=10, max_value=500),
@@ -175,7 +173,6 @@ def test_property_2_truncation_logs_warning_when_needed(
         )
 
 
-@settings(max_examples=100, suppress_health_check=[HealthCheck.too_slow])
 @given(
     text=_long_text_strategy,
     context_limit=st.integers(min_value=10, max_value=500),
@@ -213,7 +210,6 @@ _llm_response_strategy = st.fixed_dictionaries({
 })
 
 
-@settings(max_examples=100, suppress_health_check=[HealthCheck.too_slow])
 @given(
     document_id=_doc_id_strategy,
     parsed=_llm_response_strategy,
@@ -263,7 +259,6 @@ def test_property_3_suggestion_completeness(
     assert isinstance(suggestion.raw_llm_response, str)
 
 
-@settings(max_examples=100, suppress_health_check=[HealthCheck.too_slow])
 @given(document_id=_doc_id_strategy)
 def test_property_3_empty_llm_response_still_complete(document_id: int) -> None:
     """
@@ -340,7 +335,6 @@ def _validate_against_paperless_schema(data: dict) -> list[str]:
     return errors
 
 
-@settings(max_examples=100, suppress_health_check=[HealthCheck.too_slow])
 @given(
     document_id=_doc_id_strategy,
     parsed=_llm_response_strategy,
@@ -391,7 +385,6 @@ def test_property_4_json_schema_conformance(
 # Property 5: Prompt template resolution
 # ---------------------------------------------------------------------------
 
-@settings(max_examples=100, suppress_health_check=[HealthCheck.too_slow])
 @given(
     doctype_id=st.integers(min_value=1, max_value=999),
     per_doctype_prompt=_prompt_strategy,
@@ -425,7 +418,6 @@ def test_property_5_per_doctype_template_takes_priority(
     )
 
 
-@settings(max_examples=100, suppress_health_check=[HealthCheck.too_slow])
 @given(
     doctype_id=st.integers(min_value=1, max_value=999),
     per_field_prompt=_prompt_strategy,
@@ -456,7 +448,6 @@ def test_property_5_per_field_template_when_no_doctype(
     )
 
 
-@settings(max_examples=100, suppress_health_check=[HealthCheck.too_slow])
 @given(
     global_prompt=_prompt_strategy,
 )
@@ -482,7 +473,6 @@ def test_property_5_global_template_fallback(global_prompt: str) -> None:
     )
 
 
-@settings(max_examples=100, suppress_health_check=[HealthCheck.too_slow])
 @given(
     doctype_id=_doctype_id_strategy,
     global_prompt=st.text(min_size=0, max_size=200),
@@ -509,7 +499,6 @@ def test_property_5_builtin_default_when_nothing_configured(
     assert result == config.global_prompt_template
 
 
-@settings(max_examples=100, suppress_health_check=[HealthCheck.too_slow])
 @given(
     doctype_id=st.integers(min_value=1, max_value=999),
     other_doctype_id=st.integers(min_value=1000, max_value=1999),
@@ -618,7 +607,6 @@ def _make_mock_paperless_with_entities(
     return client
 
 
-@settings(max_examples=100, suppress_health_check=[HealthCheck.too_slow])
 @given(
     document_id=_doc_id_strategy,
     existing_tags=st.lists(_entity_name_strategy, min_size=0, max_size=10),
@@ -676,7 +664,6 @@ async def test_property_6_tag_creation_policy(
         )
 
 
-@settings(max_examples=100, suppress_health_check=[HealthCheck.too_slow])
 @given(
     document_id=_doc_id_strategy,
     existing_correspondents=st.lists(_entity_name_strategy, min_size=0, max_size=10),
@@ -737,7 +724,6 @@ async def test_property_6_correspondent_creation_policy(
         )
 
 
-@settings(max_examples=100, suppress_health_check=[HealthCheck.too_slow])
 @given(
     document_id=_doc_id_strategy,
     existing_doctypes=st.lists(_entity_name_strategy, min_size=0, max_size=10),
@@ -798,7 +784,6 @@ async def test_property_6_doctype_creation_policy(
         )
 
 
-@settings(max_examples=100, suppress_health_check=[HealthCheck.too_slow])
 @given(
     document_id=_doc_id_strategy,
     existing_tags=st.lists(_entity_name_strategy, min_size=1, max_size=8),

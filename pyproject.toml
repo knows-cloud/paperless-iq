@@ -42,3 +42,10 @@ dev = [
     "pytest>=9.0.3",
     "pytest-asyncio>=1.3.0",
 ]
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+markers = [
+    "live: hits real external APIs and costs money — excluded by default and in CI",
+]
+addopts = "-m 'not live'"

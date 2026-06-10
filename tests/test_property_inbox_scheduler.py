@@ -13,7 +13,7 @@ import math
 from datetime import datetime, timezone
 
 import pytest
-from hypothesis import HealthCheck, given, settings
+from hypothesis import given
 from hypothesis import strategies as st
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 
@@ -37,7 +37,6 @@ async def _make_session() -> AsyncSession:
 # Property 21: Inbox tag trigger
 # ---------------------------------------------------------------------------
 
-@settings(max_examples=100, suppress_health_check=[HealthCheck.too_slow])
 @given(
     doc_ids=st.lists(
         st.integers(min_value=1, max_value=100_000),
@@ -92,7 +91,6 @@ async def test_property_21_inbox_tag_trigger(
 # Property 22: Scheduled run completeness
 # ---------------------------------------------------------------------------
 
-@settings(max_examples=100, suppress_health_check=[HealthCheck.too_slow])
 @given(
     all_doc_ids=st.lists(
         st.integers(min_value=1, max_value=100_000),
@@ -167,7 +165,6 @@ async def test_property_22_scheduled_run_completeness(
 # Property 17: Batch size enforcement
 # ---------------------------------------------------------------------------
 
-@settings(max_examples=100, suppress_health_check=[HealthCheck.too_slow])
 @given(
     num_docs=st.integers(min_value=1, max_value=50),
     batch_size=st.integers(min_value=1, max_value=20),

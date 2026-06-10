@@ -17,7 +17,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import httpx
 import pytest
 from httpx import ASGITransport, AsyncClient
-from hypothesis import given, settings
+from hypothesis import given
 from hypothesis import strategies as st
 
 # ---------------------------------------------------------------------------
@@ -122,7 +122,6 @@ _optional_pos_int = st.one_of(st.none(), st.integers(min_value=1, max_value=9999
 # ---------------------------------------------------------------------------
 
 
-@settings(max_examples=100, deadline=None)
 @given(
     query=_optional_text,
     tag_id=_optional_pos_int,
@@ -201,7 +200,6 @@ async def test_search_parameter_forwarding(
 # ---------------------------------------------------------------------------
 
 
-@settings(max_examples=100, deadline=None)
 @given(
     num_results=st.integers(min_value=0, max_value=20),
     total_count=st.integers(min_value=0, max_value=1000),
@@ -265,7 +263,6 @@ async def test_pagination_fields_in_search_response(
 # ---------------------------------------------------------------------------
 
 
-@settings(max_examples=100, deadline=None)
 @given(
     num_items=st.integers(min_value=1, max_value=15),
     entity_type=st.sampled_from(["tags", "correspondents", "document_types"]),
@@ -312,7 +309,6 @@ async def test_proxy_entities_have_required_fields(
         assert "name" in item and isinstance(item["name"], str)
 
 
-@settings(max_examples=100, deadline=None)
 @given(
     num_items=st.integers(min_value=1, max_value=15),
     data_types=st.lists(
@@ -372,7 +368,6 @@ async def test_proxy_custom_fields_have_required_fields(
 # ---------------------------------------------------------------------------
 
 
-@settings(max_examples=100, deadline=None)
 @given(
     num_pages=st.integers(min_value=1, max_value=5),
     items_per_page=st.integers(min_value=1, max_value=10),
