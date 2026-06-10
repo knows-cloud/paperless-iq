@@ -3265,11 +3265,18 @@ async def paperless_webhook(request: Request) -> dict:
     # Fire-and-forget audit event — uses its own session to avoid coupling with request lifecycle.
     async def _audit_webhook() -> None:
         try:
+            doc_title: str | None = None
+            try:
+                meta = await pc.get_document_metadata(doc_id)
+                doc_title = meta.get("title") or None
+            except Exception:
+                pass
             async with AsyncSessionLocal() as _db:
                 await AuditLogService(_db).record_event(
                     action_type="webhook_received",
                     change_source="webhook",
                     document_id=doc_id,
+                    document_title=doc_title,
                     new_value="reindex queued",
                 )
         except Exception:

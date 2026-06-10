@@ -217,7 +217,7 @@ export default function AuditPage() {
                   {items.map((e, i) => (
                     <Table.Tr key={i}>
                       <Table.Td style={{ whiteSpace: "nowrap" }}>{String(e.document_id || "")}</Table.Td>
-                      <Table.Td style={{ maxWidth: 180, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+                      <Table.Td style={{ maxWidth: 220, wordBreak: "break-word" }}>
                         {String(e.document_title ?? "—")}
                       </Table.Td>
                       <Table.Td>
