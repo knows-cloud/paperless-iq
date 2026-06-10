@@ -71,6 +71,7 @@ _doc_text = st.text(
 def _make_store() -> ChromaVectorStore:
     """Create a ChromaVectorStore backed by an ephemeral (in-memory) client."""
     import asyncio
+    import uuid
     import chromadb
 
     provider = _MockLLMProvider()
@@ -87,8 +88,10 @@ def _make_store() -> ChromaVectorStore:
     store._embed_sem = asyncio.Semaphore(1)
     store._embed_concurrency = 1
     store._client = chromadb.EphemeralClient()
+    # EphemeralClient shares its in-memory system across instantiations, so a
+    # fixed collection name leaks documents between tests — use a unique one.
     store._collection = store._client.get_or_create_collection(
-        name="test_collection",
+        name=f"test_collection_{uuid.uuid4().hex}",
         configuration=store._collection_config,
     )
     return store
