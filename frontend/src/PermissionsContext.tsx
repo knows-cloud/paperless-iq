@@ -10,6 +10,7 @@ const DEFAULT_OPEN: UserPermissions = {
   can_analyze: true,
   can_discover: true,
   can_settings: true,
+  can_groom: true,
 };
 
 export const PermissionsContext = createContext<UserPermissions>(DEFAULT_OPEN);

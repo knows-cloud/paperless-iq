@@ -11,9 +11,10 @@ import { AutomationTab } from "./settings/AutomationTab";
 import { AppearanceTab } from "./settings/AppearanceTab";
 import { MemoriesTab, type MemoryItem } from "./settings/MemoriesTab";
 import { AccessControlTab } from "./settings/AccessControlTab";
+import { GroomingTab } from "./settings/GroomingTab";
 import { METADATA_FIELDS, LLM_MODEL_DEFAULTS, EMBED_MODEL_DEFAULTS } from "./settings/constants";
 
-type SettingsTab = "connection" | "aiProvider" | "promptsFields" | "metadataRules" | "automation" | "appearance" | "memories" | "accessControl";
+type SettingsTab = "connection" | "aiProvider" | "promptsFields" | "metadataRules" | "automation" | "appearance" | "memories" | "accessControl" | "grooming";
 
 export default function SettingsPage() {
   const { t } = useTranslation();
@@ -26,6 +27,7 @@ export default function SettingsPage() {
     { id: "appearance",    label: t("settings.tabs.appearance") },
     { id: "memories",      label: t("settings.tabs.memories") },
     { id: "accessControl", label: t("settings.tabs.accessControl") },
+    { id: "grooming",      label: t("settings.tabs.grooming") },
   ];
   const qc = useQueryClient();
   const { data, isLoading, error } = useQuery({ queryKey: ["settings"], queryFn: api.getSettings });
@@ -59,6 +61,8 @@ export default function SettingsPage() {
   const [qdrantApiKey, setQdrantApiKey] = useState("");
   const [rerankEnabled, setRerankEnabled] = useState(false);
   const [rerankMethod, setRerankMethod] = useState("llm");
+  const [embedRefreshMode, setEmbedRefreshMode] = useState("immediate");
+  const [embedRefreshHour, setEmbedRefreshHour] = useState(3);
   // needs_reindex banner (set on successful settings save)
   const [needsReindex, setNeedsReindex] = useState(false);
   const [reindexReason, setReindexReason] = useState("");
@@ -98,6 +102,22 @@ export default function SettingsPage() {
 
   const [perFieldPrompts, setPerFieldPrompts] = useState<Record<string, string>>({});
   const [perDoctypePrompts, setPerDoctypePrompts] = useState<Record<string, string>>({});
+
+  // Grooming tab
+  const [groomingEnabled, setGroomingEnabled] = useState(false);
+  const [groomingEntityTypes, setGroomingEntityTypes] = useState<string[]>(["tag", "correspondent", "document_type"]);
+  const [groomingDedupNameThreshold, setGroomingDedupNameThreshold] = useState(0.85);
+  const [groomingDedupEmbedThreshold, setGroomingDedupEmbedThreshold] = useState(0.90);
+  const [groomingDescSampleDocs, setGroomingDescSampleDocs] = useState(5);
+  const [groomingDescSnippetChars, setGroomingDescSnippetChars] = useState(300);
+  const [groomingAddThreshold, setGroomingAddThreshold] = useState(0.80);
+  const [groomingRemoveThreshold, setGroomingRemoveThreshold] = useState(0.35);
+  const [groomingRemovePercentile, setGroomingRemovePercentile] = useState(10);
+  const [groomingMinSupportingChunks, setGroomingMinSupportingChunks] = useState(2);
+  const [groomingScanTopK, setGroomingScanTopK] = useState(100);
+  const [groomingMaxSuggestionsPerScan, setGroomingMaxSuggestionsPerScan] = useState(50);
+  const [groomingScanCron, setGroomingScanCron] = useState("");
+  const [groomingResuggestAfterDays, setGroomingResuggestAfterDays] = useState(0);
 
   const s = data as Record<string, unknown> | undefined;
 
@@ -152,6 +172,23 @@ export default function SettingsPage() {
     setVectorStoreBackend(String(s.vector_store_backend ?? "local"));
     setRerankEnabled(Boolean(s.rerank_enabled));
     setRerankMethod(String(s.rerank_method ?? "llm"));
+    setEmbedRefreshMode(String(s.embed_refresh_mode ?? "immediate"));
+    setEmbedRefreshHour(Number(s.embed_refresh_hour ?? 3));
+
+    setGroomingEnabled(Boolean(s.grooming_enabled));
+    setGroomingEntityTypes((s.grooming_entity_types as string[]) ?? ["tag", "correspondent", "document_type"]);
+    setGroomingDedupNameThreshold(Number(s.grooming_dedup_name_threshold ?? 0.85));
+    setGroomingDedupEmbedThreshold(Number(s.grooming_dedup_embed_threshold ?? 0.90));
+    setGroomingDescSampleDocs(Number(s.grooming_desc_sample_docs ?? 5));
+    setGroomingDescSnippetChars(Number(s.grooming_desc_snippet_chars ?? 300));
+    setGroomingAddThreshold(Number(s.grooming_add_threshold ?? 0.80));
+    setGroomingRemoveThreshold(Number(s.grooming_remove_threshold ?? 0.35));
+    setGroomingRemovePercentile(Number(s.grooming_remove_percentile ?? 10));
+    setGroomingMinSupportingChunks(Number(s.grooming_min_supporting_chunks ?? 2));
+    setGroomingScanTopK(Number(s.grooming_scan_top_k ?? 100));
+    setGroomingMaxSuggestionsPerScan(Number(s.grooming_max_suggestions_per_scan ?? 50));
+    setGroomingScanCron(String(s.grooming_scan_cron ?? ""));
+    setGroomingResuggestAfterDays(Number(s.grooming_resuggest_after_days ?? 0));
   }, [s]);
 
   // ── Load memories when Memories tab opens ──────────────────────────────────
@@ -322,8 +359,11 @@ export default function SettingsPage() {
         if (fd.has(k)) values[k] = Number(values[k]);
       }
       // Boolean toggles
-      values.rerank_enabled      = rerankEnabled;
+      values.rerank_enabled       = rerankEnabled;
       values.qdrant_hybrid_search = fd.get("qdrant_hybrid_search") === "on";
+      // Embed refresh — always from React state
+      values.embed_refresh_mode   = embedRefreshMode;
+      values.embed_refresh_hour   = embedRefreshHour;
       // Qdrant API key: send new value or __REDACTED__ (backend drops redacted → preserves stored)
       if (qdrantApiKey.trim()) {
         values.qdrant_api_key = qdrantApiKey.trim();
@@ -381,6 +421,22 @@ export default function SettingsPage() {
     values.theme_font     = themeFont;
     values.theme_font_size = themeFontSize;
     values.theme_nav_icons = themeNavIcons;
+
+    // Grooming — always from React state
+    values.grooming_enabled                = groomingEnabled;
+    values.grooming_entity_types           = groomingEntityTypes;
+    values.grooming_dedup_name_threshold   = groomingDedupNameThreshold;
+    values.grooming_dedup_embed_threshold  = groomingDedupEmbedThreshold;
+    values.grooming_desc_sample_docs       = groomingDescSampleDocs;
+    values.grooming_desc_snippet_chars     = groomingDescSnippetChars;
+    values.grooming_add_threshold          = groomingAddThreshold;
+    values.grooming_remove_threshold       = groomingRemoveThreshold;
+    values.grooming_remove_percentile      = groomingRemovePercentile;
+    values.grooming_min_supporting_chunks  = groomingMinSupportingChunks;
+    values.grooming_scan_top_k             = groomingScanTopK;
+    values.grooming_max_suggestions_per_scan = groomingMaxSuggestionsPerScan;
+    values.grooming_scan_cron              = groomingScanCron.trim() || null;
+    values.grooming_resuggest_after_days   = groomingResuggestAfterDays;
 
     setMsg("");
     mutation.mutate(values);
@@ -515,6 +571,10 @@ export default function SettingsPage() {
               setRerankEnabled={setRerankEnabled}
               rerankMethod={rerankMethod}
               setRerankMethod={setRerankMethod}
+              embedRefreshMode={embedRefreshMode}
+              setEmbedRefreshMode={setEmbedRefreshMode}
+              embedRefreshHour={embedRefreshHour}
+              setEmbedRefreshHour={setEmbedRefreshHour}
             />
           </Tabs.Panel>
 
@@ -591,6 +651,39 @@ export default function SettingsPage() {
               onResetRejected={handleResetRejected}
               resettingRejected={resettingRejected}
               maintenanceMsg={maintenanceMsg}
+            />
+          </Tabs.Panel>
+
+          <Tabs.Panel value="grooming" keepMounted={false}>
+            <GroomingTab
+              groomingEnabled={groomingEnabled}
+              setGroomingEnabled={setGroomingEnabled}
+              groomingEntityTypes={groomingEntityTypes}
+              setGroomingEntityTypes={setGroomingEntityTypes}
+              groomingDedupNameThreshold={groomingDedupNameThreshold}
+              setGroomingDedupNameThreshold={setGroomingDedupNameThreshold}
+              groomingDedupEmbedThreshold={groomingDedupEmbedThreshold}
+              setGroomingDedupEmbedThreshold={setGroomingDedupEmbedThreshold}
+              groomingDescSampleDocs={groomingDescSampleDocs}
+              setGroomingDescSampleDocs={setGroomingDescSampleDocs}
+              groomingDescSnippetChars={groomingDescSnippetChars}
+              setGroomingDescSnippetChars={setGroomingDescSnippetChars}
+              groomingAddThreshold={groomingAddThreshold}
+              setGroomingAddThreshold={setGroomingAddThreshold}
+              groomingRemoveThreshold={groomingRemoveThreshold}
+              setGroomingRemoveThreshold={setGroomingRemoveThreshold}
+              groomingRemovePercentile={groomingRemovePercentile}
+              setGroomingRemovePercentile={setGroomingRemovePercentile}
+              groomingMinSupportingChunks={groomingMinSupportingChunks}
+              setGroomingMinSupportingChunks={setGroomingMinSupportingChunks}
+              groomingScanTopK={groomingScanTopK}
+              setGroomingScanTopK={setGroomingScanTopK}
+              groomingMaxSuggestionsPerScan={groomingMaxSuggestionsPerScan}
+              setGroomingMaxSuggestionsPerScan={setGroomingMaxSuggestionsPerScan}
+              groomingScanCron={groomingScanCron}
+              setGroomingScanCron={setGroomingScanCron}
+              groomingResuggestAfterDays={groomingResuggestAfterDays}
+              setGroomingResuggestAfterDays={setGroomingResuggestAfterDays}
             />
           </Tabs.Panel>
         </Tabs>

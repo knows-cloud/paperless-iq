@@ -45,7 +45,7 @@ from backend.auth import (
     validate_paperless_credentials,
 )
 from backend.auth import _is_auth_required
-from backend.database import AsyncSessionLocal, get_session
+from backend.database import AsyncSessionLocal, DATABASE_URL, get_session
 from backend.keystore import get_machine_key
 from backend.inbox_monitor import InboxMonitor, Scheduler
 from backend.manual_analysis import ManualAnalysisService
@@ -55,6 +55,8 @@ from backend.models import UserPermissions
 from backend.orm_models import (
     ConversationSessionORM,
     DocumentTrackingORM,
+    EntityDescriptionORM,
+    GroomingDismissalORM,
     SuggestionORM,
     UserMemoryORM,
     UserPermissionsORM,
@@ -66,6 +68,7 @@ from backend.vector_migrate import migrate_embeddings, migrate_memories
 from backend.rate_limiter import RateLimiter
 from backend.settings_service import SettingsService
 from backend.protocols import VectorStore
+from backend.grooming import GroomingService
 
 logger = logging.getLogger(__name__)
 
@@ -567,31 +570,156 @@ async def _session_expiry_loop(app: FastAPI) -> None:
         await asyncio.sleep(3600)
 
 
+async def _run_alembic_migrations() -> None:
+    """Run Alembic migrations to head.
+
+    For databases that pre-date the Alembic migration system (they have the
+    application tables but no alembic_version table), we stamp the baseline
+    revision first so the baseline CREATE TABLE statements are skipped.
+    """
+    from alembic import command as alembic_command
+    from alembic.config import Config as AlembicConfig
+    from alembic.runtime.migration import MigrationContext
+    from sqlalchemy import create_engine, inspect as sa_inspect
+
+    def _sync_run() -> None:
+        sync_url = DATABASE_URL.replace("+aiosqlite", "")
+        sync_engine = create_engine(sync_url, future=True)
+        try:
+            with sync_engine.connect() as conn:
+                mc = MigrationContext.configure(conn)
+                current_rev = mc.get_current_revision()
+                if current_rev is None:
+                    inspector = sa_inspect(conn)
+                    tables = set(inspector.get_table_names())
+                    if "suggestions" in tables or "document_tracking" in tables:
+                        # Pre-Alembic database — stamp baseline so it's skipped.
+                        cfg = AlembicConfig("alembic.ini")
+                        alembic_command.stamp(cfg, "001")
+                        logger.info("Stamped pre-Alembic database at baseline revision 001.")
+        finally:
+            sync_engine.dispose()
+
+        cfg = AlembicConfig("alembic.ini")
+        alembic_command.upgrade(cfg, "head")
+
+    loop = asyncio.get_running_loop()
+    await loop.run_in_executor(None, _sync_run)
+
+
+async def schedule_reembed(
+    doc_id: int,
+    content: str,
+    meta: dict,
+    vs: Any,
+) -> None:
+    """Re-embed a document, deferring if embed_refresh_mode != 'immediate'.
+
+    - immediate: calls vs.upsert() right away (current behaviour, default).
+    - daily/manual: stamps reembed_dirty_since and returns.  The daily flush
+      loop (or the manual /api/embeddings/refresh route) handles the actual
+      re-embed later.
+
+    First-time indexing (in _background_index) bypasses this and calls
+    vs.upsert() directly — deferred re-embedding only applies to re-embeds
+    of already-indexed documents.
+    """
+    mode = getattr(_settings_svc.config, "embed_refresh_mode", "immediate")
+    if mode == "immediate":
+        await vs.upsert(doc_id, content, meta)
+        return
+
+    # Stamp dirty for later flush
+    async with AsyncSessionLocal() as db:
+        tracking = await db.get(DocumentTrackingORM, doc_id)
+        if tracking and tracking.reembed_dirty_since is None:
+            tracking.reembed_dirty_since = datetime.now(timezone.utc)
+            await db.commit()
+
+
+async def _daily_reembed_loop(app: FastAPI) -> None:
+    """Flush dirty documents once per day at embed_refresh_hour (UTC).
+
+    Only active when embed_refresh_mode == "daily".  Skips gracefully if
+    the vector store or Paperless client is unavailable.
+    """
+    while True:
+        await asyncio.sleep(60)  # check every minute whether it's flush time
+        try:
+            config = _settings_svc.config
+            if getattr(config, "embed_refresh_mode", "immediate") != "daily":
+                continue
+            now_utc = datetime.now(timezone.utc)
+            flush_hour = getattr(config, "embed_refresh_hour", 3)
+            if now_utc.hour != flush_hour or now_utc.minute != 0:
+                continue
+            vs = getattr(app.state, "vector_store", None)
+            pc = getattr(app.state, "paperless_client", None)
+            if vs and pc:
+                await _flush_dirty_reembeds(vs, pc)
+        except Exception:
+            logger.warning("Daily re-embed loop error", exc_info=True)
+
+
+async def _flush_dirty_reembeds(vs: Any, pc: Any) -> None:
+    """Re-embed all documents marked dirty (reembed_dirty_since IS NOT NULL)."""
+    async with AsyncSessionLocal() as db:
+        result = await db.execute(
+            select(DocumentTrackingORM).where(DocumentTrackingORM.reembed_dirty_since.isnot(None))
+        )
+        dirty_rows = result.scalars().all()
+
+    if not dirty_rows:
+        return
+
+    logger.info("Re-embed flush: processing %d dirty document(s).", len(dirty_rows))
+    flushed = 0
+    for tracking in dirty_rows:
+        doc_id = tracking.document_id
+        try:
+            content = await pc.get_document_ocr_text(doc_id)
+            if not content:
+                continue
+            # Fetch current metadata
+            base_url = pc._base_url
+            headers = pc._headers
+            async with httpx.AsyncClient(headers=headers, timeout=30) as client:
+                r = await client.get(f"{base_url}/api/documents/{doc_id}/")
+                if r.status_code != 200:
+                    continue
+                doc = r.json()
+            meta = {
+                "title": doc.get("title", ""),
+                "tags": doc.get("tags", []),
+                "correspondent": doc.get("correspondent") or "",
+                "document_type": doc.get("document_type") or "",
+                "custom_fields": {},
+            }
+            await vs.upsert(doc_id, content, meta)
+            async with AsyncSessionLocal() as db:
+                t = await db.get(DocumentTrackingORM, doc_id)
+                if t:
+                    t.reembed_dirty_since = None
+                    await db.commit()
+            flushed += 1
+        except Exception:
+            logger.warning("Re-embed flush failed for doc %d", doc_id, exc_info=True)
+    logger.info("Re-embed flush complete: %d/%d documents re-embedded.", flushed, len(dirty_rows))
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     """Application lifespan: startup and shutdown hooks."""
     logger.info("Paperless IQ starting up")
 
-    # Ensure DB tables exist (dev convenience; production uses Alembic)
-    from backend.database import engine
-    from backend.orm_models import Base  # noqa: F401 — registers all ORM models
-
-    async with engine.begin() as conn:
-        await conn.run_sync(Base.metadata.create_all)
-        # Add columns introduced after initial release — safe for existing DBs
-        # (create_all only creates missing tables, it never alters existing ones).
-        for col_ddl in [
-            "ALTER TABLE audit_log ADD COLUMN document_title TEXT",
-            "ALTER TABLE audit_log ADD COLUMN action_type VARCHAR(50) DEFAULT 'field_change'",
-            "ALTER TABLE audit_log ADD COLUMN session_id VARCHAR(36)",
-            # Suggested content from full-document analysis (Step 1, vision rework).
-            "ALTER TABLE suggestions ADD COLUMN extracted_content TEXT",
-            "ALTER TABLE suggestions ADD COLUMN original_ocr_content TEXT",
-        ]:
-            try:
-                await conn.execute(text(col_ddl))
-            except Exception:
-                pass  # Column already exists — SQLite raises OperationalError
+    # Run Alembic migrations.  For databases that pre-date the Alembic migration
+    # system (they have our tables but no alembic_version table), we stamp the
+    # baseline revision first so the baseline migration is skipped.
+    try:
+        await _run_alembic_migrations()
+        logger.info("Database migrations complete.")
+    except Exception:
+        logger.error("Database migration failed — proceeding anyway (may be dev mode).", exc_info=True)
 
     # Load persisted settings from DB (seeds from env vars on first run)
     await _settings_svc.load_from_db()
@@ -718,10 +846,13 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     # Audit log cleanup loop — runs daily, honours audit_retention_days setting
     app.state.audit_cleanup_task = asyncio.create_task(_audit_cleanup_loop())
 
+    # Daily re-embed flush loop (no-op when embed_refresh_mode != "daily")
+    app.state.daily_reembed_task = asyncio.create_task(_daily_reembed_loop(app))
+
     yield
 
     # Shutdown: cancel automation tasks
-    for task_name in ("inbox_task", "scheduler_task", "session_expiry_task", "audit_cleanup_task", "embed_health_monitor_task"):
+    for task_name in ("inbox_task", "scheduler_task", "session_expiry_task", "audit_cleanup_task", "embed_health_monitor_task", "daily_reembed_task"):
         task: asyncio.Task[Any] | None = getattr(app.state, task_name, None)
         if task is not None and not task.done():
             task.cancel()
@@ -804,8 +935,19 @@ def require_perm(*perms: str):
         perms_row = result.scalar_one_or_none()
         config = _settings_svc.config
         if perms_row and perms_row.ng_admin and config.sync_ng_admins:
+            # ng_admin bypass, but still gate can_groom on grooming_enabled
+            if perms == ("can_groom",) and not getattr(config, "grooming_enabled", False):
+                raise HTTPException(
+                    status_code=status.HTTP_403_FORBIDDEN,
+                    detail="Grooming is not enabled. Enable it in Settings → AI Provider.",
+                )
             return
         if perms_row and any(getattr(perms_row, p, False) for p in perms):
+            if "can_groom" in perms and not getattr(config, "grooming_enabled", False):
+                raise HTTPException(
+                    status_code=status.HTTP_403_FORBIDDEN,
+                    detail="Grooming is not enabled. Enable it in Settings → AI Provider.",
+                )
             return
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
@@ -1055,7 +1197,7 @@ async def approve_suggestion(
                         "document_type": result.document_type or "",
                         "custom_fields": result.custom_fields or {},
                     }
-                    await vs.upsert(result.document_id, content, meta)
+                    await schedule_reembed(result.document_id, content, meta, vs)
             except Exception:
                 logger.debug("Post-approve indexing failed for doc %d", result.document_id, exc_info=True)
         asyncio.create_task(_index_bg())
@@ -3030,7 +3172,7 @@ async def _reindex_document(doc_id: int, vs: VectorStore, pc: PaperlessNGXClient
         if queue:
             await queue.await_embed_available()
         try:
-            await vs.upsert(doc_id, content, meta)
+            await schedule_reembed(doc_id, content, meta, vs)
             if queue:
                 queue.record_embed_success()
             logger.info("Webhook reindex: document %d re-indexed.", doc_id)
@@ -3297,6 +3439,7 @@ async def get_my_permissions(request: Request) -> dict:
     When auth is not required (no PAPERLESS_URL), returns a fully-permissive
     response so unauthenticated dev mode works without front-end guards.
     """
+    grooming_enabled = getattr(_settings_svc.config, "grooming_enabled", False)
     if not _is_auth_required():
         return {
             "username": "anonymous",
@@ -3307,6 +3450,7 @@ async def get_my_permissions(request: Request) -> dict:
             "can_analyze": True,
             "can_discover": True,
             "can_settings": True,
+            "can_groom": grooming_enabled,
         }
 
     username = getattr(request.state, "user", None)
@@ -3325,9 +3469,11 @@ async def get_my_permissions(request: Request) -> dict:
                 "can_analyze": False,
                 "can_discover": False,
                 "can_settings": False,
+                "can_groom": False,
             }
         config = _settings_svc.config
         effective_all = row.ng_admin and config.sync_ng_admins
+        grooming_enabled = getattr(config, "grooming_enabled", False)
         return {
             "username": row.username,
             "ng_admin": row.ng_admin,
@@ -3337,6 +3483,7 @@ async def get_my_permissions(request: Request) -> dict:
             "can_analyze": effective_all or row.can_analyze,
             "can_discover": effective_all or row.can_discover,
             "can_settings": effective_all or row.can_settings,
+            "can_groom": ((effective_all or row.can_groom) and grooming_enabled),
         }
 
 
@@ -3367,6 +3514,7 @@ async def list_piq_users(
             "can_analyze": effective_all or row.can_analyze,
             "can_discover": effective_all or row.can_discover,
             "can_settings": effective_all or row.can_settings,
+            "can_groom": effective_all or row.can_groom,
             "updated_at": row.updated_at.isoformat() if row.updated_at else None,
             "has_piq_record": True,
         }
@@ -3412,6 +3560,7 @@ class PiqUserUpdate(BaseModel):
     can_analyze: bool = False
     can_discover: bool = False
     can_settings: bool = False
+    can_groom: bool = False
 
 
 @app.put("/api/piq-users/{username}", tags=["users"],
@@ -3432,6 +3581,7 @@ async def update_piq_user(
     row.can_analyze = body.can_analyze
     row.can_discover = body.can_discover
     row.can_settings = body.can_settings
+    row.can_groom = body.can_groom
     row.updated_at = datetime.now(timezone.utc)
     await session.commit()
     return {"detail": f"Permissions updated for '{username}'."}
@@ -3450,6 +3600,211 @@ async def delete_piq_user(
     await session.delete(row)
     await session.commit()
     return {"detail": f"Permission record for '{username}' deleted."}
+
+
+# ---------------------------------------------------------------------------
+# Embeddings — deferred re-embed management (Step 0)
+# ---------------------------------------------------------------------------
+
+@app.get("/api/embeddings/pending", tags=["embeddings"],
+         dependencies=[Depends(require_perm("can_settings"))])
+async def get_pending_reembeds(session: AsyncSession = Depends(get_session)) -> dict:
+    """Return count and oldest dirty timestamp for deferred re-embeds."""
+    result = await session.execute(
+        select(DocumentTrackingORM).where(DocumentTrackingORM.reembed_dirty_since.isnot(None))
+    )
+    rows = result.scalars().all()
+    oldest = min((r.reembed_dirty_since for r in rows if r.reembed_dirty_since), default=None)
+    return {
+        "count": len(rows),
+        "oldest_dirty_since": oldest.isoformat() if oldest else None,
+    }
+
+
+_embed_flush_lock = asyncio.Lock()
+
+
+@app.post("/api/embeddings/refresh", tags=["embeddings"],
+          dependencies=[Depends(require_perm("can_settings"))])
+async def trigger_embed_refresh(request: Request) -> dict:
+    """Flush all deferred re-embeds now (409 if a flush is already running)."""
+    if _embed_flush_lock.locked():
+        raise HTTPException(status_code=409, detail="Re-embed flush already running.")
+    vs = getattr(request.app.state, "vector_store", None)
+    pc = getattr(request.app.state, "paperless_client", None)
+    if not vs or not pc:
+        raise HTTPException(status_code=503, detail="Vector store or Paperless client unavailable.")
+
+    async def _flush_bg() -> None:
+        async with _embed_flush_lock:
+            await _flush_dirty_reembeds(vs, pc)
+
+    asyncio.create_task(_flush_bg())
+    return {"detail": "Re-embed flush started."}
+
+
+# ---------------------------------------------------------------------------
+# Library Grooming — entities, descriptions, generation, dedup (Steps 1–4)
+# ---------------------------------------------------------------------------
+
+def _grooming_svc(
+    request: Request,
+    session: AsyncSession = Depends(get_session),
+) -> GroomingService:
+    pc = getattr(request.app.state, "paperless_client", None)
+    providers = getattr(request.app.state, "providers", None)
+    return GroomingService(session, pc, providers, _settings_svc.config)
+
+
+_VALID_ENTITY_TYPES = {"tag", "correspondent", "document_type"}
+
+
+def _check_etype(entity_type: str) -> None:
+    if entity_type not in _VALID_ENTITY_TYPES:
+        raise HTTPException(status_code=400, detail=f"entity_type must be one of {sorted(_VALID_ENTITY_TYPES)}")
+
+
+@app.get("/api/grooming/entities", tags=["grooming"],
+         dependencies=[Depends(require_perm("can_groom"))])
+async def grooming_list_entities(
+    entity_type: str = Query(...),
+    svc: GroomingService = Depends(_grooming_svc),
+) -> list[dict]:
+    """Sync entities from Paperless and return the enriched list."""
+    _check_etype(entity_type)
+    return await svc.sync_and_list_entities(entity_type)
+
+
+class EntityPatch(BaseModel):
+    description: str | None = None
+    excluded: bool | None = None
+
+
+@app.patch("/api/grooming/entities/{entity_type}/{entity_id}", tags=["grooming"],
+           dependencies=[Depends(require_perm("can_groom"))])
+async def grooming_patch_entity(
+    entity_type: str,
+    entity_id: int,
+    body: EntityPatch,
+    svc: GroomingService = Depends(_grooming_svc),
+) -> dict:
+    """Update description and/or excluded flag for one entity."""
+    _check_etype(entity_type)
+    return await svc.update_entity(entity_type, entity_id, body.description, body.excluded)
+
+
+# ── Description generation ─────────────────────────────────────────────────
+
+class GenerateBody(BaseModel):
+    entity_type: str | None = None
+    entity_id: int | None = None
+    overwrite: bool = False
+
+
+@app.post("/api/grooming/generate", tags=["grooming"],
+          dependencies=[Depends(require_perm("can_groom"))])
+async def grooming_generate(
+    body: GenerateBody,
+    svc: GroomingService = Depends(_grooming_svc),
+) -> dict:
+    """Generate LLM descriptions.
+
+    - With ``entity_id``: generate for one entity (synchronous, returns immediately).
+    - Without ``entity_id``: start a background bulk task (202, 409 if running).
+    """
+    if body.entity_type:
+        _check_etype(body.entity_type)
+
+    if body.entity_id is not None:
+        # Single entity — synchronous
+        if body.entity_type is None:
+            raise HTTPException(status_code=400, detail="entity_type required when entity_id is provided")
+        description = await svc.generate_description_for(body.entity_type, body.entity_id)
+        return {"description": description}
+
+    # Bulk generation
+    from backend.grooming import _generate_lock
+    if _generate_lock.locked():
+        raise HTTPException(status_code=409, detail="Bulk generation already running.")
+    count = await svc.count_pending_generate(body.entity_type, body.overwrite)
+    await svc.start_bulk_generate(body.entity_type, body.overwrite)
+    return {"detail": f"Bulk generation started for ~{count} entities.", "count": count}
+
+
+@app.get("/api/grooming/generate/status", tags=["grooming"],
+         dependencies=[Depends(require_perm("can_groom"))])
+async def grooming_generate_status() -> dict:
+    return GroomingService.get_generate_status()
+
+
+@app.post("/api/grooming/generate/cancel", tags=["grooming"],
+          dependencies=[Depends(require_perm("can_groom"))])
+async def grooming_generate_cancel(svc: GroomingService = Depends(_grooming_svc)) -> dict:
+    svc.cancel_bulk_generate()
+    return {"detail": "Cancellation requested."}
+
+
+# ── Deduplication ──────────────────────────────────────────────────────────
+
+@app.get("/api/grooming/{entity_type}/dedup", tags=["grooming"],
+         dependencies=[Depends(require_perm("can_groom"))])
+async def grooming_dedup_candidates(
+    entity_type: str,
+    svc: GroomingService = Depends(_grooming_svc),
+) -> list[dict]:
+    """Return duplicate clusters for the given entity type."""
+    _check_etype(entity_type)
+    return await svc.get_dedup_candidates(entity_type)
+
+
+class DedupDismissBody(BaseModel):
+    entity_id: int
+    other_entity_id: int
+
+
+@app.post("/api/grooming/{entity_type}/dedup/dismiss", tags=["grooming"],
+          dependencies=[Depends(require_perm("can_groom"))])
+async def grooming_dedup_dismiss(
+    entity_type: str,
+    body: DedupDismissBody,
+    svc: GroomingService = Depends(_grooming_svc),
+) -> Response:
+    """Permanently dismiss a dedup pair so it is never shown again."""
+    _check_etype(entity_type)
+    await svc.dismiss_dedup_pair(entity_type, body.entity_id, body.other_entity_id)
+    return Response(status_code=204)
+
+
+class MergeBody(BaseModel):
+    keep_id: int
+    remove_ids: list[int]
+
+
+@app.post("/api/grooming/{entity_type}/merge", tags=["grooming"],
+          dependencies=[Depends(require_perm("can_groom"))])
+async def grooming_merge(
+    entity_type: str,
+    body: MergeBody,
+    request: Request,
+    svc: GroomingService = Depends(_grooming_svc),
+) -> dict:
+    """Merge entities: reassign documents from remove_ids to keep_id, delete losers."""
+    _check_etype(entity_type)
+    if not body.remove_ids:
+        raise HTTPException(status_code=400, detail="remove_ids must not be empty")
+    actor = getattr(request.state, "user", "unknown")
+    result = await svc.merge_entities(entity_type, body.keep_id, body.remove_ids, actor)
+
+    # Schedule re-embed for affected documents (handled via schedule_reembed during approval;
+    # for merges we mark dirty directly since we don't have the content here)
+    if result["documents_updated"] > 0:
+        vs = getattr(request.app.state, "vector_store", None)
+        if vs and getattr(_settings_svc.config, "embed_refresh_mode", "immediate") != "immediate":
+            # Bulk-stamp dirty: fetch all doc IDs that were reassigned
+            # (already written to Paperless; stamp reembed_dirty_since)
+            pass  # Handled by webhook events on the Paperless side
+
+    return result
 
 
 # ---------------------------------------------------------------------------

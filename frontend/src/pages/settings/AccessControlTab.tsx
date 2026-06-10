@@ -51,6 +51,7 @@ export function AccessControlTab({
     { key: "can_analyze",    label: t("common.analyze") },
     { key: "can_discover",   label: t("nav.discovery") },
     { key: "can_settings",   label: t("nav.settings") },
+    { key: "can_groom",      label: t("acl.perm.groom") },
   ];
 
   const SECTIONS = [
@@ -83,6 +84,7 @@ export function AccessControlTab({
         can_analyze:    updated.can_analyze,
         can_discover:   updated.can_discover,
         can_settings:   updated.can_settings,
+        can_groom:      updated.can_groom,
       });
       setUsers(prev => prev.map(u => u.username === user.username
         ? { ...u, [key]: value, has_piq_record: true }
@@ -101,7 +103,7 @@ export function AccessControlTab({
     try {
       await api.deletePiqUser(username);
       setUsers(prev => prev.map(u => u.username === username
-        ? { ...u, has_piq_record: false, can_access: false, can_view_queue: false, can_approve: false, can_analyze: false, can_discover: false, can_settings: false }
+        ? { ...u, has_piq_record: false, can_access: false, can_view_queue: false, can_approve: false, can_analyze: false, can_discover: false, can_settings: false, can_groom: false }
         : u
       ));
       setDeleteConfirm(null);

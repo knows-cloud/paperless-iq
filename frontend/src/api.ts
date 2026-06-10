@@ -111,8 +111,46 @@ export interface UserPermissions {
   can_analyze: boolean;
   can_discover: boolean;
   can_settings: boolean;
+  can_groom: boolean;
   updated_at?: string | null;
   has_piq_record?: boolean;
+}
+
+export interface GroomingEntity {
+  entity_type: string;
+  entity_id: number;
+  name: string;
+  doc_count: number;
+  description: string | null;
+  description_source: "user" | "llm";
+  excluded: boolean;
+  forced_excluded: boolean;
+  embedding_stored: boolean;
+  description_updated_at: string | null;
+}
+
+export interface DedupCluster {
+  entities: Array<{
+    entity_id: number;
+    name: string;
+    has_description: boolean;
+    embedding_stored: boolean;
+  }>;
+  signal: "name" | "embedding";
+  similarity: number;
+}
+
+export interface GenerateStatus {
+  running: boolean;
+  done: number;
+  total: number;
+  current_entity: string;
+  cancelled: boolean;
+}
+
+export interface EmbedPendingResponse {
+  count: number;
+  oldest_dirty_since: string | null;
 }
 
 export const api = {
@@ -281,4 +319,39 @@ export const api = {
     const qStr = qs.toString();
     return request<PagedResult<DocumentItem>>(`/documents${qStr ? "?" + qStr : ""}`);
   },
+
+  // Grooming — entities + descriptions
+  groomingListEntities: (entityType: string) =>
+    request<GroomingEntity[]>(`/grooming/entities?entity_type=${entityType}`),
+  groomingPatchEntity: (entityType: string, entityId: number, patch: { description?: string | null; excluded?: boolean }) =>
+    request<GroomingEntity>(`/grooming/entities/${entityType}/${entityId}`, {
+      method: "PATCH",
+      body: JSON.stringify(patch),
+    }),
+  groomingGenerate: (body: { entity_type?: string; entity_id?: number; overwrite?: boolean }) =>
+    request<{ description?: string; detail?: string; count?: number }>("/grooming/generate", {
+      method: "POST",
+      body: JSON.stringify(body),
+    }),
+  groomingGenerateStatus: () => request<GenerateStatus>("/grooming/generate/status"),
+  groomingGenerateCancel: () => request<{ detail: string }>("/grooming/generate/cancel", { method: "POST" }),
+
+  // Grooming — dedup
+  groomingDedupCandidates: (entityType: string) =>
+    request<DedupCluster[]>(`/grooming/${entityType}/dedup`),
+  groomingDedupDismiss: (entityType: string, entityId: number, otherEntityId: number) =>
+    fetch(`${BASE}/grooming/${entityType}/dedup/dismiss`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json", ...(getStoredToken() ? { Authorization: `Bearer ${getStoredToken()}` } : {}) },
+      body: JSON.stringify({ entity_id: entityId, other_entity_id: otherEntityId }),
+    }).then(() => undefined),
+  groomingMerge: (entityType: string, keepId: number, removeIds: number[]) =>
+    request<{ documents_updated: number; entities_deleted: number }>(`/grooming/${entityType}/merge`, {
+      method: "POST",
+      body: JSON.stringify({ keep_id: keepId, remove_ids: removeIds }),
+    }),
+
+  // Embeddings (deferred re-embed)
+  getEmbedPending: () => request<EmbedPendingResponse>("/embeddings/pending"),
+  triggerEmbedRefresh: () => request<{ detail: string }>("/embeddings/refresh", { method: "POST" }),
 };

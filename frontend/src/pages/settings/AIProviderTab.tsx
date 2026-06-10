@@ -9,6 +9,7 @@ import {
   RERANK_METHODS,
   QDRANT_MODES,
   QDRANT_QUANTIZATIONS,
+  EMBED_REFRESH_MODES,
 } from "./constants";
 
 interface Props {
@@ -41,6 +42,11 @@ interface Props {
   setRerankEnabled: (v: boolean) => void;
   rerankMethod: string;
   setRerankMethod: (v: string) => void;
+  // Embed refresh
+  embedRefreshMode: string;
+  setEmbedRefreshMode: (v: string) => void;
+  embedRefreshHour: number;
+  setEmbedRefreshHour: (v: number) => void;
 }
 
 export function AIProviderTab({
@@ -58,6 +64,8 @@ export function AIProviderTab({
   qdrantApiKey, setQdrantApiKey,
   rerankEnabled, setRerankEnabled,
   rerankMethod, setRerankMethod,
+  embedRefreshMode, setEmbedRefreshMode,
+  embedRefreshHour, setEmbedRefreshHour,
 }: Props) {
   const { t } = useTranslation();
 
@@ -313,6 +321,30 @@ export function AIProviderTab({
             </>
           )}
         </Stack>
+      </Paper>
+
+      {/* ── Embedding Refresh ────────────────────────────────────────────────── */}
+      <Paper withBorder p="md" radius="md">
+        <Text fw={600} mb="md">{t("aiProvider.embedRefresh.title")}</Text>
+        <div style={{ display: "flex", gap: "1rem", flexWrap: "wrap" }}>
+          <Select
+            label={<InfoLabel label={t("aiProvider.embedRefresh.mode.label")} tip={t("aiProvider.embedRefresh.mode.tip")} />}
+            value={embedRefreshMode}
+            onChange={v => setEmbedRefreshMode(v ?? "immediate")}
+            data={EMBED_REFRESH_MODES.map(m => ({ value: m.value, label: t(m.labelKey) }))}
+            style={{ flex: 2, minWidth: "200px" }}
+          />
+          {embedRefreshMode === "daily" && (
+            <NumberInput
+              label={<InfoLabel label={t("aiProvider.embedRefresh.hour.label")} tip={t("aiProvider.embedRefresh.hour.tip")} />}
+              value={embedRefreshHour}
+              onChange={v => setEmbedRefreshHour(Number(v))}
+              min={0}
+              max={23}
+              style={{ flex: 1, minWidth: "140px" }}
+            />
+          )}
+        </div>
       </Paper>
 
       {/* ── Vector Store ─────────────────────────────────────────────────────── */}

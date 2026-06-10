@@ -6,7 +6,7 @@ import uuid
 from datetime import datetime, timezone
 from typing import Any
 
-from sqlalchemy import JSON, Boolean, DateTime, Integer, String, Text
+from sqlalchemy import JSON, Boolean, DateTime, ForeignKey, Integer, String, Text, UniqueConstraint
 from sqlalchemy.orm import Mapped, mapped_column
 
 from backend.database import Base
@@ -48,6 +48,9 @@ class SuggestionORM(Base):
     # the document's OCR text at analysis time, kept for the side-by-side diff.
     extracted_content: Mapped[str | None] = mapped_column(Text, nullable=True)
     original_ocr_content: Mapped[str | None] = mapped_column(Text, nullable=True)
+    # Grooming scan evidence — JSON list of per-action records (populated only
+    # when analysis_mode == "grooming"). Null for all other analysis modes.
+    evidence_json: Mapped[str | None] = mapped_column(Text, nullable=True)
 
 
 class AuditLogORM(Base):
@@ -84,6 +87,11 @@ class DocumentTrackingORM(Base):
         DateTime(timezone=True), nullable=True
     )
     embedding_stored: Mapped[bool] = mapped_column(default=False)
+    # Set when a re-embed is deferred (embed_refresh_mode != "immediate").
+    # Cleared on successful re-embed. NULL = not dirty / immediate mode.
+    reembed_dirty_since: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
 
 
 class SettingsORM(Base):
@@ -167,6 +175,51 @@ class UserPermissionsORM(Base):
     can_analyze: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
     can_discover: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
     can_settings: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    can_groom: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
     updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, default=_utcnow
+    )
+
+
+class EntityDescriptionORM(Base):
+    """One description + embedding per Paperless NGX entity (tag / correspondent / document_type).
+
+    Rows are synced lazily from Paperless on page load.  The composite primary
+    key is (entity_type, entity_id).  Vectors are stored as a JSON float list
+    so no per-backend vector collection is needed (entity count is bounded, all-
+    pairs similarity is computed app-side).
+    """
+
+    __tablename__ = "entity_descriptions"
+
+    entity_type: Mapped[str] = mapped_column(String(50), primary_key=True)   # "tag" | "correspondent" | "document_type"
+    entity_id: Mapped[int] = mapped_column(Integer, primary_key=True)        # Paperless NGX id
+    name_snapshot: Mapped[str] = mapped_column(Text, nullable=False, default="")
+    description: Mapped[str | None] = mapped_column(Text, nullable=True)
+    description_source: Mapped[str] = mapped_column(String(20), nullable=False, default="user")  # "user" | "llm"
+    excluded: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    embedding_json: Mapped[str | None] = mapped_column(Text, nullable=True)   # JSON float list
+    embedding_stored: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    embed_model: Mapped[str | None] = mapped_column(String(200), nullable=True)
+    embed_dim: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    description_updated_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    last_scanned_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+
+
+class GroomingDismissalORM(Base):
+    """Records a user rejection so the grooming system never re-surfaces the same suggestion.
+
+    ``document_id = 0`` is used for dedup-pair dismissals (no specific document).
+    """
+
+    __tablename__ = "grooming_dismissals"
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=lambda: str(uuid.uuid4()))
+    entity_type: Mapped[str] = mapped_column(String(50), nullable=False, index=True)
+    entity_id: Mapped[int] = mapped_column(Integer, nullable=False, index=True)
+    document_id: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    action: Mapped[str] = mapped_column(String(20), nullable=False)   # "add" | "remove" | "dedup"
+    other_entity_id: Mapped[int | None] = mapped_column(Integer, nullable=True)  # dedup: the paired entity
+    dismissed_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False, default=_utcnow
     )

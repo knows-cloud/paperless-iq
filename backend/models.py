@@ -31,7 +31,7 @@ class MetadataSuggestion(BaseModel):
     # Provenance
     llm_provider: str
     llm_model: str
-    analysis_mode: Literal["ocr", "full_document"]
+    analysis_mode: Literal["ocr", "full_document", "grooming"]
     prompt_used: str
     raw_llm_response: str
 
@@ -86,6 +86,7 @@ class UserPermissions(BaseModel):
     can_analyze: bool = False
     can_discover: bool = False
     can_settings: bool = False
+    can_groom: bool = False
     updated_at: datetime | None = None
 
 
@@ -96,6 +97,7 @@ class DocumentTrackingRecord(BaseModel):
     first_seen_at: datetime
     last_analyzed_at: datetime | None = None
     embedding_stored: bool = False
+    reembed_dirty_since: datetime | None = None
 
 
 class PaperlessIQConfig(BaseModel):
@@ -154,6 +156,12 @@ class PaperlessIQConfig(BaseModel):
     embed_provider: Literal["ollama", "bedrock", "openai"] = "ollama"  # provider used for embeddings
     embedding_model: str = "nomic-embed-text"  # embedding model name (used when embed_provider=ollama)
     embed_concurrency: int = 1  # parallel embed calls; 1 is safe for local Ollama, raise for remote/GPU
+    # Deferred re-embedding — controls when metadata-change re-embeds are flushed.
+    # "immediate" = current behaviour (re-embed on every change, zero latency).
+    # "daily"     = batch all dirty documents once per day at embed_refresh_hour.
+    # "manual"    = queue changes; user flushes via Re-embed now button.
+    embed_refresh_mode: Literal["immediate", "daily", "manual"] = "immediate"
+    embed_refresh_hour: int = 3  # UTC hour for the daily flush (0–23)
 
     # Prompt templates
     global_prompt_template: str = (
@@ -237,6 +245,22 @@ class PaperlessIQConfig(BaseModel):
     color_scheme: str = "dark"  # "light" | "dark" | "auto"
     theme_nav_icons: dict[str, str] = {}
 
+    # ── Library Grooming ──────────────────────────────────────────────────────
+    grooming_enabled: bool = False
+    grooming_entity_types: list[str] = ["tag", "correspondent", "document_type"]
+    grooming_dedup_name_threshold: float = 0.85
+    grooming_dedup_embed_threshold: float = 0.90
+    grooming_desc_sample_docs: int = 5
+    grooming_desc_snippet_chars: int = 300
+    grooming_add_threshold: float = 0.80
+    grooming_remove_threshold: float = 0.35
+    grooming_remove_percentile: int = 10
+    grooming_min_supporting_chunks: int = 2
+    grooming_scan_top_k: int = 100
+    grooming_max_suggestions_per_scan: int = 50
+    grooming_scan_cron: str | None = None
+    grooming_resuggest_after_days: int = 0
+
     @field_validator("audit_retention_days")
     @classmethod
     def validate_retention(cls, v: int) -> int:
@@ -257,6 +281,15 @@ class PaperlessIQConfig(BaseModel):
         if v < 1:
             raise ValueError("batch_size must be at least 1")
         return v
+
+    @model_validator(mode="after")
+    def validate_grooming_thresholds(self) -> "PaperlessIQConfig":
+        if self.grooming_add_threshold <= self.grooming_remove_threshold:
+            raise ValueError(
+                "grooming_add_threshold must be greater than grooming_remove_threshold "
+                f"(got {self.grooming_add_threshold} ≤ {self.grooming_remove_threshold})"
+            )
+        return self
 
     @model_validator(mode="after")
     def validate_search_ef(self) -> "PaperlessIQConfig":
