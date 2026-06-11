@@ -14,13 +14,13 @@
 
 ---
 
-## D-02 · Single `_automation_loop` for inbox polling and scheduling
+## D-02 · Automation = continuous inbox poller + cron-driven jobs
 
-**Decision:** One parameterized `_automation_loop(app, poll_interval, batch_size=None)` replaces two separate loop functions. `batch_size=None` means inbox mode; `batch_size=N` means scheduler mode.
+**Decision:** `_automation_loop(app, poll_interval)` is the **inbox poller only** (process every inbox-tagged document each poll). *Scheduled* work is cron-driven, not poll-driven: a generic `_cron_loop(name, get_expr, run_job)` fires a one-shot job when a cron expression comes due. Two jobs ride it today — `_run_scheduler_batch` (batch analysis, `schedule_cron`) and `_run_scheduled_grooming_scan` (`grooming_scan_cron`). The shared per-document analysis closures live in `_make_analysis_callbacks`, so the poller and the batch job stay identical without sharing a loop body.
 
-**Rationale:** The two loops were 90% identical — same error handling, same sleep, same session lifecycle. The only difference was which processing strategy they invoked. Merging eliminates the risk of fixing a bug in one loop but not the other.
+**Rationale:** The original design folded scheduling into `_automation_loop` via a `batch_size` flag, but timing was still `poll_interval` — so `schedule_cron` was a truthy flag that never actually honoured its cron value. Real cron scheduling (croniter, D-21) needs a different cadence than inbox polling, and two unrelated schedules (batch, grooming scan) now need it. `_cron_loop` re-reads the expression every tick, so a settings change applies within one check interval with no task restart — which is why the settings-update handler no longer starts/stops the scheduler task.
 
-**Rule:** Do not split this back into separate functions. If the modes diverge significantly in future, introduce a strategy object, not a second loop.
+**Rule:** Don't reintroduce `batch_size` into `_automation_loop` or drive scheduled work off `poll_interval`. New periodic jobs go through `_cron_loop` with their own cron setting. Cron strings are validated at save time by the `validate_cron` field validator in `models.py` (invalid → 422); the loop also tolerates an invalid/None expression by idling.
 
 ---
 
@@ -230,3 +230,43 @@ The bootstrap problem (first admin has no permissions yet) is solved by `sync_ng
 **Rationale:** Paperless NGX paginates list responses. Before this helper existed, the pagination loop was copy-pasted across three functions. Copy-paste pagination is a common source of subtle bugs (off-by-one page numbers, wrong `next` URL extraction).
 
 **Rule:** Do not write a new pagination loop elsewhere in `main.py`. If a new list endpoint has non-standard response shape, extend `_paperless_list` with an `extra_fields` parameter or add a specific override — do not duplicate the loop.
+
+---
+
+## D-21 · Grooming entity vectors live in SQLite, not a vector collection
+
+**Decision:** Entity descriptions and their embedding vectors are stored as rows on `EntityDescriptionORM` (vector = JSON float list in `embedding_json`), not in a Chroma/Qdrant collection. Dedup similarity is computed app-side (numpy/pure-python cosine over a few hundred vectors); the scan reads an entity's vector straight from SQL and passes it to `VectorStore.query_chunks_by_vector`.
+
+**Rationale:** A vector DB earns its keep through ANN top-k over large, growing sets. The entity set is bounded (hundreds) and dedup needs *all-pairs* similarity — you'd pull every vector into numpy anyway. SQL storage avoids a third per-backend collection (no Chroma/Qdrant/Bedrock variants, no `vector_migrate` wiring, no reset-on-model-switch plumbing), keeps the vector transactionally glued to its description row, and — decisively — keeps embedding-based dedup working on `bedrock_kb`, where there is no app-managed collection to put entity vectors in.
+
+**Rule:** Do not move entity vectors into a vector-store collection. Entity↔document similarity uses `query_chunks_by_vector` (takes a precomputed vector, no embed); entity↔entity similarity stays app-side. Each row records `embed_model`/`embed_dim` so a model switch invalidates entity vectors alongside document vectors (lazy re-embed on next scan/page load). Revisit only if entities ever need ANN search (they won't at library scale).
+
+---
+
+## D-22 · Grooming merges queue re-embeds; chunk-payload staleness is bounded, not silent
+
+**Decision:** Chunk embeddings carry a metadata prefix (D-18), so a document's vector reflects the entities it carried *at embed time*. After a grooming merge reassigns documents, those chunk payloads are stale until re-embedded. We do not re-embed synchronously inside the merge; instead the global `embed_refresh_mode` (immediate / daily / manual, `schedule_reembed()` chokepoint) governs when affected documents are re-embedded. The scan reads an entity's *current* document assignments from Paperless as ground truth (not from chunk payloads), so classification is correct even when payloads lag.
+
+**Rationale:** Re-embedding every reassigned document inline would make a merge of a high-volume entity block for minutes. Deferring via the existing refresh mechanism lets the user pick the cost/freshness trade-off, and daily batching debounces repeated same-day edits. Grounding the scan in live Paperless assignments removes the correctness dependency on payload freshness — staleness costs a little recall, never correctness.
+
+**Rule:** Don't re-embed inline in `merge_entities`. Route post-merge/post-approval re-embeds through `schedule_reembed()`, never a direct `vs.upsert`. Treat chunk-payload entity fields as a *hint* for cohort scoring, never as the authority on what a document currently carries — fetch current assignments for ground truth.
+
+---
+
+## D-23 · A rejected grooming suggestion is a permanent answer
+
+**Decision:** Rejecting a grooming suggestion writes one `GroomingDismissalORM` row per action in its `evidence_json`; the scan then skips that (entity, document, action) forever — unless `grooming_resuggest_after_days > 0` (default 0 = never). A rejected `replace` also blocks a future `review` for the same (entity, document) and vice-versa (both mean "keep the incumbent, stop asking"). Clutter-clearing paths that aren't a judgment — Empty Queue and re-analyze swaps — pass `record_dismissals=False` and write no memory.
+
+**Rationale:** Without rejection memory the scan re-suggests the same correction every run and nags forever. With it, reject = "I disagree, don't ask again." Distinguishing deliberate rejection from bulk clutter-clearing prevents an Empty Queue from silently suppressing every pending suggestion for good.
+
+**Rule:** Every new grooming rejection path must decide explicitly whether it records dismissals. Deliberate per-suggestion rejects record; bulk/swap operations pass `record_dismissals=False`. Dedup-pair dismissals use `action="dedup"` with `document_id=0` and are kept separate from scan-action dismissals.
+
+---
+
+## D-24 · Fail closed — refuse to start without `PAPERLESS_URL`
+
+**Decision:** Authentication is enforced only when `PAPERLESS_URL` is set (login validates credentials against Paperless). The app **refuses to start** when it is unset: the lifespan logs a `CRITICAL` message and raises, so uvicorn aborts startup and the process exits. There is no OPEN mode in a running deployment.
+
+**Rationale:** Previously an unset `PAPERLESS_URL` silently put the app in open mode — no login, every page reachable — which is indistinguishable from an auth bypass and is a classic "fails open" footgun. `PAPERLESS_TOKEN` missing is different: auth still works (login uses user credentials), but Paperless operations can't run, so that case starts with a loud warning rather than a hard stop.
+
+**Rule:** Keep the startup guard. `_is_auth_required()` may still return False when `PAPERLESS_URL` is unset (route tests rely on it via ASGITransport, which doesn't run the lifespan) — security in production comes from the lifespan guard, which those tests bypass. Don't reintroduce a silent open mode; if a dev escape hatch is ever needed, gate it behind an explicit opt-in env var, never the absence of config.

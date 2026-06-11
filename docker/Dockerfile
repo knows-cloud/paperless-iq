@@ -57,4 +57,8 @@ ENV PYTHONUNBUFFERED=1
 EXPOSE 8080
 VOLUME ["/data"]
 
-CMD ["sh", "-c", "python -m alembic upgrade head 2>/dev/null; uvicorn backend.main:app --host 0.0.0.0 --port 8080 --log-level info"]
+# Migrations run inside the app's startup lifespan (_run_alembic_migrations),
+# which self-heals pre-Alembic and stale-revision databases and logs visibly.
+# No standalone "alembic upgrade head" here — it lacks that self-heal and would
+# fail loudly on existing databases. Exec form so uvicorn is PID 1 (clean SIGTERM).
+CMD ["uvicorn", "backend.main:app", "--host", "0.0.0.0", "--port", "8080", "--log-level", "info"]

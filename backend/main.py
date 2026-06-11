@@ -18,6 +18,7 @@ logging.basicConfig(
 from contextlib import asynccontextmanager
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
+from collections.abc import Callable, Coroutine
 from typing import Annotated, Any, AsyncGenerator
 from uuid import UUID, uuid4
 
@@ -186,85 +187,188 @@ async def _fetch_all_inbox_doc_ids(
     return all_ids
 
 
-async def _automation_loop(
-    app: FastAPI,
-    poll_interval: int,
-    batch_size: int | None = None,
-) -> None:
-    """Unified automation loop for inbox monitoring and scheduled batch processing.
+def _make_analysis_callbacks(app: FastAPI, session: AsyncSession, label: str):
+    """Build the ``(fetch_inbox_docs, submit_for_analysis)`` closures shared by
+    the inbox poller and the scheduled (cron) batch run."""
+    config = _settings_svc.config
+    paperless_client: PaperlessNGXClient | None = app.state.paperless_client
+    manual_svc: ManualAnalysisService | None = app.state.manual_analysis_svc
+    inbox_tag_id = config.inbox_tag_id
 
-    When ``batch_size`` is None the loop acts as an inbox monitor (processes every
-    document with the inbox tag on each poll).  When ``batch_size`` is an integer
-    the loop runs as a scheduler (processes up to *batch_size* unanalysed documents
-    per tick).
+    async def fetch_inbox_docs() -> list[int]:
+        return await _fetch_all_inbox_doc_ids(paperless_client, inbox_tag_id)
+
+    async def submit_for_analysis(doc_id: int) -> Any:
+        try:
+            oq = getattr(app.state, "ollama_queue", None)
+            if oq:
+                suggestion = await oq.submit(
+                    Priority.ANALYSIS,
+                    lambda did=doc_id: manual_svc.analyze(did),
+                    label=f"Auto-analyzing doc {doc_id}",
+                )
+            else:
+                suggestion = await manual_svc.analyze(doc_id)
+            queue_svc = ApprovalQueueService(session)
+            enqueued = await queue_svc.enqueue(suggestion)
+            if config.auto_apply:
+                # LLM now outputs the complete desired tag set (current state
+                # was passed to it), so merge_tags=False is correct.
+                # creation policies filter unknown entities before enqueue;
+                # allow_new policies leave them for creation at approve time.
+                create_missing = (
+                    config.tag_creation_policy == "allow_new"
+                    or config.correspondent_creation_policy == "allow_new"
+                    or config.doctype_creation_policy == "allow_new"
+                )
+                await queue_svc.approve(
+                    enqueued.id, merge_tags=False, create_missing=create_missing,
+                )
+                logger.info("%s auto-approved suggestion for doc %d.", label, doc_id)
+            else:
+                logger.info("%s enqueued suggestion for doc %d.", label, doc_id)
+        except Exception:
+            logger.exception("%s analysis failed for doc %d", label, doc_id)
+
+    return fetch_inbox_docs, submit_for_analysis
+
+
+async def _automation_loop(app: FastAPI, poll_interval: int) -> None:
+    """Inbox monitor: process every inbox-tagged document on each poll.
+
+    Scheduled *batch* analysis is no longer driven from here — it runs on the
+    ``schedule_cron`` cron loop (see ``_run_scheduler_batch`` / ``_cron_loop``).
     """
-    mode_label = "Scheduler" if batch_size is not None else "Inbox polling"
     while True:
         try:
             async with AsyncSessionLocal() as session:
-                config = _settings_svc.config
                 paperless_client: PaperlessNGXClient | None = app.state.paperless_client
                 manual_svc: ManualAnalysisService | None = app.state.manual_analysis_svc
-
                 if paperless_client is None or manual_svc is None:
-                    logger.warning("%s skipped: services not configured.", mode_label)
+                    logger.warning("Inbox polling skipped: services not configured.")
                     await asyncio.sleep(poll_interval)
                     continue
-
-                inbox_tag_id = config.inbox_tag_id
-
-                async def fetch_inbox_docs() -> list[int]:
-                    return await _fetch_all_inbox_doc_ids(paperless_client, inbox_tag_id)
-
-                async def submit_for_analysis(doc_id: int) -> Any:
-                    try:
-                        oq = getattr(app.state, "ollama_queue", None)
-                        if oq:
-                            suggestion = await oq.submit(
-                                Priority.ANALYSIS,
-                                lambda did=doc_id: manual_svc.analyze(did),
-                                label=f"Auto-analyzing doc {doc_id}",
-                            )
-                        else:
-                            suggestion = await manual_svc.analyze(doc_id)
-                        queue_svc = ApprovalQueueService(session)
-                        enqueued = await queue_svc.enqueue(suggestion)
-                        if config.auto_apply:
-                            # LLM now outputs the complete desired tag set (current state
-                            # was passed to it), so merge_tags=False is correct.
-                            # creation policies filter unknown entities before enqueue;
-                            # allow_new policies leave them for creation at approve time.
-                            create_missing = (
-                                config.tag_creation_policy == "allow_new"
-                                or config.correspondent_creation_policy == "allow_new"
-                                or config.doctype_creation_policy == "allow_new"
-                            )
-                            await queue_svc.approve(
-                                enqueued.id, merge_tags=False, create_missing=create_missing,
-                            )
-                            logger.info("%s auto-approved suggestion for doc %d.", mode_label, doc_id)
-                        else:
-                            logger.info("%s enqueued suggestion for doc %d.", mode_label, doc_id)
-                    except Exception:
-                        logger.exception("%s analysis failed for doc %d", mode_label, doc_id)
-
-                if batch_size is not None:
-                    scheduler = Scheduler(session, fetch_inbox_docs, submit_for_analysis, batch_size)
-                    batches = await scheduler.run_batch()
-                    if batches:
-                        total = sum(len(b) for b in batches)
-                        logger.info("Scheduler processed %d documents in %d batches.", total, len(batches))
-                else:
-                    monitor = InboxMonitor(session, fetch_inbox_docs, submit_for_analysis)
-                    submitted = await monitor.poll()
-                    if submitted:
-                        logger.info("Inbox poll submitted %d documents.", len(submitted))
+                fetch_inbox_docs, submit_for_analysis = _make_analysis_callbacks(
+                    app, session, "Inbox polling"
+                )
+                monitor = InboxMonitor(session, fetch_inbox_docs, submit_for_analysis)
+                submitted = await monitor.poll()
+                if submitted:
+                    logger.info("Inbox poll submitted %d documents.", len(submitted))
         except asyncio.CancelledError:
             raise
         except Exception:
-            logger.exception("%s loop error", mode_label)
+            logger.exception("Inbox polling loop error")
 
         await asyncio.sleep(poll_interval)
+
+
+async def _run_scheduler_batch(app: FastAPI) -> None:
+    """One scheduled batch-analysis run (cron-driven via ``schedule_cron``)."""
+    async with AsyncSessionLocal() as session:
+        paperless_client: PaperlessNGXClient | None = app.state.paperless_client
+        manual_svc: ManualAnalysisService | None = app.state.manual_analysis_svc
+        if paperless_client is None or manual_svc is None:
+            logger.warning("Scheduled batch skipped: services not configured.")
+            return
+        batch_size = _settings_svc.config.batch_size
+        fetch_inbox_docs, submit_for_analysis = _make_analysis_callbacks(
+            app, session, "Scheduler"
+        )
+        scheduler = Scheduler(session, fetch_inbox_docs, submit_for_analysis, batch_size)
+        batches = await scheduler.run_batch()
+        if batches:
+            total = sum(len(b) for b in batches)
+            logger.info("Scheduler processed %d documents in %d batches.", total, len(batches))
+
+
+# ── Cron-driven scheduling (shared by schedule_cron and grooming_scan_cron) ──
+
+def _cron_next(expr: str, after: datetime) -> datetime | None:
+    """Next fire time strictly after ``after`` (UTC), or None if ``expr`` is
+    not a valid cron expression."""
+    try:
+        from croniter import croniter
+        return croniter(expr, after).get_next(datetime)
+    except Exception:
+        return None
+
+
+async def _cron_loop(
+    name: str,
+    get_expr: Callable[[], str | None],
+    run_job: Callable[[], Coroutine[Any, Any, None]],
+    *,
+    check_interval: int = 30,
+) -> None:
+    """Generic cron-driven loop.
+
+    Re-reads the cron expression every tick (via ``get_expr``) so a settings
+    change takes effect without a restart. Idle when the expression is
+    None/empty; logs once and stays idle when it is invalid. Fires ``run_job``
+    once each time the schedule comes due. ``check_interval`` bounds firing
+    latency (cron schedules are coarse, so 30s is plenty).
+    """
+    cur_expr: str | None = None
+    next_run: datetime | None = None
+    while True:
+        try:
+            expr = (get_expr() or "").strip() or None
+            if expr != cur_expr:
+                cur_expr = expr
+                next_run = _cron_next(expr, datetime.now(timezone.utc)) if expr else None
+                if expr and next_run is None:
+                    logger.warning("%s: invalid cron %r — schedule disabled.", name, expr)
+                elif expr:
+                    logger.info("%s: scheduled (next run %s UTC).", name, next_run)
+            if next_run is not None and datetime.now(timezone.utc) >= next_run:
+                logger.info("%s: cron due — running.", name)
+                await run_job()
+                next_run = _cron_next(cur_expr, datetime.now(timezone.utc))
+        except asyncio.CancelledError:
+            raise
+        except Exception:
+            logger.exception("%s: cron loop error", name)
+
+        await asyncio.sleep(check_interval)
+
+
+async def _run_scheduled_grooming_scan(app: FastAPI) -> None:
+    """One scheduled grooming scan (cron-driven via ``grooming_scan_cron``).
+
+    Incremental: only entities new or whose description changed since their last
+    scan are re-examined (see ``collect_scan_candidates(incremental=True)``).
+    Respects the same guards as the manual scan route — disabled on bedrock_kb,
+    skipped while the embed circuit breaker is open or a scan already runs."""
+    config = _settings_svc.config
+    if not getattr(config, "grooming_enabled", False):
+        return
+    if getattr(config, "vector_store_backend", "local") == "bedrock_kb":
+        logger.info("Scheduled grooming scan skipped: unavailable on bedrock_kb backend.")
+        return
+    vs = getattr(app.state, "vector_store", None)
+    if vs is None:
+        logger.info("Scheduled grooming scan skipped: vector store not configured.")
+        return
+    oq = getattr(app.state, "ollama_queue", None)
+    if oq is not None and oq.cached_health.get("embed") is False:
+        logger.info("Scheduled grooming scan skipped: embed circuit breaker open.")
+        return
+
+    from backend.grooming import _scan_lock
+    if _scan_lock.locked():
+        logger.info("Scheduled grooming scan skipped: a scan is already running.")
+        return
+
+    entity_types = getattr(
+        config, "grooming_entity_types", ["tag", "correspondent", "document_type"]
+    )
+    pc = getattr(app.state, "paperless_client", None)
+    providers = getattr(app.state, "providers", None)
+    async with AsyncSessionLocal() as session:
+        svc = GroomingService(session, pc, providers, config, vector_store=vs)
+        await svc.start_scan(entity_types, incremental=True)
+    logger.info("Scheduled grooming scan started (incremental) for %s.", entity_types)
 
 
 async def _heal_dim_mismatch(vs: Any, embed_provider: Any) -> bool:
@@ -784,6 +888,7 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     app.state.rate_limiter = RateLimiter()
     app.state.inbox_task = None
     app.state.scheduler_task = None
+    app.state.grooming_scan_task = None
     app.state.session_expiry_task = None
     app.state.vector_store = None
     app.state.ollama_queue = None
@@ -894,16 +999,34 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
         except Exception:
             logger.warning("Could not initialise memory store.", exc_info=True)
 
-    # Start automation tasks if enabled
+    # Inbox poller — continuous; started only when automation is enabled and
+    # toggled with it (see the settings-update handler).
     if config.automation_enabled:
-        logger.info("Automation enabled — starting inbox monitor and scheduler.")
+        logger.info("Automation enabled — starting inbox monitor.")
         app.state.inbox_task = asyncio.create_task(
             _automation_loop(app, config.poll_interval_seconds)
         )
-        if config.schedule_cron:
-            app.state.scheduler_task = asyncio.create_task(
-                _automation_loop(app, config.poll_interval_seconds, batch_size=config.batch_size)
-            )
+
+    # Scheduled batch analysis — cron loop honouring schedule_cron. Always
+    # running; self-gates on automation_enabled + a valid cron, and re-reads
+    # config each tick so settings changes apply without a restart.
+    app.state.scheduler_task = asyncio.create_task(
+        _cron_loop(
+            "Scheduler",
+            lambda: _settings_svc.config.schedule_cron if _settings_svc.config.automation_enabled else None,
+            lambda: _run_scheduler_batch(app),
+        )
+    )
+
+    # Scheduled grooming scan — cron loop honouring grooming_scan_cron. Always
+    # running; self-gates on grooming_enabled + a valid cron.
+    app.state.grooming_scan_task = asyncio.create_task(
+        _cron_loop(
+            "Grooming scan",
+            lambda: _settings_svc.config.grooming_scan_cron if _settings_svc.config.grooming_enabled else None,
+            lambda: _run_scheduled_grooming_scan(app),
+        )
+    )
 
     # Always run the session expiry loop — extracts memories then deletes expired sessions
     app.state.session_expiry_task = asyncio.create_task(_session_expiry_loop(app))
@@ -917,7 +1040,7 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     yield
 
     # Shutdown: cancel automation tasks
-    for task_name in ("inbox_task", "scheduler_task", "session_expiry_task", "audit_cleanup_task", "embed_health_monitor_task", "daily_reembed_task"):
+    for task_name in ("inbox_task", "scheduler_task", "grooming_scan_task", "session_expiry_task", "audit_cleanup_task", "embed_health_monitor_task", "daily_reembed_task"):
         task: asyncio.Task[Any] | None = getattr(app.state, task_name, None)
         if task is not None and not task.done():
             task.cancel()
@@ -2799,11 +2922,13 @@ async def update_settings(request: Request, body: dict[str, Any] = Body(...)) ->
         request.app.state.providers = None
         request.app.state.manual_analysis_svc = None
 
-    # Toggle automation tasks when automation_enabled changes
+    # Toggle the inbox poller when automation_enabled changes. The scheduler and
+    # grooming-scan cron loops are always-running and self-gate on config (they
+    # re-read schedule_cron / grooming_scan_cron each tick), so they need no
+    # start/stop here — a cron edit takes effect within one check interval.
     new_automation = new_config.automation_enabled
 
     if new_automation and not old_automation:
-        # Start inbox polling if not already running
         inbox_task: asyncio.Task[Any] | None = getattr(request.app.state, "inbox_task", None)
         if inbox_task is None or inbox_task.done():
             request.app.state.inbox_task = asyncio.create_task(
@@ -2811,28 +2936,12 @@ async def update_settings(request: Request, body: dict[str, Any] = Body(...)) ->
             )
             logger.info("Inbox polling started after settings update.")
 
-        # Start scheduler if cron is configured and not already running
-        scheduler_task: asyncio.Task[Any] | None = getattr(request.app.state, "scheduler_task", None)
-        if new_config.schedule_cron and (scheduler_task is None or scheduler_task.done()):
-            request.app.state.scheduler_task = asyncio.create_task(
-                _automation_loop(request.app, new_config.poll_interval_seconds, batch_size=new_config.batch_size)
-            )
-            logger.info("Scheduler started after settings update.")
-
     elif not new_automation and old_automation:
-        # Cancel inbox task if running
         inbox_task = getattr(request.app.state, "inbox_task", None)
         if inbox_task is not None and not inbox_task.done():
             inbox_task.cancel()
             logger.info("Inbox polling cancelled after settings update.")
         request.app.state.inbox_task = None
-
-        # Cancel scheduler task if running
-        scheduler_task = getattr(request.app.state, "scheduler_task", None)
-        if scheduler_task is not None and not scheduler_task.done():
-            scheduler_task.cancel()
-            logger.info("Scheduler cancelled after settings update.")
-        request.app.state.scheduler_task = None
 
     # Rate limiter: currently uses default 60/60. Could be extended here
     # if rate limit fields are added to PaperlessIQConfig.

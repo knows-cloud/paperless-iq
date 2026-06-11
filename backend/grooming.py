@@ -93,6 +93,23 @@ def _name_similarity(a: str, b: str) -> float:
     return SequenceMatcher(None, _normalise_name(a), _normalise_name(b)).ratio()
 
 
+def _entity_needs_rescan(row: "EntityDescriptionORM") -> bool:
+    """For incremental (scheduled) scans: True when the entity is new (never
+    scanned) or its description changed since the last scan. Naive timestamps
+    are treated as UTC for the comparison."""
+    if row.last_scanned_at is None:
+        return True
+    updated = row.description_updated_at
+    if updated is None:
+        return False  # scanned before, never edited since → skip
+    last = row.last_scanned_at
+    if updated.tzinfo is None:
+        updated = updated.replace(tzinfo=timezone.utc)
+    if last.tzinfo is None:
+        last = last.replace(tzinfo=timezone.utc)
+    return updated > last
+
+
 def _cosine(v1: list[float], v2: list[float]) -> float:
     dot = sum(x * y for x, y in zip(v1, v2))
     n1 = sum(x * x for x in v1) ** 0.5
@@ -852,9 +869,15 @@ class GroomingService:
             for a in key_actions
         )
 
-    async def collect_scan_candidates(self, entity_types: list[str]) -> tuple[list[dict], dict]:
+    async def collect_scan_candidates(
+        self, entity_types: list[str], incremental: bool = False,
+    ) -> tuple[list[dict], dict]:
         """Run the entity-vector queries and classification for all included
         entities — shared by dry-run and the real scan. No enqueueing here.
+
+        With ``incremental=True`` (scheduled scans), only entities that are new
+        (never scanned) or whose description changed since their last scan are
+        examined — manual scans pass False and cover everything.
 
         Returns ``(candidates, stats)`` where each candidate carries
         entity_type/entity_id/entity_name/document_id/document_title/action/
@@ -900,6 +923,11 @@ class GroomingService:
                 r for r in result.scalars().all()
                 if not (entity_type == "tag" and r.entity_id == inbox_tag_id)
             ]
+
+            # Incremental (scheduled) scans skip entities unchanged since their
+            # last scan — new or description-changed entities only.
+            if incremental:
+                rows = [r for r in rows if _entity_needs_rescan(r)]
 
             # Lazy re-embed (GROOMING_PLAN §2): vectors invalidated by a model
             # switch get one tiny embed call each. Entities that were never
@@ -1071,13 +1099,13 @@ class GroomingService:
             for c in candidates
         ]
 
-    async def start_scan(self, entity_types: list[str]) -> None:
+    async def start_scan(self, entity_types: list[str], incremental: bool = False) -> None:
         """Start the background scan task (409 via RuntimeError if running)."""
         if _scan_lock.locked():
             raise RuntimeError("scan_running")
-        asyncio.create_task(self._scan_bg(entity_types))
+        asyncio.create_task(self._scan_bg(entity_types, incremental))
 
-    async def _scan_bg(self, entity_types: list[str]) -> None:
+    async def _scan_bg(self, entity_types: list[str], incremental: bool = False) -> None:
         global _scan_status
         async with _scan_lock:
             from backend.database import AsyncSessionLocal
@@ -1099,7 +1127,7 @@ class GroomingService:
                     )
                     _scan_status["total"] = len(count_q.scalars().all())
 
-                    candidates, stats = await svc.collect_scan_candidates(entity_types)
+                    candidates, stats = await svc.collect_scan_candidates(entity_types, incremental)
                     summary["skipped_dismissed"] = stats["skipped_dismissed"]
                     summary["skipped_pending"] = stats["skipped_pending"]
 

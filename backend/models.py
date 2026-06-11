@@ -286,6 +286,21 @@ class PaperlessIQConfig(BaseModel):
             raise ValueError("batch_size must be at least 1")
         return v
 
+    @field_validator("schedule_cron", "grooming_scan_cron")
+    @classmethod
+    def validate_cron(cls, v: str | None) -> str | None:
+        """Reject malformed cron expressions at save time. Empty/None disables
+        the schedule (manual-only)."""
+        if v is None:
+            return None
+        v = v.strip()
+        if not v:
+            return None
+        from croniter import croniter
+        if not croniter.is_valid(v):
+            raise ValueError(f"Invalid cron expression: {v!r}")
+        return v
+
     @model_validator(mode="after")
     def validate_grooming_thresholds(self) -> "PaperlessIQConfig":
         if self.grooming_add_threshold <= self.grooming_remove_threshold:

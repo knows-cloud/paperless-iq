@@ -1,8 +1,8 @@
-"""Unit tests for _automation_loop in backend/main.py.
+"""Unit tests for the automation loops in backend/main.py.
 
-The plan says: single-iteration test — patch asyncio.sleep to raise CancelledError
-after first pass; assert batch_size=None vs batch_size=N behavior (the single-loop
-design rule — no two separate loops, just _automation_loop with different args).
+Since Step 6 the inbox poller and the scheduled batch run are separate:
+``_automation_loop`` polls the inbox every poll_interval, while a one-shot
+``_run_scheduler_batch`` is driven by the ``schedule_cron`` cron loop.
 """
 
 from __future__ import annotations
@@ -51,15 +51,15 @@ async def test_automation_loop_skips_when_services_unconfigured() -> None:
             mock_session_cls.return_value = mock_session
 
             with pytest.raises(asyncio.CancelledError):
-                await _automation_loop(app, poll_interval=5, batch_size=None)
+                await _automation_loop(app, poll_interval=5)
 
     assert len(sleep_calls) == 1
     assert sleep_calls[0] == 5
 
 
 @pytest.mark.asyncio
-async def test_automation_loop_inbox_mode_uses_monitor() -> None:
-    """With batch_size=None the loop delegates to InboxMonitor.poll(), not Scheduler."""
+async def test_automation_loop_uses_inbox_monitor() -> None:
+    """The inbox loop delegates to InboxMonitor.poll() (never Scheduler)."""
     from backend.main import _automation_loop
 
     mock_monitor = AsyncMock()
@@ -77,43 +77,59 @@ async def test_automation_loop_inbox_mode_uses_monitor() -> None:
 
             with patch("backend.main.InboxMonitor", return_value=mock_monitor) as MockMonitor:
                 with patch("backend.main.Scheduler") as MockScheduler:
-                    app = _make_app_stub(
-                        paperless_client=MagicMock(),
-                        manual_svc=MagicMock(),
-                    )
-                    with pytest.raises(asyncio.CancelledError):
-                        await _automation_loop(app, poll_interval=1, batch_size=None)
+                    with patch("backend.main._make_analysis_callbacks", return_value=(AsyncMock(), AsyncMock())):
+                        app = _make_app_stub(
+                            paperless_client=MagicMock(),
+                            manual_svc=MagicMock(),
+                        )
+                        with pytest.raises(asyncio.CancelledError):
+                            await _automation_loop(app, poll_interval=1)
 
     MockMonitor.assert_called_once()
     MockScheduler.assert_not_called()
 
 
 @pytest.mark.asyncio
-async def test_automation_loop_scheduler_mode_uses_scheduler() -> None:
-    """With batch_size=N the loop delegates to Scheduler.run_batch(), not InboxMonitor."""
-    from backend.main import _automation_loop
+async def test_run_scheduler_batch_uses_scheduler() -> None:
+    """The cron-driven batch run delegates to Scheduler.run_batch() once."""
+    from backend.main import _run_scheduler_batch
 
     mock_scheduler = AsyncMock()
     mock_scheduler.run_batch = AsyncMock(return_value=[])
 
-    async def _fake_sleep(_: float) -> None:
-        raise asyncio.CancelledError()
+    with patch("backend.main.AsyncSessionLocal") as mock_session_cls:
+        mock_session = AsyncMock()
+        mock_session.__aenter__ = AsyncMock(return_value=mock_session)
+        mock_session.__aexit__ = AsyncMock(return_value=False)
+        mock_session_cls.return_value = mock_session
 
-    with patch("backend.main.asyncio.sleep", side_effect=_fake_sleep):
-        with patch("backend.main.AsyncSessionLocal") as mock_session_cls:
-            mock_session = AsyncMock()
-            mock_session.__aenter__ = AsyncMock(return_value=mock_session)
-            mock_session.__aexit__ = AsyncMock(return_value=False)
-            mock_session_cls.return_value = mock_session
-
-            with patch("backend.main.Scheduler", return_value=mock_scheduler) as MockScheduler:
-                with patch("backend.main.InboxMonitor") as MockMonitor:
+        with patch("backend.main.Scheduler", return_value=mock_scheduler) as MockScheduler:
+            with patch("backend.main.InboxMonitor") as MockMonitor:
+                with patch("backend.main._make_analysis_callbacks", return_value=(AsyncMock(), AsyncMock())):
                     app = _make_app_stub(
                         paperless_client=MagicMock(),
                         manual_svc=MagicMock(),
                     )
-                    with pytest.raises(asyncio.CancelledError):
-                        await _automation_loop(app, poll_interval=1, batch_size=10)
+                    await _run_scheduler_batch(app)
 
     MockScheduler.assert_called_once()
+    mock_scheduler.run_batch.assert_awaited_once()
     MockMonitor.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_run_scheduler_batch_skips_when_unconfigured() -> None:
+    """No services → the batch run returns without constructing a Scheduler."""
+    from backend.main import _run_scheduler_batch
+
+    with patch("backend.main.AsyncSessionLocal") as mock_session_cls:
+        mock_session = AsyncMock()
+        mock_session.__aenter__ = AsyncMock(return_value=mock_session)
+        mock_session.__aexit__ = AsyncMock(return_value=False)
+        mock_session_cls.return_value = mock_session
+
+        with patch("backend.main.Scheduler") as MockScheduler:
+            app = _make_app_stub(paperless_client=None, manual_svc=None)
+            await _run_scheduler_batch(app)
+
+    MockScheduler.assert_not_called()

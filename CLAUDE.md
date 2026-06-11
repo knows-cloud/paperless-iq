@@ -51,17 +51,19 @@ Do not reorder steps 2 and 3.
 
 ```
 backend/
-  main.py            — all HTTP routes + _automation_loop + background tasks
+  main.py            — all HTTP routes + inbox poller + cron loops + background tasks
   analyzer.py        — DocumentAnalyzer pipeline (fetch → prompt → LLM → persist)
+  grooming.py        — GroomingService: dedup, descriptions, entity embedding, mismatch scan
   providers/         — 4 LLM adapters (ollama, bedrock, anthropic, openai)
   protocols.py       — LLMProvider + VectorStore + Reranker as typing.Protocol
-  orm_models.py      — SQLAlchemy 2 ORM (7 tables)
+  orm_models.py      — SQLAlchemy 2 ORM (9 tables; + entity_descriptions, grooming_dismissals)
   models.py          — Pydantic v2 API models (separate from ORM)
   vector_store.py    — ChromaDB + Qdrant + Bedrock KB implementations (+ shared helpers)
   vector_factory.py  — make_vector_store() — single construction point (see D-20)
   vector_migrate.py  — migrate_embeddings/memories without re-embedding
   rerankers.py       — LLMReranker + LocalCrossEncoderReranker + BedrockReranker (off by default)
   memory_store.py    — ChromaMemoryStore + QdrantMemoryStore + make_memory_store() factory
+  alembic/           — schema migrations (env.py + versions/); run at startup (D-02 sibling)
 
 frontend/src/
   pages/SettingsPage.tsx          — ~510-line orchestrator (all state + handleSubmit)
@@ -93,7 +95,9 @@ frontend/src/
 | `useQuery` / `useMutation` in a tab component | Lift to `SettingsPage.tsx` (except MemoriesTab and AccessControlTab CRUD) |
 | `import { t } from "../i18n"` | `const { t } = useTranslation()` (react-i18next hook) |
 | Add a new UI string in one language | Add to **all 5** `locales/<lang>/translation.json` files; run `npm run check:i18n` |
-| Two separate automation loops | `_automation_loop(batch_size=None|N)` |
+| Drive scheduled work off `poll_interval` / a `batch_size` flag | Cron job via `_cron_loop(name, get_expr, run_job)` (see D-02) |
+| Re-embed inline in a route/merge | `schedule_reembed()` chokepoint (D-22) |
+| Put grooming entity vectors in a vector collection | JSON on `EntityDescriptionORM`; `query_chunks_by_vector` for entity→doc (D-21) |
 | Duplicate pagination loop for Paperless NGX lists | `_paperless_list(entity, extra_fields=None)` |
 | `get_document_ocr_text()` inside `analyze()` | `doc_meta.get("content", "")` |
 | Inherit from `LLMProvider` in a provider adapter | Implement the `typing.Protocol` structurally |
