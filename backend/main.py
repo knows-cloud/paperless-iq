@@ -37,6 +37,7 @@ from backend.approval_queue import ApprovalQueueService
 from backend.audit_log import AuditLogService, rows_to_csv
 from backend.auth import (
     check_login_rate_limit,
+    PaperlessUnreachableError,
     check_webhook_secret,
     create_session,
     get_session_user,
@@ -573,34 +574,65 @@ async def _session_expiry_loop(app: FastAPI) -> None:
 async def _run_alembic_migrations() -> None:
     """Run Alembic migrations to head.
 
-    For databases that pre-date the Alembic migration system (they have the
-    application tables but no alembic_version table), we stamp the baseline
-    revision first so the baseline CREATE TABLE statements are skipped.
+    Self-heals two classes of database that ``upgrade`` alone can't advance:
+
+    * **Pre-Alembic** — has the application tables but no ``alembic_version``
+      row. We stamp the matching baseline so the baseline CREATE TABLE
+      statements are skipped.
+    * **Stale/unknown revision** — ``alembic_version`` holds a revision id that
+      no longer exists in our migration tree (e.g. ``f4d9771c79eb`` from an
+      earlier, since-replaced Alembic setup). ``upgrade`` would abort with
+      "Can't locate revision identified by …", silently leaving the schema
+      behind. We detect the unknown id, pick the baseline that matches the
+      *live* schema, and re-stamp (purging the orphan id) before upgrading.
+
+    The baseline is chosen from the live schema, not assumed: if the grooming
+    objects already exist we stamp 002, otherwise 001 (so 002 then applies).
     """
     from alembic import command as alembic_command
     from alembic.config import Config as AlembicConfig
     from alembic.runtime.migration import MigrationContext
+    from alembic.script import ScriptDirectory
     from sqlalchemy import create_engine, inspect as sa_inspect
 
     def _sync_run() -> None:
         sync_url = DATABASE_URL.replace("+aiosqlite", "")
         sync_engine = create_engine(sync_url, future=True)
+        cfg = AlembicConfig("alembic.ini")
         try:
             with sync_engine.connect() as conn:
                 mc = MigrationContext.configure(conn)
                 current_rev = mc.get_current_revision()
-                if current_rev is None:
-                    inspector = sa_inspect(conn)
-                    tables = set(inspector.get_table_names())
-                    if "suggestions" in tables or "document_tracking" in tables:
-                        # Pre-Alembic database — stamp baseline so it's skipped.
-                        cfg = AlembicConfig("alembic.ini")
-                        alembic_command.stamp(cfg, "001")
-                        logger.info("Stamped pre-Alembic database at baseline revision 001.")
+                known_revs = {
+                    sc.revision for sc in ScriptDirectory.from_config(cfg).walk_revisions()
+                }
+
+                inspector = sa_inspect(conn)
+                tables = set(inspector.get_table_names())
+                has_app_tables = "suggestions" in tables or "document_tracking" in tables
+
+                # current_rev is None        → pre-Alembic database
+                # current_rev not in known   → orphaned id from a prior Alembic setup
+                needs_stamp = has_app_tables and (
+                    current_rev is None or current_rev not in known_revs
+                )
+                if needs_stamp:
+                    # Pick the baseline that matches the live schema so the right
+                    # pending migrations run afterwards.
+                    user_perm_cols = {c["name"] for c in inspector.get_columns("user_permissions")} \
+                        if "user_permissions" in tables else set()
+                    at_grooming = "entity_descriptions" in tables and "can_groom" in user_perm_cols
+                    baseline = "002" if at_grooming else "001"
+                    # purge=True drops the orphan alembic_version row before
+                    # stamping, so an unknown current revision can't block it.
+                    alembic_command.stamp(cfg, baseline, purge=True)
+                    logger.info(
+                        "Stamped database at %s based on live schema (was %r).",
+                        baseline, current_rev,
+                    )
         finally:
             sync_engine.dispose()
 
-        cfg = AlembicConfig("alembic.ini")
         alembic_command.upgrade(cfg, "head")
 
     loop = asyncio.get_running_loop()
@@ -1062,6 +1094,7 @@ async def login(body: LoginBody, request: Request) -> dict:
 
     Returns ``{"token": "...", "user": "..."}`` on success.
     Returns HTTP 401 on invalid credentials.
+    Returns HTTP 502 when Paperless NGX cannot be reached.
     Returns HTTP 429 when the per-IP login rate limit is exceeded.
     """
     client_ip = request.client.host if request.client else "unknown"
@@ -1071,7 +1104,17 @@ async def login(body: LoginBody, request: Request) -> dict:
             detail="Too many login attempts. Please wait a few minutes and try again.",
         )
 
-    ok, _ng_token, is_ng_admin = await validate_paperless_credentials(body.username, body.password)
+    try:
+        ok, _ng_token, is_ng_admin = await validate_paperless_credentials(body.username, body.password)
+    except PaperlessUnreachableError as exc:
+        # Don't disguise a network/config problem as a credential error.
+        raise HTTPException(
+            status_code=status.HTTP_502_BAD_GATEWAY,
+            detail=(
+                f"Cannot reach Paperless NGX at {exc.url}. Check that PAPERLESS_URL "
+                "is correct and that Paperless is reachable from this container."
+            ),
+        )
     if not ok:
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
