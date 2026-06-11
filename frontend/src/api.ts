@@ -153,6 +153,57 @@ export interface EmbedPendingResponse {
   oldest_dirty_since: string | null;
 }
 
+export interface ScanCandidate {
+  entity_type: string;
+  entity_name: string;
+  document_id: number;
+  document_title: string;
+  action: "add" | "remove" | "replace" | "review";
+  score: number;
+  cohort_percentile: number | null;
+  replacement_entity_name?: string | null;
+  deeplink_url: string;
+}
+
+export interface ScanSummary {
+  added: number;
+  removed: number;
+  replaced: number;
+  review: number;
+  skipped_dismissed: number;
+  skipped_pending: number;
+  capped: number;
+}
+
+export interface ScanStatus {
+  running: boolean;
+  done: number;
+  total: number;
+  current_entity: string;
+  last_run_at: string | null;
+  last_summary: ScanSummary | null;
+}
+
+export interface GroomingEvidenceAction {
+  action: "add" | "remove" | "replace" | "review";
+  entity_type: string;
+  entity_id: number;
+  entity_name: string;
+  score: number;
+  cohort_percentile: number | null;
+  reason?: string | null;
+  best_passage: string;
+  replacement_entity_id?: number;
+  replacement_entity_name?: string | null;
+  replacement_score?: number;
+}
+
+export interface GroomingEvidence {
+  actions: GroomingEvidenceAction[];
+  base_tags: string[];
+  scanned_at: string;
+}
+
 export const api = {
   // Auth
   getMe: () =>
@@ -350,6 +401,14 @@ export const api = {
       method: "POST",
       body: JSON.stringify({ keep_id: keepId, remove_ids: removeIds }),
     }),
+
+  // Grooming — mismatch scan
+  groomingScan: (body: { entity_types: string[]; dry_run: boolean }) =>
+    request<{ dry_run: boolean; candidates?: ScanCandidate[]; detail?: string }>("/grooming/scan", {
+      method: "POST",
+      body: JSON.stringify(body),
+    }),
+  groomingScanStatus: () => request<ScanStatus>("/grooming/scan/status"),
 
   // Embeddings (deferred re-embed)
   getEmbedPending: () => request<EmbedPendingResponse>("/embeddings/pending"),

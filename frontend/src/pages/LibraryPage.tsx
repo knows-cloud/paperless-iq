@@ -2,10 +2,13 @@ import { useState, useEffect, useRef } from "react";
 import {
   Title, Stack, Tabs, SegmentedControl, Select, Textarea, Button, Group,
   Text, Paper, Badge, Switch, Alert, Progress, Loader, Center,
-  Modal, Checkbox, Radio, Divider,
+  Modal, Checkbox, Radio, Divider, MultiSelect, Table, Anchor,
 } from "@mantine/core";
 import { useTranslation } from "react-i18next";
-import { api, type GroomingEntity, type DedupCluster, type GenerateStatus } from "../api";
+import {
+  api, type GroomingEntity, type DedupCluster, type GenerateStatus,
+  type ScanCandidate, type ScanStatus,
+} from "../api";
 import { GROOMING_ENTITY_TYPES } from "./settings/constants";
 
 type EntityType = "tag" | "correspondent" | "document_type";
@@ -411,6 +414,242 @@ function DedupTab({ entityType }: { entityType: EntityType }) {
   );
 }
 
+// ── Scan Tab ───────────────────────────────────────────────────────────────
+
+const ACTION_COLORS: Record<string, string> = {
+  add: "teal", remove: "red", replace: "blue", review: "yellow",
+};
+
+function ScanTab() {
+  const { t } = useTranslation();
+  const [selectedTypes, setSelectedTypes] = useState<string[]>(
+    GROOMING_ENTITY_TYPES.map(et => et.value),
+  );
+  const [scanStatus, setScanStatus] = useState<ScanStatus | null>(null);
+  const [candidates, setCandidates] = useState<ScanCandidate[] | null>(null);
+  const [dryRunning, setDryRunning] = useState(false);
+  const [starting, setStarting] = useState(false);
+  const [msg, setMsg] = useState("");
+  const [sortBy, setSortBy] = useState<"score" | "action" | "entity_name">("score");
+  const [sortDesc, setSortDesc] = useState(true);
+  const [vectorBackend, setVectorBackend] = useState("local");
+  const [embedOnline, setEmbedOnline] = useState(true);
+  const [embeddedEntities, setEmbeddedEntities] = useState<{ n: number; m: number } | null>(null);
+  const [indexedDocs, setIndexedDocs] = useState<number | null>(null);
+  const pollRef = useRef<ReturnType<typeof setInterval> | null>(null);
+
+  useEffect(() => {
+    api.groomingScanStatus().then(setScanStatus).catch(() => {});
+    api.getSettings().then(s => setVectorBackend(String((s as Record<string, unknown>).vector_store_backend ?? "local"))).catch(() => {});
+    api.getStatus().then(s => {
+      setEmbedOnline(s.embed_online);
+      setIndexedDocs(s.total_documents);
+    }).catch(() => {});
+    Promise.all(GROOMING_ENTITY_TYPES.map(et => api.groomingListEntities(et.value).catch(() => [] as GroomingEntity[])))
+      .then(lists => {
+        const all = lists.flat().filter(e => !e.excluded);
+        setEmbeddedEntities({ n: all.filter(e => e.embedding_stored).length, m: all.length });
+      });
+  }, []);
+
+  // Poll scan status every 2 s while running
+  useEffect(() => {
+    if (scanStatus?.running) {
+      pollRef.current = setInterval(async () => {
+        try {
+          const s = await api.groomingScanStatus();
+          setScanStatus(s);
+          if (!s.running && pollRef.current) clearInterval(pollRef.current);
+        } catch { /* ignore */ }
+      }, 2000);
+    }
+    return () => { if (pollRef.current) clearInterval(pollRef.current); };
+  }, [scanStatus?.running]);
+
+  async function handleDryRun() {
+    setDryRunning(true);
+    setMsg("");
+    setCandidates(null);
+    try {
+      const r = await api.groomingScan({ entity_types: selectedTypes, dry_run: true });
+      setCandidates(r.candidates ?? []);
+    } catch (err: unknown) {
+      setMsg(t("grooming.error", { msg: (err as Error).message }));
+    } finally {
+      setDryRunning(false);
+    }
+  }
+
+  async function handleScanNow() {
+    setStarting(true);
+    setMsg("");
+    try {
+      await api.groomingScan({ entity_types: selectedTypes, dry_run: false });
+      setMsg(t("grooming.scan.started"));
+      const s = await api.groomingScanStatus();
+      setScanStatus(s);
+    } catch (err: unknown) {
+      setMsg(t("grooming.error", { msg: (err as Error).message }));
+    } finally {
+      setStarting(false);
+    }
+  }
+
+  const disabledReason =
+    vectorBackend === "bedrock_kb" ? t("grooming.scan.disabled.bedrock")
+    : !embedOnline ? t("grooming.scan.disabled.embedDown")
+    : embeddedEntities !== null && embeddedEntities.n === 0 ? t("grooming.scan.disabled.noEmbeddings")
+    : null;
+
+  const summary = scanStatus?.last_summary;
+
+  const sortedCandidates = (candidates ?? []).slice().sort((a, b) => {
+    const av = a[sortBy]; const bv = b[sortBy];
+    const cmp = typeof av === "number" && typeof bv === "number"
+      ? av - bv
+      : String(av).localeCompare(String(bv));
+    return sortDesc ? -cmp : cmp;
+  });
+
+  const sortHeader = (key: typeof sortBy, label: string) => (
+    <Table.Th
+      style={{ cursor: "pointer", userSelect: "none" }}
+      onClick={() => {
+        if (sortBy === key) setSortDesc(d => !d);
+        else { setSortBy(key); setSortDesc(true); }
+      }}
+    >
+      {label}{sortBy === key ? (sortDesc ? " ↓" : " ↑") : ""}
+    </Table.Th>
+  );
+
+  return (
+    <Stack gap="md">
+      {msg && <Alert color={msg.startsWith("Error") ? "red" : "teal"} withCloseButton onClose={() => setMsg("")}>{msg}</Alert>}
+
+      {disabledReason && <Alert color="yellow" variant="light">{disabledReason}</Alert>}
+
+      {/* Status card */}
+      <Paper withBorder p="md" radius="md">
+        <Text fw={600} mb="xs">{t("grooming.scan.statusTitle")}</Text>
+        {scanStatus?.last_run_at ? (
+          <Text size="sm" c="dimmed">
+            {t("grooming.scan.lastRun", { date: new Date(scanStatus.last_run_at).toLocaleString() })}
+          </Text>
+        ) : (
+          <Text size="sm" c="dimmed">{t("grooming.scan.neverRun")}</Text>
+        )}
+        {summary && (
+          <Text size="sm" mt={4}>
+            {t("grooming.scan.summaryLine", {
+              added: summary.added, removed: summary.removed, replaced: summary.replaced,
+              review: summary.review,
+              skipped: summary.skipped_dismissed + summary.skipped_pending,
+              capped: summary.capped,
+            })}
+          </Text>
+        )}
+        {indexedDocs !== null && (
+          <Text size="xs" c="dimmed" mt={4}>{t("grooming.scan.coverage", { docs: indexedDocs })}</Text>
+        )}
+        {embeddedEntities !== null && (
+          <Text size="xs" c="dimmed">
+            {t("grooming.scan.embeddedEntities", { n: embeddedEntities.n, m: embeddedEntities.m })}
+          </Text>
+        )}
+      </Paper>
+
+      {/* Controls */}
+      <Group align="flex-end">
+        <MultiSelect
+          label={t("grooming.scan.entityTypes")}
+          data={GROOMING_ENTITY_TYPES.map(et => ({ value: et.value, label: t(et.labelKey) }))}
+          value={selectedTypes}
+          onChange={setSelectedTypes}
+          style={{ minWidth: 280 }}
+        />
+        <Button
+          variant="default"
+          loading={dryRunning}
+          disabled={Boolean(disabledReason) || selectedTypes.length === 0 || Boolean(scanStatus?.running)}
+          onClick={handleDryRun}
+        >
+          {t("grooming.scan.dryRunBtn")}
+        </Button>
+        <Button
+          loading={starting}
+          disabled={Boolean(disabledReason) || selectedTypes.length === 0 || Boolean(scanStatus?.running)}
+          onClick={handleScanNow}
+        >
+          {t("grooming.scan.scanNowBtn")}
+        </Button>
+      </Group>
+
+      {scanStatus?.running && (
+        <Stack gap="xs">
+          <Progress
+            value={scanStatus.total > 0 ? (scanStatus.done / scanStatus.total) * 100 : 0}
+            animated
+          />
+          <Text size="sm" c="dimmed">
+            {t("grooming.scan.running", { entity: scanStatus.current_entity })}
+          </Text>
+        </Stack>
+      )}
+
+      {/* Dry-run preview table */}
+      {candidates !== null && (
+        candidates.length === 0 ? (
+          <Text c="dimmed" size="sm">{t("grooming.scan.dryRunEmpty")}</Text>
+        ) : (
+          <>
+            <Text size="sm" c="dimmed">{t("grooming.scan.dryRunCount", { count: candidates.length })}</Text>
+            <Table striped highlightOnHover withTableBorder style={{ fontSize: "0.8rem" }}>
+              <Table.Thead>
+                <Table.Tr>
+                  <Table.Th>{t("grooming.scan.col.entityType")}</Table.Th>
+                  {sortHeader("entity_name", t("grooming.scan.col.entity"))}
+                  <Table.Th>{t("grooming.scan.col.document")}</Table.Th>
+                  {sortHeader("action", t("grooming.scan.col.action"))}
+                  {sortHeader("score", t("grooming.scan.col.score"))}
+                  <Table.Th>{t("grooming.scan.col.percentile")}</Table.Th>
+                </Table.Tr>
+              </Table.Thead>
+              <Table.Tbody>
+                {sortedCandidates.map((c, i) => (
+                  <Table.Tr key={i}>
+                    <Table.Td>{t(`grooming.entityType.${c.entity_type === "document_type" ? "documentType" : c.entity_type}`)}</Table.Td>
+                    <Table.Td>
+                      {c.entity_name}
+                      {c.action === "replace" && c.replacement_entity_name && (
+                        <Text span size="xs" c="dimmed"> → {c.replacement_entity_name}</Text>
+                      )}
+                    </Table.Td>
+                    <Table.Td>
+                      {c.deeplink_url ? (
+                        <Anchor href={c.deeplink_url} target="_blank" size="sm">
+                          {c.document_title || `#${c.document_id}`}
+                        </Anchor>
+                      ) : (c.document_title || `#${c.document_id}`)}
+                    </Table.Td>
+                    <Table.Td>
+                      <Badge size="sm" variant="light" color={ACTION_COLORS[c.action] ?? "gray"}>
+                        {t(`grooming.scan.action.${c.action}`)}
+                      </Badge>
+                    </Table.Td>
+                    <Table.Td>{c.score.toFixed(2)}</Table.Td>
+                    <Table.Td>{c.cohort_percentile !== null ? `${c.cohort_percentile}%` : "—"}</Table.Td>
+                  </Table.Tr>
+                ))}
+              </Table.Tbody>
+            </Table>
+          </>
+        )
+      )}
+    </Stack>
+  );
+}
+
 // ── LibraryPage ────────────────────────────────────────────────────────────
 
 export default function LibraryPage() {
@@ -449,9 +688,7 @@ export default function LibraryPage() {
         </Tabs.Panel>
 
         <Tabs.Panel value="scan" keepMounted={false}>
-          <Alert color="blue" variant="light">
-            {t("grooming.scan.comingSoon")}
-          </Alert>
+          <ScanTab />
         </Tabs.Panel>
       </Tabs>
     </Stack>
