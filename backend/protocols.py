@@ -97,6 +97,24 @@ class VectorStore(Protocol):
         omit documents carrying a given tag (e.g. the inbox tag)."""
         ...
 
+    async def query_chunks_by_vector(
+        self,
+        vector: list[float],
+        top_n_chunks: int,
+        entity_filter: dict | None = None,
+    ) -> list[dict[str, Any]]:
+        """Like query_chunks() but takes a precomputed vector — no embed call.
+
+        Each result carries ``document_id``, ``title``, ``passage``, ``score``
+        and chunk metadata (``tags_json``, ``correspondent``,
+        ``document_type``). ``entity_filter`` restricts results to chunks
+        carrying a given entity (cohort scoring for the grooming scan), e.g.
+        ``{"correspondent": "Telekom"}`` or ``{"tag_id": 12}``. Backends that
+        cannot express a given filter raise ``NotImplementedError`` for that
+        filter (Chroma cannot filter on tag_id; Bedrock KB supports no vector
+        queries at all)."""
+        ...
+
     async def count(self) -> int:
         """Return the number of stored vectors (chunks)."""
         ...

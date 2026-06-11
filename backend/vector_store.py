@@ -588,6 +588,67 @@ class ChromaVectorStore(_EmbeddingBackedStore):
         )
         return _assemble_chunk_results(candidates, rerank_scores, self._min_score)
 
+    async def query_chunks_by_vector(
+        self,
+        vector: list[float],
+        top_n_chunks: int,
+        entity_filter: dict | None = None,
+    ) -> list[dict[str, Any]]:
+        """Vector-input chunk query for the grooming scan — no embed, no rerank
+        (scan thresholds need raw cosine-derived scores).
+
+        Chroma can filter on the scalar ``correspondent`` / ``document_type``
+        fields but not on tag ids (they live in ``tag_ids_json``, a JSON
+        string) — a ``tag_id`` filter raises NotImplementedError so the caller
+        falls back to absolute-threshold rules.
+        """
+        where: dict[str, Any] | None = None
+        if entity_filter:
+            if "tag_id" in entity_filter:
+                raise NotImplementedError("Chroma cannot filter chunks by tag id")
+            where = {
+                k: v for k, v in entity_filter.items()
+                if k in ("correspondent", "document_type")
+            } or None
+
+        loop = asyncio.get_running_loop()
+        count = self._collection.count()
+        if count == 0:
+            return []
+
+        results = await loop.run_in_executor(
+            None,
+            lambda: self._collection.query(
+                query_embeddings=[vector],
+                n_results=min(top_n_chunks, count),
+                where=where,
+                include=["documents", "metadatas", "distances"],
+            ),
+        )
+        if not results["ids"] or not results["ids"][0]:
+            return []
+
+        ids = results["ids"][0]
+        documents = results["documents"][0] if results["documents"] else []
+        metadatas = results["metadatas"][0] if results["metadatas"] else []
+        distances = results["distances"][0] if results["distances"] else []
+
+        out: list[dict[str, Any]] = []
+        for i in range(len(ids)):
+            meta = metadatas[i] if i < len(metadatas) else {}
+            dist = distances[i] if i < len(distances) else 1.0
+            out.append({
+                "document_id": meta.get("document_id", 0),
+                "title": meta.get("title", ""),
+                "passage": documents[i] if i < len(documents) else "",
+                "score": 1.0 - (dist / 2.0),
+                "tags_json": meta.get("tags_json", "[]"),
+                "tag_ids_json": meta.get("tag_ids_json", "[]"),
+                "correspondent": meta.get("correspondent", ""),
+                "document_type": meta.get("document_type", ""),
+            })
+        return out
+
     async def reindex_all(self, documents: list[dict[str, Any]]) -> None:
         """Re-index all documents with chunking. Clears existing data first."""
         await self.reset()
@@ -990,6 +1051,65 @@ class QdrantVectorStore(_EmbeddingBackedStore):
             self._reranker, text, [c["passage"] for c in candidates]
         )
         return _assemble_chunk_results(candidates, rerank_scores, self._min_score)
+
+    async def query_chunks_by_vector(
+        self,
+        vector: list[float],
+        top_n_chunks: int,
+        entity_filter: dict | None = None,
+    ) -> list[dict[str, Any]]:
+        """Vector-input chunk query for the grooming scan — no embed, no rerank
+        (scan thresholds need raw cosine-derived scores).
+
+        Always queries the dense vector even when hybrid search is enabled:
+        RRF-fused scores are not similarities and would not be comparable to
+        the scan thresholds. ``tag_id`` filters work here (``tag_ids`` is a
+        real integer array in the payload).
+        """
+        if not await self._collection_present():
+            return []
+        from qdrant_client import models
+
+        query_filter = None
+        if entity_filter:
+            conditions = []
+            if "tag_id" in entity_filter:
+                conditions.append(models.FieldCondition(
+                    key="tag_ids", match=models.MatchValue(value=int(entity_filter["tag_id"]))
+                ))
+            for key in ("correspondent", "document_type"):
+                if key in entity_filter:
+                    conditions.append(models.FieldCondition(
+                        key=key, match=models.MatchValue(value=entity_filter[key])
+                    ))
+            if conditions:
+                query_filter = models.Filter(must=conditions)
+
+        kwargs: dict[str, Any] = {
+            "collection_name": self._collection,
+            "query": vector,
+            "limit": top_n_chunks,
+            "query_filter": query_filter,
+            "with_payload": True,
+        }
+        if self._hybrid_search:
+            kwargs["using"] = "dense"
+        res = await self._client.query_points(**kwargs)
+
+        out: list[dict[str, Any]] = []
+        for p in res.points:
+            payload = p.payload or {}
+            out.append({
+                "document_id": payload.get("document_id", 0),
+                "title": payload.get("title", ""),
+                "passage": payload.get("passage", ""),
+                "score": self._norm_score(p.score),
+                "tags_json": payload.get("tags_json", "[]"),
+                "tag_ids_json": payload.get("tag_ids_json", "[]"),
+                "correspondent": payload.get("correspondent", ""),
+                "document_type": payload.get("document_type", ""),
+            })
+        return out
 
     async def query_similar_metadata(
         self,

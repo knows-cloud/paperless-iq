@@ -102,6 +102,7 @@ def _orm_to_pydantic(row: SuggestionORM) -> MetadataSuggestion:
         raw_llm_response=row.raw_llm_response,
         extracted_content=row.extracted_content,
         original_ocr_content=row.original_ocr_content,
+        evidence_json=row.evidence_json,
     )
 
 
@@ -125,6 +126,7 @@ def _pydantic_to_orm(suggestion: MetadataSuggestion) -> SuggestionORM:
         raw_llm_response=suggestion.raw_llm_response,
         extracted_content=suggestion.extracted_content,
         original_ocr_content=suggestion.original_ocr_content,
+        evidence_json=suggestion.evidence_json,
     )
 
 
@@ -355,11 +357,18 @@ class ApprovalQueueService:
         change_source: str = "human",
         document_title: str | None = None,
         session_id: str | None = None,
+        record_dismissals: bool = True,
     ) -> MetadataSuggestion:
         """
         Reject a suggestion — no Paperless NGX write.
 
         Idempotent: rejecting an already-rejected suggestion is a no-op.
+
+        For grooming suggestions a rejection is a permanent answer: one
+        GroomingDismissalORM row is written per action in evidence_json so
+        the scan never re-suggests it (unless grooming_resuggest_after_days
+        elapses). ``record_dismissals=False`` skips this — used by the
+        Empty Queue wipe, which clears clutter without recording judgments.
 
         Validates: Requirements 7.4, 7.7
         """
@@ -374,6 +383,9 @@ class ApprovalQueueService:
                 f"Suggestion {suggestion_id} is already 'approved'; cannot reject."
             )
         row.status = "rejected"
+
+        if record_dismissals and row.analysis_mode == "grooming" and row.evidence_json:
+            self._record_grooming_dismissals(row)
 
         rejection_event = AuditLogORM(
             id=str(uuid4()),
@@ -394,6 +406,26 @@ class ApprovalQueueService:
         await self._session.refresh(row)
         logger.info("Rejected suggestion %s for document %d.", row.id, row.document_id)
         return _orm_to_pydantic(row)
+
+    def _record_grooming_dismissals(self, row: SuggestionORM) -> None:
+        """Add one GroomingDismissalORM per evidence action (no commit)."""
+        from backend.orm_models import GroomingDismissalORM
+
+        try:
+            evidence = json.loads(row.evidence_json or "{}")
+        except (json.JSONDecodeError, TypeError):
+            return
+        for action in evidence.get("actions", []):
+            entity_id = action.get("entity_id")
+            if entity_id is None:
+                continue
+            self._session.add(GroomingDismissalORM(
+                entity_type=action.get("entity_type", ""),
+                entity_id=int(entity_id),
+                document_id=row.document_id,
+                action=action.get("action", ""),
+                other_entity_id=action.get("replacement_entity_id"),
+            ))
 
     # ------------------------------------------------------------------
     # bulk operations

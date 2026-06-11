@@ -1254,12 +1254,16 @@ async def bulk_reject(
 async def empty_queue(
     svc: Annotated[ApprovalQueueService, Depends(_queue_service)],
 ) -> dict:
-    """Reject all pending suggestions (empty the queue)."""
+    """Reject all pending suggestions (empty the queue).
+
+    Clutter-clearing, not judgment: grooming dismissal memory is NOT written,
+    so a later scan may re-suggest what was wiped here.
+    """
     pending, total = await svc.list(status="pending", page=1, page_size=10000)
     rejected = 0
     for s in pending:
         try:
-            await svc.reject(s.id)
+            await svc.reject(s.id, record_dismissals=False)
             rejected += 1
         except ValueError:
             pass
@@ -1372,9 +1376,10 @@ async def reanalyze_queue_item(
     except Exception as exc:
         raise HTTPException(status_code=500, detail=f"Re-analysis failed (original kept): {exc}")
 
-    # Only reject the old one after successful analysis
+    # Only reject the old one after successful analysis. This is a swap, not a
+    # judgment — don't record grooming dismissals.
     try:
-        await svc.reject(body.suggestion_id)
+        await svc.reject(body.suggestion_id, record_dismissals=False)
     except ValueError:
         pass
 
@@ -1415,9 +1420,10 @@ async def reanalyze_all_queue(
                     suggestion = await manual_svc.analyze(doc_id)
                 async with AsyncSessionLocal() as session:
                     q = ApprovalQueueService(session)
-                    # Reject old only after successful analysis
+                    # Reject old only after successful analysis — a swap, not
+                    # a judgment: don't record grooming dismissals.
                     try:
-                        await q.reject(old_id)
+                        await q.reject(old_id, record_dismissals=False)
                     except ValueError:
                         pass
                     await q.enqueue(suggestion)
@@ -3653,7 +3659,8 @@ def _grooming_svc(
 ) -> GroomingService:
     pc = getattr(request.app.state, "paperless_client", None)
     providers = getattr(request.app.state, "providers", None)
-    return GroomingService(session, pc, providers, _settings_svc.config)
+    vs = getattr(request.app.state, "vector_store", None)
+    return GroomingService(session, pc, providers, _settings_svc.config, vector_store=vs)
 
 
 _VALID_ENTITY_TYPES = {"tag", "correspondent", "document_type"}
@@ -3805,6 +3812,67 @@ async def grooming_merge(
             pass  # Handled by webhook events on the Paperless side
 
     return result
+
+
+# ── Mismatch scan (Step 5) ──────────────────────────────────────────────────
+
+class ScanBody(BaseModel):
+    entity_types: list[str] = ["tag", "correspondent", "document_type"]
+    dry_run: bool = False
+
+
+def _check_scan_available(request: Request) -> None:
+    """Raise when the scan cannot run: Bedrock KB backend (no vector queries),
+    open embed circuit breaker, or no vector store at all."""
+    config = _settings_svc.config
+    if getattr(config, "vector_store_backend", "local") == "bedrock_kb":
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="Scan is unavailable on the Bedrock KB backend (no vector queries).",
+        )
+    vs = getattr(request.app.state, "vector_store", None)
+    if vs is None:
+        raise HTTPException(status_code=503, detail="Vector store not configured.")
+    oq = getattr(request.app.state, "ollama_queue", None)
+    if oq is not None and oq.cached_health.get("embed") is False:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="Embedding service unavailable — scan paused until it recovers.",
+        )
+
+
+@app.post("/api/grooming/scan", tags=["grooming"],
+          dependencies=[Depends(require_perm("can_groom"))])
+async def grooming_scan(
+    body: ScanBody,
+    request: Request,
+    svc: GroomingService = Depends(_grooming_svc),
+) -> dict:
+    """Run the mismatch scan: dry_run returns the scored candidate list
+    without enqueueing; otherwise a background task enqueues suggestions
+    (202; 409 while one runs)."""
+    for et in body.entity_types:
+        _check_etype(et)
+    if not body.entity_types:
+        raise HTTPException(status_code=400, detail="entity_types must not be empty")
+    _check_scan_available(request)
+
+    from backend.grooming import _scan_lock
+    if _scan_lock.locked():
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="A scan is already running.")
+
+    if body.dry_run:
+        candidates = await svc.run_scan_dry(body.entity_types)
+        return {"dry_run": True, "candidates": candidates}
+
+    await svc.start_scan(body.entity_types)
+    return {"detail": "Scan started.", "dry_run": False}
+
+
+@app.get("/api/grooming/scan/status", tags=["grooming"],
+         dependencies=[Depends(require_perm("can_groom"))])
+async def grooming_scan_status() -> dict:
+    return GroomingService.get_scan_status()
 
 
 # ---------------------------------------------------------------------------

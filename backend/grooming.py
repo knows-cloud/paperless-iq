@@ -1,12 +1,13 @@
-"""Library grooming service — dedup, descriptions, entity embedding.
+"""Library grooming service — dedup, descriptions, entity embedding, scan.
 
-This module implements Steps 1–4 of the grooming rollout:
+This module implements Steps 1–5 of the grooming rollout:
   1. Entity sync from Paperless (list_entities / sync_entities)
   2. Description CRUD + LLM generation (single + bulk)
   3. Entity embedding  (embed_entity)
   4. Dedup candidates  (get_dedup_candidates / merge_entities)
-
-Step 5 (mismatch scan) adds query_chunks_by_vector and is not here yet.
+  5. Mismatch scan     (run_scan / collect_scan_candidates) — zero LLM,
+     zero embed: entity vectors query document chunks, classification with
+     hysteresis, dismissal memory, capped enqueue into the approval queue.
 """
 
 from __future__ import annotations
@@ -42,6 +43,27 @@ _generate_status: dict[str, Any] = {
     "current_entity": "",
     "cancelled": False,
 }
+
+# ── Module-level state for background scan task ────────────────────────────
+
+_scan_lock = asyncio.Lock()
+
+_scan_status: dict[str, Any] = {
+    "running": False,
+    "done": 0,
+    "total": 0,
+    "current_entity": "",
+    "last_run_at": None,
+    "last_summary": None,
+}
+
+# Cohort-percentile remove rule needs enough documents to make a "bottom N%"
+# meaningful — tiny cohorts would always flag their weakest member.
+_MIN_COHORT_FOR_PERCENTILE = 10
+
+# Best-passage excerpt length stored in evidence_json (queue card truncates
+# to 150 chars for display and expands to this).
+_EVIDENCE_PASSAGE_CHARS = 300
 
 _GROOMING_DESC_PROMPT = """\
 You are documenting the metadata vocabulary of a document archive.
@@ -105,6 +127,159 @@ def _transitive_clusters(pairs: list[tuple[int, int]]) -> list[list[int]]:
     return list(clusters.values())
 
 
+# ── Scan classification (pure functions — unit-tested over fixture scores) ──
+
+def compute_cohort_percentiles(cohort_scores: dict[int, float]) -> dict[int, float]:
+    """Percentile rank (0–100, 0 = weakest) per document within its cohort.
+
+    Documents missing from the filtered query are scored 0.0 by the caller, so
+    they land at the bottom. Returns {} for cohorts too small for the bottom-N%
+    rule to be meaningful.
+    """
+    n = len(cohort_scores)
+    if n < _MIN_COHORT_FOR_PERCENTILE:
+        return {}
+    ordered = sorted(cohort_scores.items(), key=lambda kv: kv[1])
+    return {
+        doc_id: 100.0 * i / (n - 1)
+        for i, (doc_id, _) in enumerate(ordered)
+    }
+
+
+def classify_tag_entity(
+    *,
+    doc_scores: dict[int, float],
+    supporting_chunks: dict[int, int],
+    assigned_doc_ids: set[int],
+    cohort_percentiles: dict[int, float],
+    add_threshold: float,
+    remove_threshold: float,
+    remove_percentile: int,
+    min_supporting_chunks: int,
+    top_k: int,
+) -> list[dict]:
+    """Classify add/remove candidates for one tag entity (GROOMING_PLAN §5).
+
+    ``doc_scores`` is the best chunk score per document from the unfiltered
+    entity-vector query; ``cohort_percentiles`` comes from the filtered cohort
+    query ({} when the backend can't filter or the cohort is too small).
+    Hysteresis is implicit: scores in the dead band between ``remove_threshold``
+    and ``add_threshold`` produce no action.
+    """
+    actions: list[dict] = []
+
+    for doc_id, score in doc_scores.items():
+        if doc_id in assigned_doc_ids:
+            continue
+        if score >= add_threshold and supporting_chunks.get(doc_id, 0) >= min_supporting_chunks:
+            actions.append({
+                "document_id": doc_id, "action": "add", "score": round(score, 4),
+                "cohort_percentile": None, "distance": score - add_threshold,
+            })
+
+    # Absence from the top-k is only evidence when the query was deep enough
+    # to have plausibly covered the entity's whole document set.
+    absence_is_evidence = top_k >= 3 * max(len(assigned_doc_ids), 1)
+    for doc_id in sorted(assigned_doc_ids):
+        score = doc_scores.get(doc_id)
+        pct = cohort_percentiles.get(doc_id)
+        reason = None
+        if score is not None and score < remove_threshold:
+            reason = "low_score"
+        elif score is None and absence_is_evidence:
+            reason = "absent"
+            score = 0.0
+        elif pct is not None and pct <= remove_percentile:
+            reason = "cohort_bottom"
+            score = score if score is not None else 0.0
+        if reason:
+            actions.append({
+                "document_id": doc_id, "action": "remove", "score": round(score or 0.0, 4),
+                "cohort_percentile": round(pct, 1) if pct is not None else None,
+                "distance": remove_threshold - (score or 0.0), "reason": reason,
+            })
+    return actions
+
+
+def classify_single_valued_entity(
+    *,
+    entity_id: int,
+    doc_scores: dict[int, float],
+    supporting_chunks: dict[int, int],
+    assigned_doc_ids: set[int],
+    incumbent_by_doc: dict[int, int | None],
+    competitor_best: dict[int, tuple[int, float]],
+    cohort_percentiles: dict[int, float],
+    add_threshold: float,
+    remove_threshold: float,
+    remove_percentile: int,
+    min_supporting_chunks: int,
+    top_k: int,
+) -> list[dict]:
+    """Classify add/replace/review candidates for one correspondent or
+    document_type entity (GROOMING_PLAN §5).
+
+    Single-valued fields never get a bare remove: a mismatching incumbent is
+    either replaced (a competitor clears ``add_threshold`` AND outscores the
+    incumbent) or flagged ``review`` (needs decision).
+    ``incumbent_by_doc`` maps document → currently assigned entity id of this
+    type (None = unset); ``competitor_best`` maps document → (other_entity_id,
+    score) for the best-scoring *other* entity of the same type.
+    """
+    actions: list[dict] = []
+
+    # add — only for documents with no incumbent at all
+    for doc_id, score in doc_scores.items():
+        if doc_id in assigned_doc_ids:
+            continue
+        if incumbent_by_doc.get(doc_id) is not None:
+            continue
+        if score >= add_threshold and supporting_chunks.get(doc_id, 0) >= min_supporting_chunks:
+            actions.append({
+                "document_id": doc_id, "action": "add", "score": round(score, 4),
+                "cohort_percentile": None, "distance": score - add_threshold,
+            })
+
+    # replace / review — mismatch rules (a)/(b)/(c) on the incumbent
+    absence_is_evidence = top_k >= 3 * max(len(assigned_doc_ids), 1)
+    for doc_id in sorted(assigned_doc_ids):
+        score = doc_scores.get(doc_id)
+        pct = cohort_percentiles.get(doc_id)
+        mismatch = None
+        if score is not None and score < remove_threshold:
+            mismatch = "low_score"
+        elif score is None and absence_is_evidence:
+            mismatch = "absent"
+            score = 0.0
+        elif pct is not None and pct <= remove_percentile:
+            mismatch = "cohort_bottom"
+            score = score if score is not None else 0.0
+        if not mismatch:
+            continue
+
+        incumbent_score = score or 0.0
+        competitor = competitor_best.get(doc_id)
+        if competitor is not None and competitor[1] >= add_threshold and competitor[1] > incumbent_score:
+            actions.append({
+                "document_id": doc_id, "action": "replace",
+                "score": round(incumbent_score, 4),
+                "cohort_percentile": round(pct, 1) if pct is not None else None,
+                "distance": competitor[1] - incumbent_score,
+                "reason": mismatch,
+                "replacement_entity_id": competitor[0],
+                "replacement_score": round(competitor[1], 4),
+            })
+        else:
+            actions.append({
+                "document_id": doc_id, "action": "review",
+                "score": round(incumbent_score, 4),
+                "cohort_percentile": round(pct, 1) if pct is not None else None,
+                "distance": remove_threshold - incumbent_score,
+                "reason": mismatch,
+            })
+    return actions
+
+
 # ── GroomingService ────────────────────────────────────────────────────────
 
 class GroomingService:
@@ -116,22 +291,18 @@ class GroomingService:
         paperless_client: Any | None,
         providers: dict | None,
         config: Any,
+        vector_store: Any | None = None,
     ) -> None:
         self._db = session
         self._pc = paperless_client
         self._providers = providers
         self._config = config
+        self._vs = vector_store
 
     # ── Entity sync ────────────────────────────────────────────────────────
 
-    async def sync_and_list_entities(self, entity_type: str) -> list[dict]:
-        """Fetch entities from Paperless, sync to DB, return enriched list.
-
-        ``entity_type`` is one of ``"tag"``, ``"correspondent"``, ``"document_type"``.
-        """
-        if self._pc is None:
-            raise RuntimeError("Paperless NGX client not available")
-
+    async def _fetch_paperless_entities(self, entity_type: str) -> list[dict]:
+        """Fetch all entities of a type from Paperless (paginated)."""
         etype_plural = {"tag": "tags", "correspondent": "correspondents", "document_type": "document_types"}[entity_type]
         base_url = self._pc._base_url
         headers = self._pc._headers
@@ -146,6 +317,17 @@ class GroomingService:
                 for item in data.get("results", []):
                     entities.append({"id": item["id"], "name": item["name"], "document_count": item.get("document_count", 0)})
                 url = data.get("next")
+        return entities
+
+    async def sync_and_list_entities(self, entity_type: str) -> list[dict]:
+        """Fetch entities from Paperless, sync to DB, return enriched list.
+
+        ``entity_type`` is one of ``"tag"``, ``"correspondent"``, ``"document_type"``.
+        """
+        if self._pc is None:
+            raise RuntimeError("Paperless NGX client not available")
+
+        entities = await self._fetch_paperless_entities(entity_type)
 
         # Sync to DB: upsert rows, prune deleted ones
         existing_ids = {item["id"] for item in entities}
@@ -610,6 +792,482 @@ class GroomingService:
 
         await self._db.commit()
         return {"documents_updated": docs_updated, "entities_deleted": entities_deleted}
+
+    # ── Mismatch scan (Step 5) ─────────────────────────────────────────────
+
+    async def _fetch_document(self, doc_id: int) -> dict | None:
+        """Fetch one document's current metadata from Paperless (None on 404)."""
+        if self._pc is None:
+            return None
+        base_url = self._pc._base_url
+        headers = self._pc._headers
+        async with httpx.AsyncClient(headers=headers, timeout=30) as client:
+            r = await client.get(f"{base_url}/api/documents/{doc_id}/")
+            if r.status_code != 200:
+                return None
+            return r.json()
+
+    async def _load_dismissed_keys(self, entity_types: list[str]) -> set[tuple]:
+        """(entity_type, entity_id, document_id, action) keys still in force.
+
+        A dismissal expires after ``grooming_resuggest_after_days`` (0 = never).
+        """
+        from datetime import timedelta
+
+        resuggest_days = getattr(self._config, "grooming_resuggest_after_days", 0)
+        q = select(GroomingDismissalORM).where(
+            GroomingDismissalORM.entity_type.in_(entity_types),
+            GroomingDismissalORM.action != "dedup",
+        )
+        result = await self._db.execute(q)
+        cutoff = (
+            datetime.now(timezone.utc) - timedelta(days=resuggest_days)
+            if resuggest_days > 0 else None
+        )
+        keys: set[tuple] = set()
+        for d in result.scalars().all():
+            if cutoff is not None:
+                dismissed_at = d.dismissed_at
+                if dismissed_at is not None and dismissed_at.tzinfo is None:
+                    dismissed_at = dismissed_at.replace(tzinfo=timezone.utc)
+                if dismissed_at is not None and dismissed_at < cutoff:
+                    continue  # expired — may re-suggest
+            keys.add((d.entity_type, d.entity_id, d.document_id, d.action))
+        return keys
+
+    @staticmethod
+    def _is_dismissed(dismissed: set[tuple], c: dict) -> bool:
+        """True when a candidate is blocked by dismissal memory. A rejected
+        replace blocks future review for the same (entity, document) and vice
+        versa — both express "keep the incumbent, stop asking"."""
+        key_actions = (
+            ("replace", "review") if c["action"] in ("replace", "review")
+            else (c["action"],)
+        )
+        return any(
+            (c["entity_type"], c["entity_id"], c["document_id"], a) in dismissed
+            for a in key_actions
+        )
+
+    async def collect_scan_candidates(self, entity_types: list[str]) -> tuple[list[dict], dict]:
+        """Run the entity-vector queries and classification for all included
+        entities — shared by dry-run and the real scan. No enqueueing here.
+
+        Returns ``(candidates, stats)`` where each candidate carries
+        entity_type/entity_id/entity_name/document_id/document_title/action/
+        score/cohort_percentile/distance/best_passage (+ replacement fields).
+        """
+        if self._vs is None:
+            raise RuntimeError("Vector store not available")
+
+        top_k = getattr(self._config, "grooming_scan_top_k", 100)
+        add_threshold = getattr(self._config, "grooming_add_threshold", 0.80)
+        remove_threshold = getattr(self._config, "grooming_remove_threshold", 0.35)
+        remove_percentile = getattr(self._config, "grooming_remove_percentile", 10)
+        min_chunks = getattr(self._config, "grooming_min_supporting_chunks", 2)
+        embedding_model = getattr(self._config, "embedding_model", "")
+        inbox_tag_id = getattr(self._config, "inbox_tag_id", None)
+
+        dismissed = await self._load_dismissed_keys(entity_types)
+
+        # Documents already covered by a pending suggestion are skipped.
+        from backend.orm_models import SuggestionORM
+        pending_q = await self._db.execute(
+            select(SuggestionORM.document_id).where(SuggestionORM.status == "pending")
+        )
+        pending_doc_ids: set[int] = {row[0] for row in pending_q.all()}
+
+        candidates: list[dict] = []
+        stats = {"skipped_dismissed": 0, "skipped_pending": 0, "entities_scanned": 0}
+
+        filter_params = {
+            "tag": "tags__id",
+            "correspondent": "correspondent__id",
+            "document_type": "document_type__id",
+        }
+
+        for entity_type in entity_types:
+            result = await self._db.execute(
+                select(EntityDescriptionORM).where(
+                    EntityDescriptionORM.entity_type == entity_type,
+                    EntityDescriptionORM.excluded.is_(False),
+                )
+            )
+            rows = [
+                r for r in result.scalars().all()
+                if not (entity_type == "tag" and r.entity_id == inbox_tag_id)
+            ]
+
+            # Lazy re-embed (GROOMING_PLAN §2): vectors invalidated by a model
+            # switch get one tiny embed call each. Entities that were never
+            # embedded (no description generated yet) stay out of the scan —
+            # embeddings are created by the description flow, not here.
+            for row in rows:
+                needs_refresh = (
+                    (row.description and not row.embedding_stored)
+                    or (row.embedding_json and row.embed_model != embedding_model)
+                )
+                if needs_refresh:
+                    await self._embed_entity_row(row)
+            await self._db.commit()
+            rows = [r for r in rows if r.embedding_stored and r.embedding_json]
+
+            # Pass 1 — per-entity unfiltered vector query + ground truth
+            per_entity: dict[int, dict] = {}
+            for row in rows:
+                if _scan_lock.locked():  # progress only for the real scan, not dry-run
+                    _scan_status["current_entity"] = f"{entity_type}:{row.name_snapshot}"
+                vector = json.loads(row.embedding_json)
+                results = await self._vs.query_chunks_by_vector(vector, top_k)
+
+                doc_scores: dict[int, float] = {}
+                supporting: dict[int, int] = {}
+                passages: dict[int, str] = {}
+                titles: dict[int, str] = {}
+                payload_incumbent: dict[int, str] = {}
+                for r in results:
+                    d = r["document_id"]
+                    if not d:
+                        continue
+                    if r["score"] > doc_scores.get(d, -1.0):
+                        doc_scores[d] = r["score"]
+                        passages[d] = (r.get("passage") or "")[:_EVIDENCE_PASSAGE_CHARS]
+                        titles[d] = r.get("title", "")
+                    if r["score"] >= add_threshold:
+                        supporting[d] = supporting.get(d, 0) + 1
+                    if entity_type in ("correspondent", "document_type"):
+                        payload_incumbent[d] = r.get(entity_type, "") or ""
+
+                assigned = await self._fetch_entity_docs(
+                    filter_params[entity_type], row.entity_id, limit=10_000
+                )
+                assigned_ids = {d["id"] for d in assigned}
+                titles.update({d["id"]: d["title"] for d in assigned})
+
+                # Cohort scoring — filtered query where the backend supports it
+                cohort_percentiles: dict[int, float] = {}
+                if assigned_ids:
+                    entity_filter = (
+                        {"tag_id": row.entity_id} if entity_type == "tag"
+                        else {entity_type: row.name_snapshot}
+                    )
+                    cohort_top_n = max(top_k, min(2000, 5 * len(assigned_ids)))
+                    try:
+                        cohort_results = await self._vs.query_chunks_by_vector(
+                            vector, cohort_top_n, entity_filter=entity_filter
+                        )
+                        cohort_scores = {doc_id: 0.0 for doc_id in assigned_ids}
+                        for r in cohort_results:
+                            d = r["document_id"]
+                            if d in cohort_scores and r["score"] > cohort_scores[d]:
+                                cohort_scores[d] = r["score"]
+                        cohort_percentiles = compute_cohort_percentiles(cohort_scores)
+                    except NotImplementedError:
+                        pass  # Chroma tag cohorts — absolute rules only
+
+                per_entity[row.entity_id] = {
+                    "row": row,
+                    "doc_scores": doc_scores,
+                    "supporting": supporting,
+                    "passages": passages,
+                    "titles": titles,
+                    "assigned_ids": assigned_ids,
+                    "cohort_percentiles": cohort_percentiles,
+                    "payload_incumbent": payload_incumbent,
+                }
+                stats["entities_scanned"] += 1
+                if _scan_lock.locked():
+                    _scan_status["done"] = stats["entities_scanned"]
+
+            # Pass 2 — classification (single-valued needs the cross-entity view)
+            incumbent_by_doc: dict[int, int | None] = {}
+            if entity_type in ("correspondent", "document_type"):
+                for eid, data in per_entity.items():
+                    for doc_id in data["assigned_ids"]:
+                        incumbent_by_doc[doc_id] = eid
+                # Chunk-payload fallback: a non-empty incumbent name we can't
+                # map to an included entity still blocks "add" suggestions.
+                for data in per_entity.values():
+                    for doc_id, name in data["payload_incumbent"].items():
+                        if name and doc_id not in incumbent_by_doc:
+                            incumbent_by_doc[doc_id] = -1
+
+            name_by_id = {eid: data["row"].name_snapshot for eid, data in per_entity.items()}
+
+            for eid, data in per_entity.items():
+                row = data["row"]
+                kwargs = dict(
+                    doc_scores=data["doc_scores"],
+                    supporting_chunks=data["supporting"],
+                    assigned_doc_ids=data["assigned_ids"],
+                    cohort_percentiles=data["cohort_percentiles"],
+                    add_threshold=add_threshold,
+                    remove_threshold=remove_threshold,
+                    remove_percentile=remove_percentile,
+                    min_supporting_chunks=min_chunks,
+                    top_k=top_k,
+                )
+                if entity_type == "tag":
+                    actions = classify_tag_entity(**kwargs)
+                else:
+                    competitor_best: dict[int, tuple[int, float]] = {}
+                    for other_eid, other in per_entity.items():
+                        if other_eid == eid:
+                            continue
+                        for doc_id, sc in other["doc_scores"].items():
+                            if doc_id not in competitor_best or sc > competitor_best[doc_id][1]:
+                                competitor_best[doc_id] = (other_eid, sc)
+                    actions = classify_single_valued_entity(
+                        entity_id=eid,
+                        incumbent_by_doc=incumbent_by_doc,
+                        competitor_best=competitor_best,
+                        **kwargs,
+                    )
+
+                for a in actions:
+                    doc_id = a["document_id"]
+                    c = {
+                        **a,
+                        "entity_type": entity_type,
+                        "entity_id": eid,
+                        "entity_name": row.name_snapshot,
+                        "document_title": data["titles"].get(doc_id, ""),
+                        "best_passage": data["passages"].get(doc_id, ""),
+                    }
+                    if "replacement_entity_id" in a:
+                        c["replacement_entity_name"] = name_by_id.get(
+                            a["replacement_entity_id"], str(a["replacement_entity_id"])
+                        )
+                    if self._is_dismissed(dismissed, c):
+                        stats["skipped_dismissed"] += 1
+                        continue
+                    if doc_id in pending_doc_ids:
+                        stats["skipped_pending"] += 1
+                        continue
+                    candidates.append(c)
+
+        return candidates, stats
+
+    async def run_scan_dry(self, entity_types: list[str]) -> list[dict]:
+        """Full scan without enqueueing — the threshold-calibration preview."""
+        candidates, _stats = await self.collect_scan_candidates(entity_types)
+        candidates.sort(key=lambda c: -c["distance"])
+        base_url = self._pc._base_url if self._pc else ""
+        return [
+            {
+                "entity_type": c["entity_type"],
+                "entity_name": c["entity_name"],
+                "document_id": c["document_id"],
+                "document_title": c["document_title"],
+                "action": c["action"],
+                "score": c["score"],
+                "cohort_percentile": c["cohort_percentile"],
+                "replacement_entity_name": c.get("replacement_entity_name"),
+                "deeplink_url": f"{base_url}/documents/{c['document_id']}/" if base_url else "",
+            }
+            for c in candidates
+        ]
+
+    async def start_scan(self, entity_types: list[str]) -> None:
+        """Start the background scan task (409 via RuntimeError if running)."""
+        if _scan_lock.locked():
+            raise RuntimeError("scan_running")
+        asyncio.create_task(self._scan_bg(entity_types))
+
+    async def _scan_bg(self, entity_types: list[str]) -> None:
+        global _scan_status
+        async with _scan_lock:
+            from backend.database import AsyncSessionLocal
+            _scan_status.update({
+                "running": True, "done": 0, "total": 0, "current_entity": "",
+            })
+            summary = {
+                "added": 0, "removed": 0, "replaced": 0, "review": 0,
+                "skipped_dismissed": 0, "skipped_pending": 0, "capped": 0,
+            }
+            try:
+                async with AsyncSessionLocal() as db:
+                    svc = GroomingService(db, self._pc, self._providers, self._config, self._vs)
+                    count_q = await db.execute(
+                        select(EntityDescriptionORM).where(
+                            EntityDescriptionORM.entity_type.in_(entity_types),
+                            EntityDescriptionORM.excluded.is_(False),
+                        )
+                    )
+                    _scan_status["total"] = len(count_q.scalars().all())
+
+                    candidates, stats = await svc.collect_scan_candidates(entity_types)
+                    summary["skipped_dismissed"] = stats["skipped_dismissed"]
+                    summary["skipped_pending"] = stats["skipped_pending"]
+
+                    enqueued = await svc._enqueue_candidates(candidates, summary)
+                    logger.info(
+                        "Grooming scan finished: %d suggestions enqueued (%s).",
+                        enqueued, summary,
+                    )
+
+                    now = datetime.now(timezone.utc)
+                    scanned = await db.execute(
+                        select(EntityDescriptionORM).where(
+                            EntityDescriptionORM.entity_type.in_(entity_types),
+                            EntityDescriptionORM.excluded.is_(False),
+                        )
+                    )
+                    for row in scanned.scalars().all():
+                        row.last_scanned_at = now
+                    await db.commit()
+            except Exception:
+                logger.exception("Grooming scan failed")
+            finally:
+                _scan_status.update({
+                    "running": False,
+                    "current_entity": "",
+                    "last_run_at": datetime.now(timezone.utc).isoformat(),
+                    "last_summary": summary,
+                })
+
+    async def _enqueue_candidates(self, candidates: list[dict], summary: dict) -> int:
+        """Cap, group per document, build corrected values, enqueue.
+
+        Candidate actions are re-validated against the document's *current*
+        metadata (fetched here) — anything the scan saw that has since changed
+        is silently dropped rather than enqueued stale.
+        """
+        from backend.approval_queue import ApprovalQueueService
+        from backend.models import MetadataSuggestion
+        from uuid import uuid4
+
+        max_suggestions = getattr(self._config, "grooming_max_suggestions_per_scan", 50)
+        embed_provider_name = getattr(self._config, "embed_provider", "ollama")
+        embedding_model = getattr(self._config, "embedding_model", "")
+
+        candidates = sorted(candidates, key=lambda c: -c["distance"])
+
+        # The cap applies to documents (one suggestion each), highest-evidence
+        # actions first; remaining actions for a selected document ride along.
+        selected_docs: list[int] = []
+        for c in candidates:
+            if c["document_id"] not in selected_docs:
+                if len(selected_docs) >= max_suggestions:
+                    continue
+                selected_docs.append(c["document_id"])
+        by_doc: dict[int, list[dict]] = {d: [] for d in selected_docs}
+        for c in candidates:
+            if c["document_id"] in by_doc:
+                by_doc[c["document_id"]].append(c)
+        summary["capped"] = len({c["document_id"] for c in candidates}) - len(selected_docs)
+
+        # id→name maps for resolving current document metadata
+        name_maps: dict[str, dict[int, str]] = {}
+        for etype in ("tag", "correspondent", "document_type"):
+            entities = await self._fetch_paperless_entities(etype)
+            name_maps[etype] = {e["id"]: e["name"] for e in entities}
+
+        queue_svc = ApprovalQueueService(self._db)
+        now = datetime.now(timezone.utc)
+        enqueued = 0
+
+        for doc_id, actions in by_doc.items():
+            doc = await self._fetch_document(doc_id)
+            if doc is None:
+                continue
+
+            current_tags = [
+                name_maps["tag"][tid] for tid in (doc.get("tags") or [])
+                if tid in name_maps["tag"]
+            ]
+            corrected_tags = list(current_tags)
+            current_corr_id = doc.get("correspondent")
+            current_dt_id = doc.get("document_type")
+            corrected_corr = name_maps["correspondent"].get(current_corr_id) if current_corr_id else None
+            corrected_dt = name_maps["document_type"].get(current_dt_id) if current_dt_id else None
+
+            valid_actions: list[dict] = []
+            for a in actions:
+                etype, name, act = a["entity_type"], a["entity_name"], a["action"]
+                if etype == "tag":
+                    if act == "add":
+                        if name in corrected_tags:
+                            continue  # stale — already applied
+                        corrected_tags.append(name)
+                    elif act == "remove":
+                        if name not in corrected_tags:
+                            continue  # stale — already gone
+                        corrected_tags.remove(name)
+                else:
+                    current_id = current_corr_id if etype == "correspondent" else current_dt_id
+                    if act == "add":
+                        if current_id is not None:
+                            continue  # stale — field set meanwhile
+                        new_name = name
+                    elif act == "replace":
+                        if current_id != a["entity_id"]:
+                            continue  # stale — incumbent changed
+                        new_name = a.get("replacement_entity_name")
+                    else:  # review — field stays at its current value
+                        if current_id != a["entity_id"]:
+                            continue
+                        new_name = None
+                    if new_name is not None:
+                        if etype == "correspondent":
+                            corrected_corr = new_name
+                        else:
+                            corrected_dt = new_name
+                valid_actions.append({
+                    "action": act,
+                    "entity_type": etype,
+                    "entity_id": a["entity_id"],
+                    "entity_name": name,
+                    "score": a["score"],
+                    "cohort_percentile": a["cohort_percentile"],
+                    "reason": a.get("reason"),
+                    "best_passage": a["best_passage"],
+                    **(
+                        {
+                            "replacement_entity_id": a["replacement_entity_id"],
+                            "replacement_entity_name": a.get("replacement_entity_name"),
+                            "replacement_score": a.get("replacement_score"),
+                        }
+                        if "replacement_entity_id" in a else {}
+                    ),
+                })
+
+            if not valid_actions:
+                continue
+
+            suggestion = MetadataSuggestion(
+                id=uuid4(),
+                document_id=doc_id,
+                status="pending",
+                created_at=now,
+                title=doc.get("title"),
+                tags=corrected_tags,
+                correspondent=corrected_corr,
+                document_type=corrected_dt,
+                storage_path=None,
+                custom_fields={},
+                llm_provider=embed_provider_name,
+                llm_model=embedding_model,
+                analysis_mode="grooming",
+                prompt_used="",
+                raw_llm_response="",
+                evidence_json=json.dumps({
+                    "actions": valid_actions,
+                    "base_tags": current_tags,
+                    "scanned_at": now.isoformat(),
+                }),
+            )
+            await queue_svc.enqueue(suggestion)
+            enqueued += 1
+            for a in valid_actions:
+                key = {"add": "added", "remove": "removed", "replace": "replaced", "review": "review"}[a["action"]]
+                summary[key] += 1
+
+        return enqueued
+
+    @staticmethod
+    def get_scan_status() -> dict:
+        return dict(_scan_status)
 
     # ── Provider helpers ───────────────────────────────────────────────────
 

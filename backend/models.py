@@ -40,6 +40,10 @@ class MetadataSuggestion(BaseModel):
     extracted_content: str | None = None
     original_ocr_content: str | None = None
 
+    # Grooming scan evidence (analysis_mode == "grooming" only): JSON-encoded
+    # {actions: [{action, entity_type, entity_name, score, ...}], base_tags, scanned_at}.
+    evidence_json: str | None = None
+
 
 class VisionAnalysisResult(BaseModel):
     """Result of a vision-based full-document analysis."""
