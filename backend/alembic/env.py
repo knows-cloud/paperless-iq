@@ -14,9 +14,12 @@ from backend.database import Base, DATABASE_URL
 # Alembic Config object
 config = context.config
 
-# Set up logging from alembic.ini
+# Set up logging from alembic.ini.  disable_existing_loggers MUST stay False:
+# migrations run inside the app's startup lifespan, and the default (True) would
+# silence every logger already created (backend.main, uvicorn, …) for the rest
+# of the process — leaving the app with no logs after boot.
 if config.config_file_name is not None:
-    fileConfig(config.config_file_name)
+    fileConfig(config.config_file_name, disable_existing_loggers=False)
 
 # Metadata for autogenerate support
 target_metadata = Base.metadata

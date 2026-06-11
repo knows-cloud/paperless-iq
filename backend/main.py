@@ -796,11 +796,30 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
             app.state.paperless_client = paperless_client
             logger.info("Paperless NGX client initialized for %s", paperless_url)
         else:
+            # Name exactly which variable is missing — the two have different
+            # consequences and the generic "URL or TOKEN" message hides which.
+            missing = [
+                name for name, val in
+                (("PAPERLESS_URL", paperless_url), ("PAPERLESS_TOKEN", paperless_token))
+                if not val
+            ]
             logger.warning(
-                "PAPERLESS_URL or PAPERLESS_TOKEN not set — Paperless NGX integration disabled."
+                "Paperless NGX integration disabled — missing env var(s): %s.",
+                ", ".join(missing),
             )
     except Exception:
         logger.warning("Could not create Paperless NGX client.", exc_info=True)
+
+    # Auth is enforced only when PAPERLESS_URL is set (login validates against
+    # Paperless). With it unset the app runs OPEN — every page is reachable with
+    # no login. Make that unmissable in the logs: a "fails open" misconfig
+    # otherwise looks like "auth was circumvented".
+    if not paperless_url:
+        logger.warning(
+            "AUTHENTICATION DISABLED — PAPERLESS_URL is not set, so Paperless IQ "
+            "is running in OPEN mode (no login required, all pages accessible). "
+            "Set PAPERLESS_URL (and PAPERLESS_TOKEN) to enforce login."
+        )
 
     # Create ManualAnalysisService if both providers and client are available
     if providers and paperless_client:
