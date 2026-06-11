@@ -116,3 +116,7 @@ async def app_client(db_engine):
         yield client
 
     app.dependency_overrides.pop(get_session, None)
+    # app is module-level state — a leftover RateLimiter would throttle later
+    # tests that drive the raw app without this fixture (e.g. the Hypothesis
+    # proxy tests, which fire hundreds of requests).
+    app.state.rate_limiter = None

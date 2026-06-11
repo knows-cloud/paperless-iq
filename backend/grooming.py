@@ -107,9 +107,12 @@ def _transitive_clusters(pairs: list[tuple[int, int]]) -> list[list[int]]:
     parent: dict[int, int] = {}
 
     def find(x: int) -> int:
+        # Path halving: point each visited node at its grandparent. The
+        # fallback for a missing grandparent must be the parent itself —
+        # defaulting to x would sever the link and split the cluster.
         while parent.get(x, x) != x:
-            parent[x] = parent.get(parent.get(x, x), x)
-            x = parent.get(x, x)
+            parent[x] = parent.get(parent[x], parent[x])
+            x = parent[x]
         return x
 
     def union(x: int, y: int) -> None:
