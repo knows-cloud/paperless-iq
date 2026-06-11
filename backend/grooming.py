@@ -21,11 +21,12 @@ from difflib import SequenceMatcher
 from typing import Any
 
 import httpx
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from backend.orm_models import (
     AuditLogORM,
+    DocumentTrackingORM,
     EntityDescriptionORM,
     GroomingDismissalORM,
 )
@@ -93,21 +94,35 @@ def _name_similarity(a: str, b: str) -> float:
     return SequenceMatcher(None, _normalise_name(a), _normalise_name(b)).ratio()
 
 
-def _entity_needs_rescan(row: "EntityDescriptionORM") -> bool:
+def _as_utc(dt: "datetime | None") -> "datetime | None":
+    """Treat naive timestamps as UTC for safe comparison."""
+    if dt is None:
+        return None
+    return dt.replace(tzinfo=timezone.utc) if dt.tzinfo is None else dt
+
+
+def _entity_needs_rescan(
+    row: "EntityDescriptionORM", latest_doc_embed: "datetime | None" = None,
+) -> bool:
     """For incremental (scheduled) scans: True when the entity is new (never
-    scanned) or its description changed since the last scan. Naive timestamps
-    are treated as UTC for the comparison."""
+    scanned), its description changed since the last scan, or any document was
+    re-embedded since the last scan (its content drifted, so the entity↔document
+    similarity scores may now differ). Naive timestamps are treated as UTC.
+
+    ``latest_doc_embed`` is the most recent ``last_embedded_at`` across the whole
+    corpus — a single global watermark, since each entity is queried against the
+    entire document set, so any re-embed can change its outcome.
+    """
     if row.last_scanned_at is None:
         return True
-    updated = row.description_updated_at
-    if updated is None:
-        return False  # scanned before, never edited since → skip
-    last = row.last_scanned_at
-    if updated.tzinfo is None:
-        updated = updated.replace(tzinfo=timezone.utc)
-    if last.tzinfo is None:
-        last = last.replace(tzinfo=timezone.utc)
-    return updated > last
+    last = _as_utc(row.last_scanned_at)
+    updated = _as_utc(row.description_updated_at)
+    if updated is not None and updated > last:
+        return True  # description edited since last scan
+    embed = _as_utc(latest_doc_embed)
+    if embed is not None and embed > last:
+        return True  # a document was re-embedded since last scan
+    return False
 
 
 def _cosine(v1: list[float], v2: list[float]) -> float:
@@ -896,6 +911,14 @@ class GroomingService:
 
         dismissed = await self._load_dismissed_keys(entity_types)
 
+        # Incremental scans also re-examine entities whose documents drifted:
+        # one global watermark = the newest re-embed across the whole corpus.
+        latest_doc_embed: datetime | None = None
+        if incremental:
+            latest_doc_embed = (
+                await self._db.execute(select(func.max(DocumentTrackingORM.last_embedded_at)))
+            ).scalar_one_or_none()
+
         # Documents already covered by a pending suggestion are skipped.
         from backend.orm_models import SuggestionORM
         pending_q = await self._db.execute(
@@ -927,7 +950,7 @@ class GroomingService:
             # Incremental (scheduled) scans skip entities unchanged since their
             # last scan — new or description-changed entities only.
             if incremental:
-                rows = [r for r in rows if _entity_needs_rescan(r)]
+                rows = [r for r in rows if _entity_needs_rescan(r, latest_doc_embed)]
 
             # Lazy re-embed (GROOMING_PLAN §2): vectors invalidated by a model
             # switch get one tiny embed call each. Entities that were never

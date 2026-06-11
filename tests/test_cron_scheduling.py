@@ -4,7 +4,8 @@ Covers:
 - _cron_next: valid expressions return the next UTC fire time; invalid → None
 - _cron_loop: fires the job when due, idle when the expression is None
 - _entity_needs_rescan + collect_scan_candidates(incremental=True): unchanged
-  entities are skipped on scheduled runs
+  entities are skipped on scheduled runs; a doc re-embedded since the last scan
+  re-triggers the entity (content drift)
 - _run_scheduled_grooming_scan guards: disabled / bedrock_kb / busy short-circuit
 """
 
@@ -105,6 +106,12 @@ def test_entity_needs_rescan_rules() -> None:
     assert _entity_needs_rescan(_row(t0, t1)) is True          # edited after last scan
     assert _entity_needs_rescan(_row(t1, t0)) is False         # edited before last scan
 
+    # A document re-embedded since the last scan re-triggers (content drifted),
+    # even for an entity whose own description never changed.
+    assert _entity_needs_rescan(_row(t0, None), latest_doc_embed=t1) is True
+    assert _entity_needs_rescan(_row(t1, None), latest_doc_embed=t0) is False
+    assert _entity_needs_rescan(_row(t1, t0), latest_doc_embed=t0) is False
+
 
 def test_entity_needs_rescan_treats_naive_as_utc() -> None:
     naive_old = datetime(2026, 6, 1)            # naive
@@ -141,6 +148,38 @@ async def test_collect_scan_candidates_incremental_skips_unchanged(db_engine) ->
         full_candidates, full_stats = await svc.collect_scan_candidates(["tag"], incremental=False)
         assert full_stats["entities_scanned"] == 1
         assert len(full_candidates) == 1
+
+
+@pytest.mark.asyncio
+async def test_collect_scan_candidates_incremental_rescans_after_doc_reembed(db_engine) -> None:
+    """A document re-embedded since an entity's last scan re-triggers the
+    entity on a scheduled scan, even though its description never changed."""
+    from backend.orm_models import DocumentTrackingORM
+
+    factory = async_sessionmaker(bind=db_engine, expire_on_commit=False)
+    async with factory() as session:
+        row = _entity_row("tag", 1, "Insurance")
+        row.description_updated_at = datetime(2026, 6, 1, tzinfo=timezone.utc)
+        row.last_scanned_at = datetime(2026, 6, 2, tzinfo=timezone.utc)
+        session.add(row)
+        # A document was re-embedded AFTER the entity's last scan → content drift.
+        session.add(DocumentTrackingORM(
+            document_id=7, first_seen_at=datetime(2026, 6, 1, tzinfo=timezone.utc),
+            last_embedded_at=datetime(2026, 6, 3, tzinfo=timezone.utc),
+        ))
+        await session.commit()
+
+        vs = FakeVectorStore({1: [_chunk(7, 0.9), _chunk(7, 0.85)]})
+        pc = SimpleNamespace(_base_url="http://paperless.test", _headers={})
+        svc = GroomingService(session, pc, None, _config(), vector_store=vs)
+
+        async def fake_entity_docs(filter_param, entity_id, limit):
+            return []
+        svc._fetch_entity_docs = fake_entity_docs
+
+        inc_candidates, inc_stats = await svc.collect_scan_candidates(["tag"], incremental=True)
+        assert inc_stats["entities_scanned"] == 1
+        assert len(inc_candidates) == 1
 
 
 # ---------------------------------------------------------------------------

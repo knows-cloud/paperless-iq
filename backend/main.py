@@ -336,8 +336,9 @@ async def _cron_loop(
 async def _run_scheduled_grooming_scan(app: FastAPI) -> None:
     """One scheduled grooming scan (cron-driven via ``grooming_scan_cron``).
 
-    Incremental: only entities new or whose description changed since their last
-    scan are re-examined (see ``collect_scan_candidates(incremental=True)``).
+    Incremental: only entities that are new, whose description changed, or whose
+    documents were re-embedded since their last scan are re-examined (see
+    ``collect_scan_candidates(incremental=True)``).
     Respects the same guards as the manual scan route — disabled on bedrock_kb,
     skipped while the embed circuit breaker is open or a scan already runs."""
     config = _settings_svc.config
