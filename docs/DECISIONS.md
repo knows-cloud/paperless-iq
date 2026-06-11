@@ -251,6 +251,8 @@ The bootstrap problem (first admin has no permissions yet) is solved by `sync_ng
 
 **Rule:** Don't re-embed inline in `merge_entities`. Route post-merge/post-approval re-embeds through `schedule_reembed()`, never a direct `vs.upsert`. Treat chunk-payload entity fields as a *hint* for cohort scoring, never as the authority on what a document currently carries — fetch current assignments for ground truth.
 
+**Embed bookkeeping (extends D-22):** every successful document embed is recorded once, centrally, via `_record_document_embed(doc_id, title, source)` — it (a) stamps `document_tracking.last_embedded_at` (a persistent "vector last refreshed at", distinct from the *transient* `reembed_dirty_since`, which marks a *pending* deferred re-embed and is cleared on flush), and (b) writes an `embedded` audit event with the document title and a `source` label (`system:index` / `approval` / `webhook` / `system:flush` / `drift`). `last_embedded_at` powers the weekly **content-drift reindex** (`content_drift_reindex_days`, default 7, `0`=off): a safety net that re-embeds documents whose Paperless `modified` is newer than `last_embedded_at`, catching content/OCR edits the webhook missed. The webhook stays the primary, real-time path; the comparison against `last_embedded_at` guarantees the drift loop never re-embeds an unchanged document. Rule: stamp `last_embedded_at` and emit the audit event at **every** `vs.upsert` of a document — call `_record_document_embed` rather than upserting bare; never reuse the transient `reembed_dirty_since` as an "embedded at" timestamp.
+
 ---
 
 ## D-23 · A rejected grooming suggestion is a permanent answer

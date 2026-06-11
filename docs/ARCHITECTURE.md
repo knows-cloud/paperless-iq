@@ -41,7 +41,8 @@ The FastAPI application entry-point. Contains:
 - `_automation_loop(app, poll_interval)` — the **inbox poller** (continuous; processes every inbox-tagged document each poll)
 - `_cron_loop(name, get_expr, run_job)` — generic **cron-driven** loop (croniter); re-reads its expression each tick so settings changes apply without a restart (D-02). Drives `_run_scheduler_batch` (`schedule_cron`) and `_run_scheduled_grooming_scan` (`grooming_scan_cron`, incremental)
 - `_make_analysis_callbacks(app, session, label)` — the per-document analyse→enqueue→(auto-approve) closures shared by the poller and the batch job
-- `schedule_reembed()` / `_daily_reembed_loop` / `_flush_dirty_reembeds` — deferred re-embedding chokepoint and flush (D-22)
+- `schedule_reembed()` / `_daily_reembed_loop` / `_flush_dirty_reembeds` — deferred re-embedding chokepoint and flush (D-22); `_record_document_embed()` stamps `last_embedded_at` + writes an `embedded` audit event at every embed
+- `_content_drift_loop` / `_run_content_drift_reindex` — weekly safety net re-embedding documents whose Paperless `modified` is newer than `last_embedded_at` (`content_drift_reindex_days`, D-22)
 - `_session_expiry_loop(app)` — hourly background task: extracts memories from sessions older than 24 hours, then deletes them (see D-19)
 - `_background_index(doc_id)` — background task to embed a document after it is processed
 - `_extract_memories_from_session(session, ...)` — extracts and deduplicates memories; called from explicit session close and from `_session_expiry_loop`
@@ -132,7 +133,7 @@ SQLAlchemy 2 ORM declarations. Nine tables:
 |-------|---------|
 | `suggestions` | Pending / approved / rejected metadata suggestions (incl. `evidence_json` for grooming scans) |
 | `audit_log` | Field-level change history |
-| `document_tracking` | Documents seen by the inbox monitor (first seen, last analyzed, embedding status, `reembed_dirty_since`) |
+| `document_tracking` | Documents seen by the inbox monitor (first seen, last analyzed, `reembed_dirty_since` (pending deferred re-embed), `last_embedded_at` (vector last refreshed; drives content-drift reindex)) |
 | `settings` | Single-row JSON blob for `PaperlessIQConfig` |
 | `conversation_sessions` | Discovery chat sessions (verbatim turns + rolling summary) |
 | `user_memories` | Long-term memory facts |

@@ -531,6 +531,7 @@ async def _background_index(
                             await vector_store.upsert(doc_id, content, meta)
                             if queue:
                                 queue.record_embed_success()
+                            await _record_document_embed(doc_id, meta.get("title"), "system:index")
                             indexed += 1
                             if queue:
                                 queue.set_embedding_progress(
@@ -743,26 +744,60 @@ async def _run_alembic_migrations() -> None:
     await loop.run_in_executor(None, _sync_run)
 
 
+async def _record_document_embed(doc_id: int, title: str | None, source: str) -> None:
+    """Stamp ``last_embedded_at`` and write an ``embedded`` audit event.
+
+    Called after every successful document embed so the audit log carries a
+    full embed history (with the document title) — making double-embeds
+    (e.g. webhook-on-add + post-approval) visible — and so the content-drift
+    reindex has a per-document "vector last refreshed at" to compare against.
+    ``source`` is the trigger: ``"system:index"``, ``"approval"``, ``"webhook"``,
+    ``"system:flush"``, ``"drift"``, …
+    """
+    try:
+        async with AsyncSessionLocal() as db:
+            tracking = await db.get(DocumentTrackingORM, doc_id)
+            now = datetime.now(timezone.utc)
+            if tracking is None:
+                tracking = DocumentTrackingORM(document_id=doc_id, first_seen_at=now)
+                db.add(tracking)
+            tracking.last_embedded_at = now
+            await AuditLogService(db).record_event(
+                action_type="embedded",
+                change_source=source,
+                document_id=doc_id,
+                document_title=title or None,
+                new_value=f"document embedded ({source})",
+                changed_at=now,
+            )  # record_event commits — flushes the tracking stamp too
+    except Exception:
+        logger.debug("Embed audit/stamp failed for doc %d", doc_id, exc_info=True)
+
+
 async def schedule_reembed(
     doc_id: int,
     content: str,
     meta: dict,
     vs: Any,
+    source: str = "system",
 ) -> None:
     """Re-embed a document, deferring if embed_refresh_mode != 'immediate'.
 
-    - immediate: calls vs.upsert() right away (current behaviour, default).
+    - immediate: calls vs.upsert() right away (current behaviour, default),
+      then records the embed (audit event + last_embedded_at).
     - daily/manual: stamps reembed_dirty_since and returns.  The daily flush
-      loop (or the manual /api/embeddings/refresh route) handles the actual
-      re-embed later.
+      loop (or the manual /api/embeddings/refresh route) does the actual
+      re-embed later and records it then.
 
     First-time indexing (in _background_index) bypasses this and calls
     vs.upsert() directly — deferred re-embedding only applies to re-embeds
-    of already-indexed documents.
+    of already-indexed documents.  ``source`` labels the trigger in the audit
+    log (e.g. "approval", "webhook", "drift").
     """
     mode = getattr(_settings_svc.config, "embed_refresh_mode", "immediate")
     if mode == "immediate":
         await vs.upsert(doc_id, content, meta)
+        await _record_document_embed(doc_id, meta.get("title"), source)
         return
 
     # Stamp dirty for later flush
@@ -837,10 +872,137 @@ async def _flush_dirty_reembeds(vs: Any, pc: Any) -> None:
                 if t:
                     t.reembed_dirty_since = None
                     await db.commit()
+            await _record_document_embed(doc_id, doc.get("title"), "system:flush")
             flushed += 1
         except Exception:
             logger.warning("Re-embed flush failed for doc %d", doc_id, exc_info=True)
     logger.info("Re-embed flush complete: %d/%d documents re-embedded.", flushed, len(dirty_rows))
+
+
+def _parse_paperless_dt(value: str | None) -> datetime | None:
+    """Parse a Paperless ISO timestamp to an aware UTC datetime, or None."""
+    if not value:
+        return None
+    try:
+        dt = datetime.fromisoformat(value.replace("Z", "+00:00"))
+    except (ValueError, TypeError):
+        return None
+    return dt if dt.tzinfo else dt.replace(tzinfo=timezone.utc)
+
+
+async def _run_content_drift_reindex(app: FastAPI) -> None:
+    """Re-embed documents whose Paperless ``modified`` is newer than our last
+    embed — a safety net for content/OCR edits that didn't fire the webhook.
+
+    Queries a window slightly wider than the configured interval, then re-embeds
+    only documents whose vector is actually stale (``modified`` after
+    ``last_embedded_at``), so it never double-embeds unchanged documents.
+    """
+    config = _settings_svc.config
+    days = getattr(config, "content_drift_reindex_days", 0)
+    if days <= 0:
+        return
+    vs = getattr(app.state, "vector_store", None)
+    pc = getattr(app.state, "paperless_client", None)
+    if not vs or not pc:
+        return
+
+    base, headers = pc._base_url, pc._headers
+    cutoff = (datetime.now(timezone.utc) - timedelta(days=days + 1)).date().isoformat()
+
+    # id→name lookups so the re-embedded vector keeps its D-18 metadata prefix.
+    tag_names: dict[int, str] = {}
+    corr_names: dict[int, str] = {}
+    dt_names: dict[int, str] = {}
+    cf_names: dict[int, str] = {}
+    async with httpx.AsyncClient(headers=headers, timeout=30) as lc:
+        for entity, lookup in (
+            ("tags", tag_names), ("correspondents", corr_names),
+            ("document_types", dt_names), ("custom_fields", cf_names),
+        ):
+            eurl: str | None = f"{base}/api/{entity}/?page_size=100"
+            while eurl:
+                r = await lc.get(eurl)
+                if r.status_code != 200:
+                    break
+                d = r.json()
+                for item in d.get("results", []):
+                    lookup[item["id"]] = item.get("name", "")
+                eurl = d.get("next")
+
+    checked = reembedded = 0
+    url: str | None = (
+        f"{base}/api/documents/?page_size=100&ordering=-modified"
+        f"&modified__date__gte={cutoff}"
+    )
+    async with httpx.AsyncClient(headers=headers, timeout=60) as client:
+        while url:
+            r = await client.get(url)
+            if r.status_code != 200:
+                logger.warning("Content-drift reindex: Paperless returned %d.", r.status_code)
+                break
+            data = r.json()
+            for doc in data.get("results", []):
+                doc_id = doc["id"]
+                checked += 1
+                modified = _parse_paperless_dt(doc.get("modified"))
+                async with AsyncSessionLocal() as db:
+                    t = await db.get(DocumentTrackingORM, doc_id)
+                    last = t.last_embedded_at if t else None
+                if last is not None:
+                    if last.tzinfo is None:
+                        last = last.replace(tzinfo=timezone.utc)
+                    if modified is not None and last >= modified:
+                        continue  # vector already at/after the content change
+                content = doc.get("content", "")
+                if not content:
+                    continue
+                raw_cfs = doc.get("custom_fields") or []
+                custom_fields: dict[str, Any] = {}
+                for cf_entry in raw_cfs:
+                    fid = cf_entry.get("field")
+                    val = cf_entry.get("value")
+                    name = cf_names.get(fid, "") if fid is not None else ""
+                    if name and val is not None:
+                        custom_fields[name] = val
+                doc_tags = doc.get("tags", [])
+                meta = {
+                    "title": doc.get("title", ""),
+                    "tags": [tag_names.get(tid, "") for tid in doc_tags if tag_names.get(tid)],
+                    "tag_ids": doc_tags,
+                    "correspondent": corr_names.get(doc.get("correspondent") or 0, ""),
+                    "document_type": dt_names.get(doc.get("document_type") or 0, ""),
+                    "custom_fields": custom_fields,
+                }
+                try:
+                    await schedule_reembed(doc_id, content, meta, vs, source="drift")
+                    reembedded += 1
+                except Exception:
+                    logger.warning("Content-drift re-embed failed for doc %d", doc_id, exc_info=True)
+            url = data.get("next")
+    logger.info(
+        "Content-drift reindex: checked %d doc(s) modified since %s, re-embedded %d.",
+        checked, cutoff, reembedded,
+    )
+
+
+async def _content_drift_loop(app: FastAPI) -> None:
+    """Periodic content-drift safety net. Idles when content_drift_reindex_days
+    <= 0. First run one interval after startup, then every interval — the
+    webhook stays the primary, real-time re-embed path."""
+    days0 = getattr(_settings_svc.config, "content_drift_reindex_days", 7) or 7
+    next_run = datetime.now(timezone.utc) + timedelta(days=days0)
+    while True:
+        await asyncio.sleep(3600)  # hourly check is plenty for a weekly job
+        try:
+            days = getattr(_settings_svc.config, "content_drift_reindex_days", 0)
+            if days <= 0:
+                continue
+            if datetime.now(timezone.utc) >= next_run:
+                await _run_content_drift_reindex(app)
+                next_run = datetime.now(timezone.utc) + timedelta(days=days)
+        except Exception:
+            logger.warning("Content-drift loop error", exc_info=True)
 
 
 @asynccontextmanager
@@ -1037,10 +1199,13 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     # Daily re-embed flush loop (no-op when embed_refresh_mode != "daily")
     app.state.daily_reembed_task = asyncio.create_task(_daily_reembed_loop(app))
 
+    # Weekly content-drift reindex (no-op when content_drift_reindex_days <= 0)
+    app.state.content_drift_task = asyncio.create_task(_content_drift_loop(app))
+
     yield
 
     # Shutdown: cancel automation tasks
-    for task_name in ("inbox_task", "scheduler_task", "grooming_scan_task", "session_expiry_task", "audit_cleanup_task", "embed_health_monitor_task", "daily_reembed_task"):
+    for task_name in ("inbox_task", "scheduler_task", "grooming_scan_task", "session_expiry_task", "audit_cleanup_task", "embed_health_monitor_task", "daily_reembed_task", "content_drift_task"):
         task: asyncio.Task[Any] | None = getattr(app.state, task_name, None)
         if task is not None and not task.done():
             task.cancel()
@@ -1396,7 +1561,7 @@ async def approve_suggestion(
                         "document_type": result.document_type or "",
                         "custom_fields": result.custom_fields or {},
                     }
-                    await schedule_reembed(result.document_id, content, meta, vs)
+                    await schedule_reembed(result.document_id, content, meta, vs, source="approval")
             except Exception:
                 logger.debug("Post-approve indexing failed for doc %d", result.document_id, exc_info=True)
         asyncio.create_task(_index_bg())
@@ -2453,6 +2618,7 @@ async def manual_analyze(body: AnalyzeBody, request: Request) -> dict:
                     action_type="analysis_triggered",
                     change_source=f"user:{actor}" if actor else "manual_analysis",
                     document_id=body.document_id,
+                    document_title=suggestion.title,
                     new_value=f"ocr analysis via {suggestion.llm_provider}/{suggestion.llm_model}",
                 )
         except Exception:
@@ -3363,7 +3529,7 @@ async def _reindex_document(doc_id: int, vs: VectorStore, pc: PaperlessNGXClient
         if queue:
             await queue.await_embed_available()
         try:
-            await schedule_reembed(doc_id, content, meta, vs)
+            await schedule_reembed(doc_id, content, meta, vs, source="webhook")
             if queue:
                 queue.record_embed_success()
             logger.info("Webhook reindex: document %d re-indexed.", doc_id)

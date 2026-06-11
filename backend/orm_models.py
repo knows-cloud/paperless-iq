@@ -92,6 +92,13 @@ class DocumentTrackingORM(Base):
     reembed_dirty_since: Mapped[datetime | None] = mapped_column(
         DateTime(timezone=True), nullable=True
     )
+    # Stamped every time the document's vector is (re)written — a true
+    # "vector last refreshed at", independent of refresh mode. Drives the
+    # weekly content-drift reindex (re-embed when Paperless `modified` is newer)
+    # and lets scheduled grooming scans reconsider entities whose docs changed.
+    last_embedded_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
 
 
 class SettingsORM(Base):

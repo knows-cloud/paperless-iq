@@ -15,8 +15,10 @@ const ACTION_TYPES = [
   { value: "approved", label: "Approved" },
   { value: "rejected", label: "Rejected" },
   { value: "analysis_triggered", label: "Analysis triggered" },
+  { value: "embedded", label: "Embedded" },
   { value: "reindex", label: "Reindex" },
   { value: "webhook_received", label: "Webhook received" },
+  { value: "entity_merge", label: "Entity merge" },
 ];
 
 function actorBadgeColor(actor: string): string {
@@ -37,6 +39,8 @@ function actionBadgeColor(action: string): string {
   if (action === "reindex") return "violet";
   if (action === "webhook_received") return "indigo";
   if (action === "analysis_triggered") return "orange";
+  if (action === "embedded") return "cyan";
+  if (action === "entity_merge") return "grape";
   return "gray";
 }
 

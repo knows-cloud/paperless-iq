@@ -166,6 +166,11 @@ class PaperlessIQConfig(BaseModel):
     # "manual"    = queue changes; user flushes via Re-embed now button.
     embed_refresh_mode: Literal["immediate", "daily", "manual"] = "immediate"
     embed_refresh_hour: int = 3  # UTC hour for the daily flush (0–23)
+    # Content-drift safety net: periodically re-embed documents whose Paperless
+    # `modified` is newer than our last embed (catches content/OCR edits that
+    # didn't fire the webhook). 0 = disabled; the webhook remains the primary,
+    # real-time path. Long interval by design (weekly default).
+    content_drift_reindex_days: int = 7
 
     # Prompt templates
     global_prompt_template: str = (

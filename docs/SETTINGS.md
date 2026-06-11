@@ -163,10 +163,18 @@ documents are deferred.
 |---------|-----|---------|-----------------|
 | Refresh mode | `embed_refresh_mode` | `immediate` | `immediate` = re-embed the moment metadata changes (vectors always fresh; default, zero behaviour change). `daily` = stamp the document dirty and re-embed all dirty docs once per day. `manual` = stamp dirty and wait for the user to flush. Daily/manual **debounce** repeated same-day edits (one re-embed, not N) and spread embedding cost — useful on metered embedding APIs or after a large grooming merge. The dirty document re-fetches its current content + metadata from Paperless at flush time, so the deferred vector reflects the latest state, not the state when it was stamped. |
 | Daily flush hour (UTC) | `embed_refresh_hour` | `3` | `0–23`. Only used when mode = `daily`. The flush loop checks every minute and runs when the UTC hour matches. |
+| Content-drift reindex (days) | `content_drift_reindex_days` | `7` | Safety net for **content/OCR edits** that didn't fire the webhook. Every N days, documents whose Paperless `modified` is newer than our last embed are re-embedded. `0` disables it. The **webhook remains the primary, real-time path** — this only catches drift it missed. First run is one interval after startup. Compares against the per-document `last_embedded_at`, so it never re-embeds an unchanged document. |
 
 When dirty re-embeds are pending (`daily`/`manual`), the count is exposed at
 `GET /api/embeddings/pending`; `POST /api/embeddings/refresh` flushes them now (the UI
 surfaces a banner). See **D-22** for why merges defer rather than re-embed inline.
+
+> **Embed visibility.** Every document embed writes an `embedded` event to the audit
+> log (with the document title and a `change_source` naming the trigger:
+> `system:index`, `approval`, `webhook`, `system:flush`, `drift`). This makes
+> double-embeds visible — e.g. a freshly *added* document fires the webhook *and* gets
+> picked up for analysis → embedded on approval. Filter the Audit page by the `embedded`
+> action (and by source) to see the history; old rows are pruned by `audit_retention_days`.
 
 ### Similarity Search Tuning
 
