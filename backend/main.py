@@ -744,6 +744,21 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     """Application lifespan: startup and shutdown hooks."""
     logger.info("Paperless IQ starting up")
 
+    # Fail closed: authentication is enforced only when PAPERLESS_URL is set
+    # (login validates credentials against Paperless). Without it the app would
+    # serve every page with no login at all. Refuse to start rather than run
+    # open — a misconfiguration must never silently disable auth.
+    if not os.environ.get("PAPERLESS_URL", "").strip():
+        logger.critical(
+            "PAPERLESS_URL is not set. Paperless IQ will not start without it: "
+            "authentication depends on Paperless, and starting anyway would leave "
+            "every page reachable with no login. Set PAPERLESS_URL (and "
+            "PAPERLESS_TOKEN) and restart."
+        )
+        raise RuntimeError(
+            "PAPERLESS_URL is required — refusing to start without authentication configured."
+        )
+
     # Run Alembic migrations.  For databases that pre-date the Alembic migration
     # system (they have our tables but no alembic_version table), we stamp the
     # baseline revision first so the baseline migration is skipped.
@@ -810,15 +825,14 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     except Exception:
         logger.warning("Could not create Paperless NGX client.", exc_info=True)
 
-    # Auth is enforced only when PAPERLESS_URL is set (login validates against
-    # Paperless). With it unset the app runs OPEN — every page is reachable with
-    # no login. Make that unmissable in the logs: a "fails open" misconfig
-    # otherwise looks like "auth was circumvented".
-    if not paperless_url:
+    # PAPERLESS_URL is guaranteed set (startup guard above). A missing token
+    # still leaves auth enforced but breaks every Paperless operation, so warn
+    # loudly rather than fail — the deployment is secure but non-functional.
+    if not paperless_token:
         logger.warning(
-            "AUTHENTICATION DISABLED — PAPERLESS_URL is not set, so Paperless IQ "
-            "is running in OPEN mode (no login required, all pages accessible). "
-            "Set PAPERLESS_URL (and PAPERLESS_TOKEN) to enforce login."
+            "PAPERLESS_TOKEN is not set — login is enforced, but Paperless "
+            "operations (search, metadata writes, indexing) will fail until it "
+            "is configured."
         )
 
     # Create ManualAnalysisService if both providers and client are available
