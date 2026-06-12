@@ -377,9 +377,10 @@ function DedupTab({ entityType }: { entityType: EntityType }) {
                   checked={removeMap[idx]?.has(entity.entity_id) ?? false}
                   disabled={canonicalMap[idx] === entity.entity_id}
                   onChange={e => {
+                    const checked = e.currentTarget.checked;
                     setRemoveMap(prev => {
                       const next = new Set(prev[idx]);
-                      if (e.currentTarget.checked) next.add(entity.entity_id);
+                      if (checked) next.add(entity.entity_id);
                       else next.delete(entity.entity_id);
                       return { ...prev, [idx]: next };
                     });
