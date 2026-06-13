@@ -9,6 +9,8 @@ jobs:
   backend:
     name: Backend (pytest)
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
     steps:
       - uses: actions/checkout@v4
 
@@ -36,6 +38,8 @@ jobs:
   frontend:
     name: Frontend (tsc + i18n)
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
     defaults:
       run:
         working-directory: frontend
