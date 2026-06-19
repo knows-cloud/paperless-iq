@@ -1,0 +1,35 @@
+name: Dependency age check
+
+# Supply-chain defence: require that every new package version in a Dependabot PR
+# was published at least MIN_AGE_DAYS ago.  A short quarantine window gives the
+# community time to spot a compromised publish before it reaches our main branch.
+#
+# Security: no untrusted event input (${{ github.event.* }}) is used in any
+# run: step — the only ${{ }} interpolation is secrets.GITHUB_TOKEN (env var
+# pattern) and github.base_ref (mapped to an env var before use).
+
+on:
+  pull_request:
+
+jobs:
+  npm-age:
+    name: npm package age
+    if: github.actor == 'dependabot[bot]'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Fetch base branch ref
+        env:
+          BASE_REF: ${{ github.base_ref }}
+        run: git fetch origin "$BASE_REF" --depth=1
+
+      - name: Check npm publish ages
+        env:
+          GITHUB_BASE_REF: ${{ github.base_ref }}
+          MIN_AGE_DAYS: "3"
+        run: python3 .github/scripts/check-npm-age.py
