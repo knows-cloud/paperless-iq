@@ -266,7 +266,15 @@ class BedrockProvider:
                 raise
 
         if is_cohere:
-            return result["embeddings"][0]
+            # Cohere returns one of two shapes depending on model/version:
+            #   embeddings_floats   → {"embeddings": [[...]]}            (list)
+            #   embeddings_by_type  → {"embeddings": {"float": [[...]]}} (dict)
+            embeddings = result["embeddings"]
+            if isinstance(embeddings, dict):
+                vectors = embeddings.get("float") or next(iter(embeddings.values()))
+            else:
+                vectors = embeddings
+            return vectors[0]
         return result["embedding"]
 
     async def health_check(self) -> bool:

@@ -429,6 +429,33 @@ class TestBedrockSDKCalls:
         assert body["input_type"] == "search_query"
 
     @pytest.mark.asyncio
+    async def test_embed_cohere_embeddings_by_type_dict_response(
+        self, encrypted_aws_key: str, encrypted_aws_secret: str
+    ):
+        # Some Cohere models return {"embeddings": {"float": [[...]]}} instead of
+        # {"embeddings": [[...]]}; both must yield the float vector (not KeyError: 0).
+        import json
+        provider = BedrockProvider(
+            region="eu-west-1",
+            access_key_id_enc=encrypted_aws_key,
+            secret_access_key_enc=encrypted_aws_secret,
+            secret_key=TEST_SECRET_KEY,
+            model="anthropic.claude-3-haiku-20240307-v1:0",
+            embed_model="eu.cohere.embed-multilingual-v3:0",
+        )
+        mock_body = MagicMock()
+        mock_body.read.return_value = json.dumps(
+            {"embeddings": {"float": [[0.7, 0.8, 0.9]]}}
+        ).encode()
+        mock_client = MagicMock()
+        mock_client.invoke_model.return_value = {"body": mock_body}
+
+        with patch.object(provider, "_runtime_client", return_value=mock_client):
+            result = await provider.embed("embed this")
+
+        assert result == [0.7, 0.8, 0.9]
+
+    @pytest.mark.asyncio
     async def test_embed_titan_v2_inference_profile_sets_dimensions(
         self, encrypted_aws_key: str, encrypted_aws_secret: str
     ):
