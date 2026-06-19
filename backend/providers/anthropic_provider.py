@@ -73,7 +73,7 @@ class AnthropicProvider:
             images=images,
         )
 
-    async def embed(self, text: str) -> list[float]:
+    async def embed(self, text: str, *, is_query: bool = False) -> list[float]:
         """Anthropic does not support embeddings."""
         raise NotImplementedError("Anthropic does not support embeddings")
 

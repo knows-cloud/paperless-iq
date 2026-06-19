@@ -21,7 +21,7 @@ pytestmark = pytest.mark.filterwarnings("ignore::UserWarning")
 
 
 class _MockLLMProvider:
-    async def embed(self, text: str) -> list[float]:
+    async def embed(self, text: str, *, is_query: bool = False) -> list[float]:
         h = hashlib.sha256(text.encode()).digest()
         return [b / 255.0 for b in h[:8]]
 
@@ -137,7 +137,7 @@ class _FailingProvider:
     def __init__(self, exc: Exception | None = None) -> None:
         self._exc = exc or ConnectionRefusedError("embed provider unreachable")
 
-    async def embed(self, text: str) -> list[float]:
+    async def embed(self, text: str, *, is_query: bool = False) -> list[float]:
         raise self._exc
 
 

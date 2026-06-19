@@ -206,7 +206,7 @@ class BedrockProvider:
             images=images,
         )
 
-    async def embed(self, text: str) -> list[float]:
+    async def embed(self, text: str, *, is_query: bool = False) -> list[float]:
         """Generate embeddings using the configured Bedrock embedding model.
 
         Supported model families and their request/response formats:
@@ -214,16 +214,26 @@ class BedrockProvider:
           - amazon.titan-embed-text-v2:0 : inputText → embedding[]  (1024-dim default)
           - cohere.embed-english-v3      : texts[]   → embeddings[][] (1024-dim)
           - cohere.embed-multilingual-v3 : texts[]   → embeddings[][] (1024-dim)
+
+        ``is_query`` selects Cohere's ``input_type`` (search_query vs
+        search_document); Titan has no equivalent and ignores it.
         """
         model = self._embed_model
 
-        is_cohere = model.startswith("cohere.")
-        is_titan_v2 = model == "amazon.titan-embed-text-v2:0"
+        # Match on the bare model name, not an exact string: Bedrock model IDs may
+        # carry a cross-region inference-profile prefix (e.g. "us.cohere.embed-...",
+        # "eu.amazon.titan-embed-text-v2:0") or be a full ARN. A Cohere model that
+        # isn't recognised as Cohere gets Titan's {"inputText": ...} body, which
+        # Bedrock rejects with an opaque "Malformed request" ValidationException.
+        mid = model.lower()
+        is_cohere = "cohere.embed" in mid
+        is_titan_v2 = "titan-embed-text-v2" in mid
 
         if is_cohere:
-            # Cohere expects a list of texts; input_type "search_document" optimises
-            # for retrieval (use "search_query" when embedding a query instead).
-            body = json.dumps({"texts": [text], "input_type": "search_document"})
+            # Cohere expects a list of texts; input_type "search_query" optimises a
+            # search query, "search_document" optimises a doc being indexed.
+            input_type = "search_query" if is_query else "search_document"
+            body = json.dumps({"texts": [text], "input_type": input_type})
         elif is_titan_v2:
             # Titan v2 supports normalisation and configurable dimensions (256/512/1024)
             body = json.dumps({"inputText": text, "dimensions": 1024, "normalize": True})

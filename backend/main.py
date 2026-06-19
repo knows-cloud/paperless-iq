@@ -844,6 +844,33 @@ async def _flush_dirty_reembeds(vs: Any, pc: Any) -> None:
     if not dirty_rows:
         return
 
+    base_url = pc._base_url
+    headers = pc._headers
+
+    # Resolve entity ID → name lookups once. The Paperless document endpoint
+    # returns integer IDs for tags/correspondent/document_type; _build_embed_prefix
+    # needs names (joining raw ints raises TypeError), so mirror the indexing path.
+    tag_id_to_name: dict[int, str] = {}
+    corr_id_to_name: dict[int, str] = {}
+    dt_id_to_name: dict[int, str] = {}
+    cf_id_to_name: dict[int, str] = {}
+    async with httpx.AsyncClient(headers=headers, timeout=30) as lookup_client:
+        for entity, lookup in [
+            ("tags", tag_id_to_name),
+            ("correspondents", corr_id_to_name),
+            ("document_types", dt_id_to_name),
+            ("custom_fields", cf_id_to_name),
+        ]:
+            eurl: str | None = f"{base_url}/api/{entity}/?page_size=100"
+            while eurl:
+                r = await lookup_client.get(eurl)
+                if r.status_code != 200:
+                    break
+                d = r.json()
+                for item in d.get("results", []):
+                    lookup[item["id"]] = item.get("name", "")
+                eurl = d.get("next")
+
     logger.info("Re-embed flush: processing %d dirty document(s).", len(dirty_rows))
     flushed = 0
     for tracking in dirty_rows:
@@ -853,19 +880,26 @@ async def _flush_dirty_reembeds(vs: Any, pc: Any) -> None:
             if not content:
                 continue
             # Fetch current metadata
-            base_url = pc._base_url
-            headers = pc._headers
             async with httpx.AsyncClient(headers=headers, timeout=30) as client:
                 r = await client.get(f"{base_url}/api/documents/{doc_id}/")
                 if r.status_code != 200:
                     continue
                 doc = r.json()
+            doc_tags = doc.get("tags") or []
+            custom_fields: dict[str, Any] = {}
+            for cf_entry in doc.get("custom_fields") or []:
+                fid = cf_entry.get("field")
+                val = cf_entry.get("value")
+                name = cf_id_to_name.get(fid, "") if fid is not None else ""
+                if name and val is not None:
+                    custom_fields[name] = val
             meta = {
                 "title": doc.get("title", ""),
-                "tags": doc.get("tags", []),
-                "correspondent": doc.get("correspondent") or "",
-                "document_type": doc.get("document_type") or "",
-                "custom_fields": {},
+                "tags": [tag_id_to_name.get(tid, "") for tid in doc_tags if tag_id_to_name.get(tid)],
+                "tag_ids": doc_tags,
+                "correspondent": corr_id_to_name.get(doc.get("correspondent") or 0, ""),
+                "document_type": dt_id_to_name.get(doc.get("document_type") or 0, ""),
+                "custom_fields": custom_fields,
             }
             await vs.upsert(doc_id, content, meta)
             async with AsyncSessionLocal() as db:
@@ -2251,6 +2285,12 @@ async def discover(body: DiscoverBody, request: Request) -> dict:
     2. Builds a context from the top-N document passages
     3. Sends the question + context to the LLM for a grounded answer with quotes
     """
+    # An empty/whitespace question would be sent to the embedder as empty text,
+    # which some backends (e.g. Bedrock Titan/Cohere) reject with an opaque
+    # "Malformed request" ValidationException. Reject it up front instead.
+    if not body.question or not body.question.strip():
+        raise HTTPException(status_code=400, detail="Question must not be empty.")
+
     vs = getattr(request.app.state, "vector_store", None)
     if vs is None:
         raise HTTPException(

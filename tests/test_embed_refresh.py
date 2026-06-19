@@ -105,7 +105,12 @@ async def test_flush_dirty_reembeds_upserts_and_clears_marker(db_engine, monkeyp
         await session.commit()
 
     def handler(request: httpx.Request) -> httpx.Response:
-        assert request.url.path == "/api/documents/7/"
+        path = request.url.path
+        if path == "/api/tags/":
+            return httpx.Response(200, json={"results": [{"id": 1, "name": "Invoice"}], "next": None})
+        if path in ("/api/correspondents/", "/api/document_types/", "/api/custom_fields/"):
+            return httpx.Response(200, json={"results": [], "next": None})
+        assert path == "/api/documents/7/"
         return httpx.Response(200, json={
             "title": "Doc 7", "tags": [1], "correspondent": None,
             "document_type": None,
@@ -133,6 +138,9 @@ async def test_flush_dirty_reembeds_upserts_and_clears_marker(db_engine, monkeyp
     assert len(vs.upserts) == 1
     assert vs.upserts[0][0] == 7
     assert vs.upserts[0][1] == "ocr content"
+    # Tag IDs must be resolved to names before upsert — passing raw ints crashes
+    # _build_embed_prefix (regression guard).
+    assert vs.upserts[0][2]["tags"] == ["Invoice"]
 
     async with factory() as session:
         row = await session.get(DocumentTrackingORM, 7)

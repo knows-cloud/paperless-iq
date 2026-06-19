@@ -125,7 +125,9 @@ def _build_embed_prefix(metadata: dict) -> str:
         prefix_parts.append(f"From: {metadata['correspondent']}")
     tags = metadata.get("tags") or []
     if isinstance(tags, list) and any(tags):
-        prefix_parts.append(f"Tags: {', '.join(t for t in tags if t)}")
+        # Coerce defensively: callers should pass tag names, but a stray ID
+        # (int) must not crash embedding for the whole document.
+        prefix_parts.append(f"Tags: {', '.join(str(t) for t in tags if t)}")
     for cf_name, cf_value in (metadata.get("custom_fields") or {}).items():
         if cf_value is not None and str(cf_value).strip():
             prefix_parts.append(f"{cf_name}: {cf_value}")
@@ -231,8 +233,8 @@ class _EmbeddingBackedStore:
     _llm: LLMProvider
     _embed_concurrency: int
 
-    async def _embed(self, text: str) -> list[float]:
-        return await self._llm.embed(text)
+    async def _embed(self, text: str, *, is_query: bool = False) -> list[float]:
+        return await self._llm.embed(text, is_query=is_query)
 
     async def embed_health_check(self) -> bool:
         """Return True if the embedding provider is reachable."""
@@ -387,7 +389,7 @@ class ChromaVectorStore(_EmbeddingBackedStore):
         Returns up to top_n documents, each with the best matching passage.
         When a reranker is configured, candidates are re-scored before grouping.
         """
-        embedding = await self._embed(text)
+        embedding = await self._embed(text, is_query=True)
         loop = asyncio.get_running_loop()
         count = self._collection.count()
         if count == 0:
@@ -446,7 +448,7 @@ class ChromaVectorStore(_EmbeddingBackedStore):
         Groups chunks by document and collects entity names from the top-N
         unique documents.
         """
-        embedding = await self._embed(text)
+        embedding = await self._embed(text, is_query=True)
         loop = asyncio.get_running_loop()
         count = self._collection.count()
         if count == 0:
@@ -546,7 +548,7 @@ class ChromaVectorStore(_EmbeddingBackedStore):
         Each result includes document_id, title, passage, score, and deeplink.
         Multiple chunks from the same document may appear.
         """
-        embedding = await self._embed(text)
+        embedding = await self._embed(text, is_query=True)
         loop = asyncio.get_running_loop()
         count = self._collection.count()
         if count == 0:
@@ -818,7 +820,7 @@ class QdrantVectorStore(_EmbeddingBackedStore):
         """Run dense (or hybrid dense+sparse RRF) retrieval, returning points."""
         from qdrant_client import models
 
-        dense = await self._embed(text)
+        dense = await self._embed(text, is_query=True)
         if self._hybrid_search:
             sparse = (await self._sparse_vectors([text]))[0]
             res = await self._client.query_points(

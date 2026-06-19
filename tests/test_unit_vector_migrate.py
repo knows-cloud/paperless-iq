@@ -20,7 +20,7 @@ pytestmark = pytest.mark.filterwarnings("ignore::UserWarning")
 
 
 class _MockLLMProvider:
-    async def embed(self, text: str) -> list[float]:
+    async def embed(self, text: str, *, is_query: bool = False) -> list[float]:
         h = hashlib.sha256(text.encode()).digest()
         return [b / 255.0 for b in h[:8]]
 

@@ -40,8 +40,13 @@ class LLMProvider(Protocol):
         """Single-turn convenience wrapper — equivalent to chat([user_msg])."""
         ...
 
-    async def embed(self, text: str) -> list[float]:
-        """Generate an embedding vector for the given text."""
+    async def embed(self, text: str, *, is_query: bool = False) -> list[float]:
+        """Generate an embedding vector for the given text.
+
+        ``is_query`` distinguishes a search query from a document being indexed.
+        Asymmetric embedding models (e.g. Cohere) optimise the two differently;
+        providers that don't differentiate may ignore it.
+        """
         ...
 
     async def health_check(self) -> bool:

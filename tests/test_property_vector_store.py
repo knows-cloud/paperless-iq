@@ -42,7 +42,7 @@ class _MockLLMProvider:
     async def complete(self, prompt: str, max_tokens: int) -> str:
         return "{}"
 
-    async def embed(self, text: str) -> list[float]:
+    async def embed(self, text: str, *, is_query: bool = False) -> list[float]:
         h = hashlib.sha256(text.encode()).digest()
         # 64-dimensional embedding from hash bytes
         return [b / 255.0 for b in h[:32]] + [b / 255.0 for b in h[:32]]
