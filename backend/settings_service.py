@@ -341,7 +341,7 @@ class SettingsService:
             new_config = PaperlessIQConfig(**current)
         except ValidationError as exc:
             errors = "; ".join(
-                f"{'.'.join(str(l) for l in e['loc'])}: {e['msg']}"
+                f"{'.'.join(str(loc) for loc in e['loc'])}: {e['msg']}"
                 for e in exc.errors()
             )
             raise ValueError(f"Invalid settings: {errors}") from exc

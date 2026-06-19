@@ -49,6 +49,9 @@ export default function ManualPage() {
   const customFields = useQuery({ queryKey: ["customFields"], queryFn: api.getCustomFields, retry: false });
   const settingsQ = useQuery({ queryKey: ["settings"], queryFn: api.getSettings, staleTime: 60_000 });
   const pageWarningThreshold = Number((settingsQ.data as Record<string, unknown> | undefined)?.vision_max_pages_warning ?? 5);
+  // Shared query key → react-query dedupes across all document rows (one network call).
+  const visionSupportQ = useQuery({ queryKey: ["ollamaVisionSupport"], queryFn: api.getOllamaVisionSupport, staleTime: 5 * 60_000, retry: false });
+  const ollamaVisionWarning = visionSupportQ.data?.supported === false;
 
   const handleVisionResult = useCallback((docId: number, result: VisionAnalysisResult) => {
     setAnalysisResults(prev => ({ ...prev, [docId]: result.suggestion }));
@@ -324,6 +327,7 @@ export default function ManualPage() {
                     <VisionAnalysisFlow
                       documentId={doc.id}
                       pageWarningThreshold={pageWarningThreshold}
+                      ollamaVisionWarning={ollamaVisionWarning}
                       onResult={result => handleVisionResult(doc.id, result)}
                       size="xs"
                       disabled={batchRunning}

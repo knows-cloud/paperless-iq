@@ -282,17 +282,35 @@ export function AIProviderTab({
           )}
 
           {selectedEmbedProvider === "bedrock" && (
-            <TextInput
-              label={t("aiProvider.embeddings.bedrock.model.label")}
-              name="embedding_model"
-              value={embedModel}
-              onChange={e => {
-                setEmbedModel(e.target.value);
-                localStorage.setItem(`piq_embed_model_${selectedEmbedProvider}`, e.target.value);
-              }}
-              placeholder="amazon.titan-embed-text-v2:0"
-              description={t("aiProvider.embeddings.bedrock.model.description")}
-            />
+            <>
+              <TextInput
+                label={t("aiProvider.embeddings.bedrock.model.label")}
+                name="embedding_model"
+                value={embedModel}
+                onChange={e => {
+                  setEmbedModel(e.target.value);
+                  localStorage.setItem(`piq_embed_model_${selectedEmbedProvider}`, e.target.value);
+                }}
+                placeholder="amazon.titan-embed-text-v2:0"
+                description={t("aiProvider.embeddings.bedrock.model.description")}
+              />
+              <NumberInput
+                label={<InfoLabel label={t("aiProvider.embeddings.concurrency.label")} tip={t("aiProvider.embeddings.concurrency.tipCloud")} />}
+                name="embed_concurrency"
+                min={1}
+                max={16}
+                defaultValue={Number(s.embed_concurrency ?? 8)}
+                description={t("aiProvider.embeddings.concurrency.descriptionCloud")}
+              />
+              <NumberInput
+                label={<InfoLabel label={t("aiProvider.embeddings.batchSize.label")} tip={t("aiProvider.embeddings.batchSize.tip")} />}
+                name="embed_batch_size"
+                min={1}
+                max={96}
+                defaultValue={Number(s.embed_batch_size ?? 32)}
+                description={t("aiProvider.embeddings.batchSize.description")}
+              />
+            </>
           )}
 
           {selectedEmbedProvider === "openai" && (

@@ -164,7 +164,6 @@ frontend/src/
 ├── locales/{en,de,fr,es,it}/translation.json  # Translation resources (single namespace)
 ├── App.tsx                  # Router, layout, nav sidebar; fetches + applies permissions
 ├── ThemeProvider.tsx        # MantineProvider + createTheme driven by /api/theme settings
-├── PermissionsContext.tsx   # React context + usePermissions() hook
 ├── main.tsx                 # React root
 │
 ├── components/
@@ -210,7 +209,7 @@ Tab components (`settings/*.tsx`):
 ### State management
 - TanStack Query for server state (settings, tags, custom fields, logos)
 - `useState` for all form/UI state that needs to survive tab switches (the form is a single `<form>` element wrapping all 8 tab views; switching tabs shows/hides — not unmounts — the content)
-- `PermissionsContext` provides the current user's effective permissions to all pages; populated from `GET /api/piq-users/me` after login
+- Permissions are fetched once in `App.tsx` from `GET /api/piq-users/me` after login and applied there as page-level gating (`canViewPage` controls which nav items + pages render)
 - No Redux or Zustand — the query cache + local component state is sufficient
 
 ### Internationalisation (react-i18next)

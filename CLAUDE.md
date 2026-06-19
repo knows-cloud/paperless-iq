@@ -61,6 +61,7 @@ backend/
   vector_store.py    — ChromaDB + Qdrant + Bedrock KB implementations (+ shared helpers)
   vector_factory.py  — make_vector_store() — single construction point (see D-20)
   vector_migrate.py  — migrate_embeddings/memories without re-embedding
+  db_migrate.py      — run_migrations() at startup: Alembic upgrade + auto-adopt pre-Alembic DBs (see D-21)
   rerankers.py       — LLMReranker + LocalCrossEncoderReranker + BedrockReranker (off by default)
   memory_store.py    — ChromaMemoryStore + QdrantMemoryStore + make_memory_store() factory
   alembic/           — schema migrations (env.py + versions/); run at startup (D-02 sibling)
@@ -71,7 +72,6 @@ frontend/src/
   pages/settings/*.tsx            — 8 tab components (pure display; exceptions: MemoriesTab + AccessControlTab own their CRUD)
   components/MarkdownText.tsx     — markdown + citation renderer (used by DiscoveryPage)
   components/InfoLabel.tsx        — label + Tooltip info icon (§9.5 pattern); use for every settings field that has a tip
-  PermissionsContext.tsx          — React context + usePermissions() hook; populated from /api/piq-users/me
   locales/{en,de,fr,es,it}/translation.json — i18n strings (react-i18next)
 ```
 
@@ -109,7 +109,9 @@ frontend/src/
 ## Before You Commit
 
 1. `npx tsc --noEmit` from `frontend/` — zero errors required
-2. `uv run pytest` — must not introduce new failures
-3. `npm run check:i18n` from `frontend/` — all 5 locale files must have identical key sets
-4. If you changed a design decision, update `docs/DECISIONS.md`
-5. If you changed the module structure, update `docs/ARCHITECTURE.md`
+2. `ruff check backend` — zero errors required (config in `pyproject.toml`)
+3. `uv run pytest` — must not introduce new failures (note: the property suite is currently flaky from cross-test state pollution — a different test may fail per run but each passes in isolation)
+4. `npm run check:i18n` from `frontend/` — all 5 locale files must have identical key sets
+5. If you changed the DB schema, generate an Alembic migration (`alembic revision --autogenerate`) — never inline `ALTER`/`create_all` (see D-21)
+6. If you changed a design decision, update `docs/DECISIONS.md`
+7. If you changed the module structure, update `docs/ARCHITECTURE.md`

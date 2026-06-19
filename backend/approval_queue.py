@@ -259,12 +259,10 @@ class ApprovalQueueService:
 
         # Write audit log entries — one per changed field
         now = datetime.now(timezone.utc)
-        any_changes = False
         for field in editable_fields:
             old_val = original[field]
             new_val = getattr(row, field)
             if old_val != new_val:
-                any_changes = True
                 audit = AuditLogORM(
                     id=str(uuid4()),
                     document_id=row.document_id,
@@ -283,7 +281,6 @@ class ApprovalQueueService:
         # Audit the content write-back separately (content isn't an editable field).
         # Values are truncated — the full document text would bloat the audit log.
         if content_applied:
-            any_changes = True
             self._session.add(AuditLogORM(
                 id=str(uuid4()),
                 document_id=row.document_id,

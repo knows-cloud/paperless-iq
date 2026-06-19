@@ -50,3 +50,14 @@ markers = [
     "live: hits real external APIs and costs money — excluded by default and in CI",
 ]
 addopts = "-m 'not live'"
+
+[tool.ruff]
+target-version = "py312"
+# Alembic-generated files have their own conventions; don't lint them.
+extend-exclude = ["backend/alembic", ".venv"]
+
+[tool.ruff.lint.per-file-ignores]
+# logging.basicConfig() must run before backend modules are imported so their
+# module-level loggers inherit the config — this intentionally puts statements
+# between imports (E402). See the comment at the top of main.py.
+"backend/main.py" = ["E402"]

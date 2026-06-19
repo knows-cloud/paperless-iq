@@ -20,7 +20,6 @@ import LoginPage from "./pages/LoginPage";
 import LibraryPage from "./pages/LibraryPage";
 import { api, clearStoredToken } from "./api";
 import type { UserPermissions } from "./api";
-import { PermissionsContext } from "./PermissionsContext";
 
 type Page = "manual" | "queue" | "discovery" | "processing" | "audit" | "settings" | "library";
 
@@ -230,15 +229,13 @@ export default function App() {
 
       <AppShell.Main>
         <Box p="xl" maw={1100}>
-          <PermissionsContext.Provider value={perms}>
-            {page === "manual"     && canViewPage("manual")     && <ManualPage />}
-            {page === "queue"      && canViewPage("queue")      && <QueuePage />}
-            {page === "discovery"  && canViewPage("discovery")  && <DiscoveryPage />}
-            {page === "processing" && canViewPage("processing") && <ProcessingPage />}
-            {page === "audit"      && canViewPage("audit")      && <AuditPage />}
-            {page === "settings"   && canViewPage("settings")   && <SettingsPage />}
-            {page === "library"    && canViewPage("library")    && <LibraryPage />}
-          </PermissionsContext.Provider>
+          {page === "manual"     && canViewPage("manual")     && <ManualPage />}
+          {page === "queue"      && canViewPage("queue")      && <QueuePage />}
+          {page === "discovery"  && canViewPage("discovery")  && <DiscoveryPage />}
+          {page === "processing" && canViewPage("processing") && <ProcessingPage />}
+          {page === "audit"      && canViewPage("audit")      && <AuditPage />}
+          {page === "settings"   && canViewPage("settings")   && <SettingsPage />}
+          {page === "library"    && canViewPage("library")    && <LibraryPage />}
         </Box>
       </AppShell.Main>
     </AppShell>

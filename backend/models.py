@@ -171,6 +171,10 @@ class PaperlessIQConfig(BaseModel):
     # didn't fire the webhook). 0 = disabled; the webhook remains the primary,
     # real-time path. Long interval by design (weekly default).
     content_drift_reindex_days: int = 7
+    # Texts per embedding API call. Only Cohere-on-Bedrock supports true multi-text
+    # batching (up to 96 per call); for every other model the store falls back to
+    # one text per call regardless of this value, so it's a no-op there.
+    embed_batch_size: int = 32
 
     # Prompt templates
     global_prompt_template: str = (

@@ -28,7 +28,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, Response
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
-from sqlalchemy import delete as sa_delete, func, select, text, update as sa_update
+from sqlalchemy import delete as sa_delete, func, select, update as sa_update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from backend.analyzer import PaperlessNGXClient
@@ -53,7 +53,6 @@ from backend.inbox_monitor import InboxMonitor, Scheduler
 from backend.manual_analysis import ManualAnalysisService
 from backend.models import MetadataSuggestion
 from backend.ollama_queue import OllamaQueue, Priority
-from backend.models import UserPermissions
 from backend.orm_models import (
     ConversationSessionORM,
     DocumentTrackingORM,
@@ -76,18 +75,6 @@ logger = logging.getLogger(__name__)
 
 # Global settings service instance
 _settings_svc = SettingsService()
-
-
-_CLOUD_EMBED_PROVIDERS = {"bedrock", "openai", "anthropic"}
-
-
-def _embed_concurrency_for(provider_name: str) -> int:
-    """Return a safe embedding concurrency for the given provider.
-
-    Cloud APIs (Bedrock, OpenAI, Anthropic) can handle many parallel calls.
-    Local Ollama should stay sequential (1) to avoid burying the server.
-    """
-    return 10 if provider_name in _CLOUD_EMBED_PROVIDERS else 1
 
 
 def _resolve_embed_provider(config: Any, providers: dict) -> Any | None:
@@ -483,6 +470,63 @@ async def _background_index(
         # inbox_skipped: docs seen in this run that are excluded by the inbox tag
         # (they are NOT in already_indexed, so we add them on top of already_done)
         inbox_skipped = 0
+        # Process documents concurrently. The vector store's embed semaphore is the
+        # real throttle on simultaneous API calls (shared across all in-flight docs),
+        # so matching the doc-level limit to embed_concurrency overlaps documents
+        # without ever exceeding the configured embedding budget. For local Ollama
+        # (concurrency 1) this stays effectively sequential.
+        doc_concurrency = max(1, getattr(vector_store, "embed_concurrency", 1))
+        doc_sem = asyncio.Semaphore(doc_concurrency)
+        # Set once on a dimension mismatch: every remaining doc would fail the same
+        # way, so we stop the whole run rather than retry-storm through the archive.
+        fatal_mismatch = False
+
+        async def _process_doc(doc_id: int, content: str, meta: dict) -> None:
+            nonlocal indexed, fatal_mismatch
+            async with doc_sem:
+                for _attempt in range(1, 4):
+                    if fatal_mismatch:
+                        return
+                    try:
+                        if queue:
+                            await queue.await_embed_available()
+                        await vector_store.upsert(doc_id, content, meta)
+                        if queue:
+                            queue.record_embed_success()
+                        await _record_document_embed(doc_id, meta.get("title"), "system:index")
+                        indexed += 1
+                        if queue:
+                            queue.set_embedding_progress(
+                                total_to_index, already_done + indexed + inbox_skipped
+                            )
+                        return  # success — move to next document
+                    except Exception as exc:
+                        exc_str = str(exc)
+                        if "dimension" in exc_str.lower() and "got" in exc_str.lower():
+                            logger.warning(
+                                "Embedding dimension mismatch while indexing document %d: %s\n"
+                                "  → The vector store was built with a different embedding model.\n"
+                                "  → Go to Settings → Processing and click 'Reindex Vector Store' to rebuild it.",
+                                doc_id, exc_str,
+                            )
+                            fatal_mismatch = True  # stop — every remaining document will fail too
+                            return
+                        if queue:
+                            queue.record_embed_failure(exc_str)
+                        if _attempt < 3:
+                            logger.warning(
+                                "Embed attempt %d/3 failed for document %d (%s), retrying in %ds.",
+                                _attempt, doc_id, exc_str, _attempt * 2,
+                            )
+                            await asyncio.sleep(float(_attempt * 2))
+                        else:
+                            logger.warning(
+                                "All 3 embed attempts failed for document %d (%s). "
+                                "Tasks will pause until the embed service recovers or the "
+                                "embedding settings are fixed.",
+                                doc_id, exc_str,
+                            )
+
         url: str | None = f"{base}/api/documents/?page_size=50&ordering=-added"
         async with httpx.AsyncClient(headers=headers, timeout=60) as client:
             while url:
@@ -490,6 +534,7 @@ async def _background_index(
                 if resp.status_code != 200:
                     break
                 data = resp.json()
+                pending: list = []
                 for doc in data.get("results", []):
                     doc_id = doc["id"]
                     doc_tags = doc.get("tags", [])
@@ -525,44 +570,13 @@ async def _background_index(
                         "document_type": dt_id_to_name.get(doc.get("document_type") or 0, ""),
                         "custom_fields": custom_fields,
                     }
-                    for _attempt in range(1, 4):
-                        try:
-                            if queue:
-                                await queue.await_embed_available()
-                            await vector_store.upsert(doc_id, content, meta)
-                            if queue:
-                                queue.record_embed_success()
-                            await _record_document_embed(doc_id, meta.get("title"), "system:index")
-                            indexed += 1
-                            if queue:
-                                queue.set_embedding_progress(
-                                    total_to_index, already_done + indexed + inbox_skipped
-                                )
-                            break  # success — move to next document
-                        except Exception as exc:
-                            exc_str = str(exc)
-                            if "dimension" in exc_str.lower() and "got" in exc_str.lower():
-                                logger.warning(
-                                    "Embedding dimension mismatch while indexing document %d: %s\n"
-                                    "  → The vector store was built with a different embedding model.\n"
-                                    "  → Go to Settings → Processing and click 'Reindex Vector Store' to rebuild it.",
-                                    doc_id, exc_str,
-                                )
-                                return  # stop — every remaining document will fail too
-                            if queue:
-                                queue.record_embed_failure()
-                            if _attempt < 3:
-                                logger.warning(
-                                    "Embed attempt %d/3 failed for document %d, retrying in %ds.",
-                                    _attempt, doc_id, _attempt * 2,
-                                )
-                                await asyncio.sleep(float(_attempt * 2))
-                            else:
-                                logger.warning(
-                                    "All 3 embed attempts failed for document %d. "
-                                    "Tasks will resume automatically when the embed service recovers.",
-                                    doc_id,
-                                )
+                    pending.append(_process_doc(doc_id, content, meta))
+
+                # Embed this page's documents concurrently (bounded by doc_sem).
+                if pending:
+                    await asyncio.gather(*pending)
+                if fatal_mismatch:
+                    return  # dimension mismatch — abort the whole run
                 url = data.get("next")
                 # Yield to event loop between pages
                 await asyncio.sleep(0.1)
@@ -675,74 +689,6 @@ async def _session_expiry_loop(app: FastAPI) -> None:
             logger.warning("Session expiry loop error", exc_info=True)
 
         await asyncio.sleep(3600)
-
-
-async def _run_alembic_migrations() -> None:
-    """Run Alembic migrations to head.
-
-    Self-heals two classes of database that ``upgrade`` alone can't advance:
-
-    * **Pre-Alembic** — has the application tables but no ``alembic_version``
-      row. We stamp the matching baseline so the baseline CREATE TABLE
-      statements are skipped.
-    * **Stale/unknown revision** — ``alembic_version`` holds a revision id that
-      no longer exists in our migration tree (e.g. ``f4d9771c79eb`` from an
-      earlier, since-replaced Alembic setup). ``upgrade`` would abort with
-      "Can't locate revision identified by …", silently leaving the schema
-      behind. We detect the unknown id, pick the baseline that matches the
-      *live* schema, and re-stamp (purging the orphan id) before upgrading.
-
-    The baseline is chosen from the live schema, not assumed: if the grooming
-    objects already exist we stamp 002, otherwise 001 (so 002 then applies).
-    """
-    from alembic import command as alembic_command
-    from alembic.config import Config as AlembicConfig
-    from alembic.runtime.migration import MigrationContext
-    from alembic.script import ScriptDirectory
-    from sqlalchemy import create_engine, inspect as sa_inspect
-
-    def _sync_run() -> None:
-        sync_url = DATABASE_URL.replace("+aiosqlite", "")
-        sync_engine = create_engine(sync_url, future=True)
-        cfg = AlembicConfig("alembic.ini")
-        try:
-            with sync_engine.connect() as conn:
-                mc = MigrationContext.configure(conn)
-                current_rev = mc.get_current_revision()
-                known_revs = {
-                    sc.revision for sc in ScriptDirectory.from_config(cfg).walk_revisions()
-                }
-
-                inspector = sa_inspect(conn)
-                tables = set(inspector.get_table_names())
-                has_app_tables = "suggestions" in tables or "document_tracking" in tables
-
-                # current_rev is None        → pre-Alembic database
-                # current_rev not in known   → orphaned id from a prior Alembic setup
-                needs_stamp = has_app_tables and (
-                    current_rev is None or current_rev not in known_revs
-                )
-                if needs_stamp:
-                    # Pick the baseline that matches the live schema so the right
-                    # pending migrations run afterwards.
-                    user_perm_cols = {c["name"] for c in inspector.get_columns("user_permissions")} \
-                        if "user_permissions" in tables else set()
-                    at_grooming = "entity_descriptions" in tables and "can_groom" in user_perm_cols
-                    baseline = "002" if at_grooming else "001"
-                    # purge=True drops the orphan alembic_version row before
-                    # stamping, so an unknown current revision can't block it.
-                    alembic_command.stamp(cfg, baseline, purge=True)
-                    logger.info(
-                        "Stamped database at %s based on live schema (was %r).",
-                        baseline, current_rev,
-                    )
-        finally:
-            sync_engine.dispose()
-
-        alembic_command.upgrade(cfg, "head")
-
-    loop = asyncio.get_running_loop()
-    await loop.run_in_executor(None, _sync_run)
 
 
 async def _record_document_embed(doc_id: int, title: str | None, source: str) -> None:
@@ -1060,14 +1006,11 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
             "PAPERLESS_URL is required — refusing to start without authentication configured."
         )
 
-    # Run Alembic migrations.  For databases that pre-date the Alembic migration
-    # system (they have our tables but no alembic_version table), we stamp the
-    # baseline revision first so the baseline migration is skipped.
-    try:
-        await _run_alembic_migrations()
-        logger.info("Database migrations complete.")
-    except Exception:
-        logger.error("Database migration failed — proceeding anyway (may be dev mode).", exc_info=True)
+    # Bring the database schema to head via Alembic. Existing pre-Alembic and
+    # stale-revision databases are auto-adopted (stamped at the matching
+    # baseline) on first run — see backend/db_migrate.py.
+    from backend.db_migrate import run_migrations
+    await run_migrations()
 
     # Load persisted settings from DB (seeds from env vars on first run)
     await _settings_svc.load_from_db()
@@ -1887,24 +1830,6 @@ async def proxy_document_preview(document_id: int, request: Request) -> Response
         raise HTTPException(status_code=500, detail=str(exc))
 
 
-@app.get("/api/documents/{document_id}/thumb", tags=["documents"])
-async def proxy_document_thumb(document_id: int, request: Request) -> Response:
-    """Proxy the document thumbnail (JPEG) from Paperless NGX."""
-    pc = getattr(request.app.state, "paperless_client", None)
-    if not pc:
-        raise HTTPException(status_code=503, detail="Paperless NGX not configured.")
-    try:
-        async with httpx.AsyncClient(headers=pc._headers, timeout=15) as client:
-            resp = await client.get(f"{pc._base_url}/api/documents/{document_id}/thumb/")
-            resp.raise_for_status()
-            content_type = resp.headers.get("content-type", "image/jpeg")
-            return Response(content=resp.content, media_type=content_type)
-    except httpx.HTTPStatusError as exc:
-        raise HTTPException(status_code=exc.response.status_code, detail="Could not fetch thumbnail from Paperless NGX.")
-    except Exception as exc:
-        raise HTTPException(status_code=500, detail=str(exc))
-
-
 # ---------------------------------------------------------------------------
 # Audit Log endpoints
 # ---------------------------------------------------------------------------
@@ -2143,18 +2068,6 @@ class DiscoverBody(BaseModel):
 # Discovery session management
 # ---------------------------------------------------------------------------
 
-@app.post("/api/discover/sessions", tags=["search"],
-          dependencies=[Depends(require_perm("can_discover"))])
-async def create_discover_session() -> dict:
-    """Create a new Discovery conversation session and return its ID."""
-    async with AsyncSessionLocal() as db:
-        session = ConversationSessionORM()
-        db.add(session)
-        await db.commit()
-        await db.refresh(session)
-    return {"session_id": session.id}
-
-
 @app.delete("/api/discover/sessions/{session_id}", tags=["search"],
             dependencies=[Depends(require_perm("can_discover"))])
 async def delete_discover_session(session_id: str, request: Request) -> dict:
@@ -2319,7 +2232,7 @@ async def discover(body: DiscoverBody, request: Request) -> dict:
             if relevant_ids:
                 async with AsyncSessionLocal() as db:
                     rows = await db.execute(
-                        sa_select(UserMemoryORM).where(UserMemoryORM.id.in_(relevant_ids))
+                        select(UserMemoryORM).where(UserMemoryORM.id.in_(relevant_ids))
                     )
                     injected_memories = [row.text for row in rows.scalars()]
         except Exception:
@@ -3104,6 +3017,12 @@ async def update_settings(request: Request, body: dict[str, Any] = Body(...)) ->
                     vs = new_vs
                     request.app.state.vector_store = new_vs
                     request.app.state.memory_store = new_mem
+                    # New provider/model invalidates any prior embed failure — close
+                    # the circuit so indexing retries immediately instead of waiting
+                    # out the health-monitor backoff.
+                    _oq_reset: OllamaQueue | None = getattr(request.app.state, "ollama_queue", None)
+                    if _oq_reset is not None:
+                        _oq_reset.reset_embed_circuit()
                     logger.info(
                         "Vector + memory stores rebuilt after settings change "
                         "(backend: %s, embed_provider: %s).",
@@ -3307,15 +3226,19 @@ async def get_status(request: Request) -> dict:
             embedded_count = await vs_store.count()
         except Exception:
             pass
-    # Count total documents in Paperless NGX (excluding inbox tag)
+    # Count indexable documents in Paperless NGX — excluding inbox-tagged docs,
+    # which are never embedded (see _automation_loop), so the indexed/total ratio
+    # reflects only curated documents eligible for smart search.
     pc = getattr(request.app.state, "paperless_client", None)
     if pc:
         try:
-            inbox_tag_id = config.inbox_tag_id
+            params: dict[str, Any] = {"page_size": 1}
+            if _settings_svc.config.inbox_tag_id:
+                params["tags__id__none"] = _settings_svc.config.inbox_tag_id
             async with httpx.AsyncClient(headers=pc._headers, timeout=10) as client:
                 resp = await client.get(
                     f"{pc._base_url}/api/documents/",
-                    params={"page_size": 1},
+                    params=params,
                 )
                 if resp.status_code == 200:
                     total_eligible = resp.json().get("count", 0)
@@ -3575,20 +3498,21 @@ async def _reindex_document(doc_id: int, vs: VectorStore, pc: PaperlessNGXClient
                 queue.record_embed_success()
             logger.info("Webhook reindex: document %d re-indexed.", doc_id)
             return
-        except Exception:
+        except Exception as exc:
+            exc_str = str(exc)
             if queue:
-                queue.record_embed_failure()
+                queue.record_embed_failure(exc_str)
             if _attempt < 3:
                 logger.warning(
-                    "Reindex attempt %d/3 failed for document %d, retrying in %ds.",
-                    _attempt, doc_id, _attempt * 2,
+                    "Reindex attempt %d/3 failed for document %d (%s), retrying in %ds.",
+                    _attempt, doc_id, exc_str, _attempt * 2,
                 )
                 await asyncio.sleep(float(_attempt * 2))
             else:
                 logger.warning(
-                    "All 3 reindex attempts failed for document %d — "
-                    "will resume when embed service recovers.",
-                    doc_id,
+                    "All 3 reindex attempts failed for document %d (%s) — "
+                    "will resume when embed service recovers or settings are fixed.",
+                    doc_id, exc_str,
                 )
 
 
@@ -3807,8 +3731,8 @@ async def paperless_webhook(request: Request) -> dict:
         try:
             doc_title: str | None = None
             try:
-                meta = await pc.get_document_metadata(doc_id)
-                doc_title = meta.get("title") or None
+                doc_meta = await pc.get_document_metadata(doc_id)
+                doc_title = doc_meta.get("title") or None
             except Exception:
                 pass
             async with AsyncSessionLocal() as _db:

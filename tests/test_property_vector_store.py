@@ -305,3 +305,62 @@ async def test_chroma_exclude_tag_id_filters_inbox_docs() -> None:
     meta_excl = await store.query_similar_metadata("insurance", top_n=5, exclude_tag_id=99)
     assert "Acme Inbox" not in meta_excl["correspondents"]
     assert "Acme Curated" in meta_excl["correspondents"]
+
+
+# ---------------------------------------------------------------------------
+# Batch embedding path (Cohere-style providers)
+# ---------------------------------------------------------------------------
+
+
+class _BatchMockProvider(_MockLLMProvider):
+    """Mock provider that supports multi-text batching and records batch sizes."""
+
+    def __init__(self, limit: int = 96) -> None:
+        self._limit = limit
+        self.batch_sizes: list[int] = []
+
+    def embed_batch_limit(self) -> int:
+        return self._limit
+
+    async def embed_batch(self, texts: list[str]) -> list[list[float]]:
+        self.batch_sizes.append(len(texts))
+        return [await self.embed(t) for t in texts]
+
+
+@pytest.mark.asyncio
+async def test_chroma_upsert_uses_batched_embed() -> None:
+    """When the provider batches, chunks are grouped into batch_size API calls."""
+    store = _make_store()
+    provider = _BatchMockProvider(limit=96)
+    store._llm = provider
+    store._embed_batch_size = 4
+    # Force several chunks from one document
+    store._chunk_size = 50
+    store._chunk_overlap = 0
+
+    text = " ".join(f"sentence{i} content here padding" for i in range(20))
+    await store.upsert(1, text, {"title": "Batched"})
+
+    # Every text went through embed_batch, grouped into batches of <= 4
+    assert provider.batch_sizes, "embed_batch was never called"
+    assert all(size <= 4 for size in provider.batch_sizes)
+    total_embedded = sum(provider.batch_sizes)
+    assert total_embedded == len(_chunk(text, 50, 0, "char"))
+
+    # And the document is retrievable, proving vectors were stored correctly
+    results = await store.query("sentence1 content", top_n=5)
+    assert 1 in {r.document_id for r in results}
+
+
+@pytest.mark.asyncio
+async def test_chroma_upsert_batch_limit_caps_group_size() -> None:
+    """A provider that only accepts 1 text per call falls back to per-text calls."""
+    store = _make_store()
+    provider = _BatchMockProvider(limit=1)
+    store._llm = provider
+    store._embed_batch_size = 32  # asks for 32, but provider limit is 1
+
+    # limit=1 means _effective_batch_size collapses to the per-text path,
+    # so embed_batch is never used.
+    await store.upsert(1, "short doc", {"title": "Tiny"})
+    assert provider.batch_sizes == []

@@ -1,7 +1,7 @@
 import { useQuery } from "@tanstack/react-query";
 import {
   Title, Paper, Text, Group, Stack, Badge, Progress,
-  Box,
+  Box, Alert, Code,
 } from "@mantine/core";
 import { api } from "../api";
 import { useTranslation } from "react-i18next";
@@ -18,9 +18,20 @@ export default function ProcessingPage() {
   const embeddingTotal = Math.max(1, (proc?.embedding_total as number) ?? 1);
   const embeddingPct = Math.min(100, Math.round((embeddingDone / embeddingTotal) * 100));
 
+  // Embed circuit-breaker: paused after repeated failures (e.g. a bad model ID).
+  const embedPaused = proc?.embed_available === false;
+  const embedError = (proc?.embed_last_error as string | null) ?? null;
+
   return (
     <Stack gap="md">
       <Title order={2}>{t("processing.title")}</Title>
+
+      {embedPaused && (
+        <Alert color="red" title={t("processing.embedPausedTitle")}>
+          <Text size="sm" mb={embedError ? "xs" : 0}>{t("processing.embedPausedBody")}</Text>
+          {embedError && <Code block>{embedError}</Code>}
+        </Alert>
+      )}
 
       {/* System Status */}
       <Paper withBorder p="md" radius="md">
