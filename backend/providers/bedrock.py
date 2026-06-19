@@ -271,7 +271,7 @@ class BedrockProvider:
         # Unreachable: the loop either returns or raises, but keep the type checker happy.
         raise RuntimeError("Bedrock embed(): retry loop exhausted without result.")
 
-    def _embed_body(self, texts: list[str]) -> str:
+    def _embed_body(self, texts: list[str], *, is_query: bool = False) -> str:
         """Build the invoke_model body for the configured embed model.
 
         Supported model families and their request/response formats:
@@ -287,18 +287,22 @@ class BedrockProvider:
         "us.amazon.titan-..."), and v4 in particular is only invokable through an
         inference profile. A prefix check would misroute those to the wrong body.
 
+        ``is_query`` selects Cohere's ``input_type`` (search_query vs
+        search_document); Titan has no equivalent and ignores it.
+
         Titan accepts only a single string, so a multi-text batch is rejected here
         rather than silently embedding just the first text.
         """
         model = self._embed_model
 
         if "cohere." in model:
-            # Cohere expects a list of texts; input_type "search_document" optimises
-            # for retrieval (use "search_query" when embedding a query instead).
+            # Cohere expects a list of texts; input_type "search_query" optimises a
+            # search query, "search_document" optimises a doc being indexed.
             # This body is valid for both Embed v3 and v4 — embedding_types is left
             # unset so v4 returns float vectors; the parser below handles both the
             # flat ("embeddings_floats") and keyed ("embeddings_by_type") shapes.
-            return json.dumps({"texts": texts, "input_type": "search_document"})
+            input_type = "search_query" if is_query else "search_document"
+            return json.dumps({"texts": texts, "input_type": input_type})
 
         if len(texts) != 1:
             raise ValueError(
@@ -335,9 +339,13 @@ class BedrockProvider:
         # v3 / v4 "embeddings_floats": [[...]]
         return embeddings
 
-    async def embed(self, text: str) -> list[float]:
-        """Generate an embedding vector for a single text."""
-        result = await self._invoke_embed_model(self._embed_body([text]))
+    async def embed(self, text: str, *, is_query: bool = False) -> list[float]:
+        """Generate an embedding vector for a single text.
+
+        ``is_query`` selects Cohere's ``input_type`` (search_query vs
+        search_document); Titan ignores it.
+        """
+        result = await self._invoke_embed_model(self._embed_body([text], is_query=is_query))
         if "cohere." in self._embed_model:
             return self._parse_cohere_embeddings(result)[0]
         return result["embedding"]

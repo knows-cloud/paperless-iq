@@ -57,6 +57,9 @@ ENV PYTHONUNBUFFERED=1
 EXPOSE 8080
 VOLUME ["/data"]
 
-# Schema migrations (incl. auto-adopting pre-Alembic databases) run at app
-# startup in the FastAPI lifespan — see backend/db_migrate.py.
+# Schema migrations run at app startup in the FastAPI lifespan — see
+# backend/db_migrate.py, which self-heals pre-Alembic and stale-revision
+# databases and logs visibly. No standalone "alembic upgrade head" here — it
+# lacks that self-heal and would fail loudly on existing databases. Exec form so
+# uvicorn is PID 1 (clean SIGTERM).
 CMD ["uvicorn", "backend.main:app", "--host", "0.0.0.0", "--port", "8080", "--log-level", "info"]

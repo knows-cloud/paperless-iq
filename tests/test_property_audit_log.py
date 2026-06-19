@@ -18,7 +18,7 @@ from unittest.mock import AsyncMock, patch
 from uuid import UUID, uuid4
 
 import pytest
-from hypothesis import HealthCheck, given, settings
+from hypothesis import given
 from hypothesis import strategies as st
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 
@@ -73,7 +73,6 @@ async def _make_session() -> AsyncSession:
 # Property 23: Audit log completeness
 # ---------------------------------------------------------------------------
 
-@settings(max_examples=100, suppress_health_check=[HealthCheck.too_slow])
 @given(
     document_id=_doc_id_strategy,
     changes=_changes_strategy(),
@@ -139,7 +138,6 @@ _date_strategy = st.datetimes(
 )
 
 
-@settings(max_examples=100, suppress_health_check=[HealthCheck.too_slow])
 @given(
     entries_data=st.lists(
         st.tuples(
@@ -230,7 +228,6 @@ async def test_property_24_audit_log_filter_correctness(
 # Property 25: Audit log retention
 # ---------------------------------------------------------------------------
 
-@settings(max_examples=100, suppress_health_check=[HealthCheck.too_slow])
 @given(
     retention_days=st.integers(min_value=90, max_value=365),
     entry_ages_days=st.lists(
@@ -303,7 +300,6 @@ async def test_property_25_audit_log_retention(
 # Property 26: Audit log failure isolation
 # ---------------------------------------------------------------------------
 
-@settings(max_examples=100, suppress_health_check=[HealthCheck.too_slow])
 @given(
     document_id=_doc_id_strategy,
     change_source=_change_source,

@@ -6,7 +6,7 @@
 
 from __future__ import annotations
 
-from hypothesis import given, settings
+from hypothesis import given
 from hypothesis import strategies as st
 
 
@@ -21,7 +21,6 @@ def filter_tags(tags: list[str], search: str) -> list[str]:
     return [t for t in tags if search_lower in t.lower()]
 
 
-@settings(max_examples=100)
 @given(
     tags=st.lists(st.text(min_size=1, max_size=50), min_size=0, max_size=30),
     search=st.text(min_size=0, max_size=20),
@@ -44,7 +43,6 @@ def test_tag_filter_returns_only_matching_tags(tags: list[str], search: str) -> 
         )
 
 
-@settings(max_examples=100)
 @given(
     tags=st.lists(st.text(min_size=1, max_size=50), min_size=0, max_size=30),
     search=st.text(min_size=0, max_size=20),

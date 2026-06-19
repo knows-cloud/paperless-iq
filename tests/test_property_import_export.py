@@ -12,7 +12,7 @@ from __future__ import annotations
 from typing import Any
 
 import pytest
-from hypothesis import HealthCheck, given, settings
+from hypothesis import given
 from hypothesis import strategies as st
 
 from backend.models import PaperlessIQConfig
@@ -51,7 +51,6 @@ _valid_config = st.builds(
 # Property 30: Settings export credential redaction
 # ---------------------------------------------------------------------------
 
-@settings(max_examples=100, suppress_health_check=[HealthCheck.too_slow])
 @given(config=_valid_config)
 def test_property_30_export_credential_redaction(
     config: PaperlessIQConfig,
@@ -95,7 +94,6 @@ def test_property_30_export_credential_redaction(
 # Property 31: Settings export/import round-trip
 # ---------------------------------------------------------------------------
 
-@settings(max_examples=100, suppress_health_check=[HealthCheck.too_slow])
 @given(config=_valid_config)
 def test_property_31_export_import_round_trip(
     config: PaperlessIQConfig,
@@ -130,7 +128,6 @@ def test_property_31_export_import_round_trip(
 # Property 32: Import unknown field tolerance
 # ---------------------------------------------------------------------------
 
-@settings(max_examples=100, suppress_health_check=[HealthCheck.too_slow])
 @given(
     config=_valid_config,
     unknown_fields=st.dictionaries(

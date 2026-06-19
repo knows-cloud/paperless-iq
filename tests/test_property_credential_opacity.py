@@ -12,7 +12,7 @@ from __future__ import annotations
 
 import json
 
-from hypothesis import given, settings, HealthCheck, assume
+from hypothesis import given, assume
 from hypothesis import strategies as st
 
 from backend.providers.encryption import encrypt_credential
@@ -103,10 +103,6 @@ def response_body_as_text(response: dict) -> str:
 # Property 7: Credential opacity
 # ---------------------------------------------------------------------------
 
-@settings(
-    max_examples=100,
-    suppress_health_check=[HealthCheck.too_slow],
-)
 @given(
     plaintext_credential=_credential_strategy,
     secret_key=_secret_key_strategy,
@@ -154,10 +150,6 @@ def test_property_7_credential_opacity(
     )
 
 
-@settings(
-    max_examples=100,
-    suppress_health_check=[HealthCheck.too_slow],
-)
 @given(
     credentials=st.fixed_dictionaries({
         "api_key": _credential_strategy,

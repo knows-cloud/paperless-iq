@@ -181,36 +181,55 @@ async def check_ng_admin_status(paperless_url: str, user_token: str, username: s
         return False
 
 
+class PaperlessUnreachableError(Exception):
+    """Raised when Paperless NGX cannot be contacted to validate credentials.
+
+    Distinct from invalid credentials: the caller maps this to a 502 with an
+    actionable message instead of a misleading "invalid username or password".
+    """
+
+    def __init__(self, url: str) -> None:
+        super().__init__(f"Could not reach Paperless NGX at {url}")
+        self.url = url
+
+
 async def validate_paperless_credentials(
     username: str, password: str
 ) -> tuple[bool, str, bool]:
     """Validate credentials against Paperless NGX.
 
-    Returns ``(valid, paperless_token, is_ng_admin)``.
+    Returns ``(valid, paperless_token, is_ng_admin)``. ``valid`` is False only
+    when Paperless actively *rejects* the credentials (non-200 from
+    ``/api/token/``). When Paperless cannot be reached at all, raises
+    :class:`PaperlessUnreachableError` so the caller can distinguish a network
+    problem from a bad password.
+
     ``paperless_token`` is the short-lived token issued by Paperless — it is
     used only for the admin check and is never stored.
     """
     paperless_url = os.environ.get("PAPERLESS_URL", "").rstrip("/")
     if not paperless_url:
-        return False, "", False
+        raise PaperlessUnreachableError("(PAPERLESS_URL not set)")
     try:
         async with httpx.AsyncClient(timeout=10) as client:
             resp = await client.post(
                 f"{paperless_url}/api/token/",
                 json={"username": username, "password": password},
             )
-            if resp.status_code != 200:
-                return False, "", False
-            ng_token = resp.json().get("token", "")
-            is_admin = await check_ng_admin_status(paperless_url, ng_token, username)
-            return True, ng_token, is_admin
-    except Exception:
+    except Exception as exc:
         logger.warning(
             "Could not reach Paperless NGX at %s to validate credentials.",
             paperless_url,
             exc_info=True,
         )
+        raise PaperlessUnreachableError(paperless_url) from exc
+
+    # Reached Paperless — a non-200 here is a genuine credential rejection.
+    if resp.status_code != 200:
         return False, "", False
+    ng_token = resp.json().get("token", "")
+    is_admin = await check_ng_admin_status(paperless_url, ng_token, username)
+    return True, ng_token, is_admin
 
 
 # ---------------------------------------------------------------------------

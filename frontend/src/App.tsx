@@ -17,12 +17,13 @@ import AuditPage from "./pages/AuditPage";
 import DiscoveryPage from "./pages/DiscoveryPage";
 import ProcessingPage from "./pages/ProcessingPage";
 import LoginPage from "./pages/LoginPage";
+import LibraryPage from "./pages/LibraryPage";
 import { api, clearStoredToken } from "./api";
 import type { UserPermissions } from "./api";
 
-type Page = "manual" | "queue" | "discovery" | "processing" | "audit" | "settings";
+type Page = "manual" | "queue" | "discovery" | "processing" | "audit" | "settings" | "library";
 
-const VALID_PAGES: Set<string> = new Set(["manual", "queue", "discovery", "processing", "audit", "settings"]);
+const VALID_PAGES: Set<string> = new Set(["manual", "queue", "discovery", "processing", "audit", "settings", "library"]);
 
 const NAV_ITEMS: Array<{ id: Page; labelKey: string; defaultIconName: string }> = [
   { id: "manual",     labelKey: "nav.analysis",   defaultIconName: "FileSearch"   },
@@ -31,6 +32,7 @@ const NAV_ITEMS: Array<{ id: Page; labelKey: string; defaultIconName: string }> 
   { id: "processing", labelKey: "nav.processing",  defaultIconName: "Activity"     },
   { id: "audit",      labelKey: "nav.audit",       defaultIconName: "ClipboardList"},
   { id: "settings",   labelKey: "nav.settings",    defaultIconName: "Settings"     },
+  { id: "library",    labelKey: "nav.library",     defaultIconName: "Book"         },
 ];
 
 function getPageFromHash(): Page {
@@ -136,6 +138,7 @@ export default function App() {
     can_analyze: true,
     can_discover: true,
     can_settings: true,
+    can_groom: false,
   };
 
   function canViewPage(id: Page): boolean {
@@ -147,6 +150,7 @@ export default function App() {
       case "processing": return perms.can_analyze || perms.can_settings;
       case "audit":      return perms.can_access;
       case "settings":   return perms.can_settings;
+      case "library":    return perms.can_groom;
       default:           return false;
     }
   }
@@ -231,6 +235,7 @@ export default function App() {
           {page === "processing" && canViewPage("processing") && <ProcessingPage />}
           {page === "audit"      && canViewPage("audit")      && <AuditPage />}
           {page === "settings"   && canViewPage("settings")   && <SettingsPage />}
+          {page === "library"    && canViewPage("library")    && <LibraryPage />}
         </Box>
       </AppShell.Main>
     </AppShell>

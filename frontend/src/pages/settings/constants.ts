@@ -42,6 +42,18 @@ export const QDRANT_QUANTIZATIONS = [
   { value: "binary", labelKey: "aiProvider.search.qdrantQuantization.binary" },
 ] as const;
 
+export const GROOMING_ENTITY_TYPES = [
+  { value: "tag",           labelKey: "grooming.entityType.tag" },
+  { value: "correspondent", labelKey: "grooming.entityType.correspondent" },
+  { value: "document_type", labelKey: "grooming.entityType.documentType" },
+] as const;
+
+export const EMBED_REFRESH_MODES = [
+  { value: "immediate", labelKey: "aiProvider.embedRefresh.mode.immediate" },
+  { value: "daily",     labelKey: "aiProvider.embedRefresh.mode.daily" },
+  { value: "manual",    labelKey: "aiProvider.embedRefresh.mode.manual" },
+] as const;
+
 export const METADATA_FIELDS = [
   { key: "title",         label: "Title",                 description: "How should the LLM generate the document title?" },
   { key: "tags",          label: "Tags",                  description: "How should the LLM select or suggest tags?" },

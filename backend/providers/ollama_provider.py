@@ -73,8 +73,8 @@ class OllamaProvider:
             images=images,
         )
 
-    async def embed(self, text: str) -> list[float]:
-        """Generate embeddings via Ollama."""
+    async def embed(self, text: str, *, is_query: bool = False) -> list[float]:
+        """Generate embeddings via Ollama (no query/document distinction)."""
         client = self._client()
         response = await client.embeddings(model=self._model, prompt=text)
         return response["embedding"]

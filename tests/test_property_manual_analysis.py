@@ -12,7 +12,7 @@ from typing import Any
 from unittest.mock import AsyncMock
 
 import pytest
-from hypothesis import HealthCheck, given, settings
+from hypothesis import given
 from hypothesis import strategies as st
 
 from backend.manual_analysis import ManualAnalysisService
@@ -54,7 +54,6 @@ def _mock_paperless_client() -> AsyncMock:
 # Property 15: Manual analysis override
 # ---------------------------------------------------------------------------
 
-@settings(max_examples=100, suppress_health_check=[HealthCheck.too_slow])
 @given(
     base_provider=_provider_names,
     base_model=_model_names,
@@ -136,7 +135,6 @@ def _doc_with_tags(doc_id: int, tag_ids: list[int]) -> dict[str, Any]:
     }
 
 
-@settings(max_examples=100, suppress_health_check=[HealthCheck.too_slow])
 @given(
     docs=st.lists(
         st.tuples(
@@ -238,7 +236,6 @@ _metadata_suggestion_strategy = st.builds(
 from backend.models import MetadataSuggestion
 
 
-@settings(max_examples=100, suppress_health_check=[HealthCheck.too_slow])
 @given(data=_metadata_suggestion_strategy)
 def test_property_8_metadata_suggestion_json_round_trip(
     data: dict[str, Any],

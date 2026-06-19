@@ -17,7 +17,7 @@ from uuid import uuid4
 
 import pytest
 import pytest_asyncio
-from hypothesis import HealthCheck, given, settings
+from hypothesis import given
 from hypothesis import strategies as st
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 
@@ -103,7 +103,6 @@ async def _make_session() -> AsyncSession:
 # Property 18: Approval queue routing
 # ---------------------------------------------------------------------------
 
-@settings(max_examples=100, suppress_health_check=[HealthCheck.too_slow])
 @given(
     suggestion=_suggestion_strategy(),
     auto_apply=st.booleans(),
@@ -163,7 +162,6 @@ async def test_property_18_approval_queue_routing(
 # Property 19: Approval applies edited values
 # ---------------------------------------------------------------------------
 
-@settings(max_examples=100, suppress_health_check=[HealthCheck.too_slow], deadline=None)
 @given(
     suggestion=_suggestion_strategy(),
     edits=_edits_strategy(),
@@ -216,7 +214,6 @@ async def test_property_19_approval_applies_edited_values(
 # Property 20: Bulk approval state transition
 # ---------------------------------------------------------------------------
 
-@settings(max_examples=100, suppress_health_check=[HealthCheck.too_slow])
 @given(
     suggestions=st.lists(_suggestion_strategy(), min_size=1, max_size=20),
     do_approve=st.booleans(),

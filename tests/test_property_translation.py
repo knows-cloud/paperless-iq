@@ -13,7 +13,7 @@ import tempfile
 from unittest.mock import AsyncMock
 
 import pytest
-from hypothesis import HealthCheck, given, settings
+from hypothesis import given
 from hypothesis import strategies as st
 
 from backend.translation import DEFAULT_STRINGS, TranslationService
@@ -29,7 +29,6 @@ _language = st.sampled_from(["de", "fr", "es", "ja", "zh", "pt", "ko", "it"])
 # Property 27: Translation persistence and application
 # ---------------------------------------------------------------------------
 
-@settings(max_examples=100, suppress_health_check=[HealthCheck.too_slow], deadline=None)
 @given(language=_language)
 @pytest.mark.asyncio
 async def test_property_27_translation_persistence(language: str) -> None:
@@ -85,7 +84,6 @@ async def test_property_27_translation_persistence(language: str) -> None:
 # Property 28: Translation failure fallback
 # ---------------------------------------------------------------------------
 
-@settings(max_examples=100, suppress_health_check=[HealthCheck.too_slow], deadline=None)
 @given(language=_language)
 @pytest.mark.asyncio
 async def test_property_28_translation_failure_fallback(language: str) -> None:

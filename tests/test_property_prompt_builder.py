@@ -11,7 +11,7 @@ from typing import Any
 from unittest.mock import AsyncMock
 
 import pytest
-from hypothesis import HealthCheck, given, settings
+from hypothesis import given
 from hypothesis import strategies as st
 
 from backend.analyzer import DocumentAnalyzer, PaperlessNGXClient
@@ -134,7 +134,6 @@ def _make_mock_paperless(
 # Property 4: Field descriptions in prompt
 # ---------------------------------------------------------------------------
 
-@settings(max_examples=100, suppress_health_check=[HealthCheck.too_slow])
 @given(field_descriptions=_field_descriptions_strategy)
 def test_property_4_field_descriptions_appear_in_prompt(
     field_descriptions: dict[str, str],
@@ -162,7 +161,6 @@ def test_property_4_field_descriptions_appear_in_prompt(
         )
 
 
-@settings(max_examples=100, suppress_health_check=[HealthCheck.too_slow])
 @given(field_descriptions=_field_descriptions_strategy)
 def test_property_4_absent_fields_not_in_prompt(
     field_descriptions: dict[str, str],
@@ -191,7 +189,6 @@ def test_property_4_absent_fields_not_in_prompt(
         )
 
 
-@settings(max_examples=100, suppress_health_check=[HealthCheck.too_slow])
 @given(
     field_descriptions=_field_descriptions_strategy,
 )
@@ -223,7 +220,6 @@ def test_property_4_instruction_count_matches(
 # Property 11: Entity lists in prompt
 # ---------------------------------------------------------------------------
 
-@settings(max_examples=100, suppress_health_check=[HealthCheck.too_slow])
 @given(
     tags=_tag_list_strategy,
     correspondents=_correspondent_list_strategy,
@@ -286,7 +282,6 @@ async def test_property_11_entity_lists_appear_in_prompt(
         assert "  Custom fields:" not in result, "Empty custom field list should not produce a section"
 
 
-@settings(max_examples=100, suppress_health_check=[HealthCheck.too_slow])
 @given(
     tags=st.lists(_entity_name_strategy, min_size=1, max_size=10),
 )
@@ -322,7 +317,6 @@ async def test_property_11_tags_section_contains_all_names(
         )
 
 
-@settings(max_examples=100, suppress_health_check=[HealthCheck.too_slow])
 @given(
     correspondents=st.lists(_entity_name_strategy, min_size=1, max_size=10),
 )
@@ -356,7 +350,6 @@ async def test_property_11_correspondents_section_contains_all_names(
         )
 
 
-@settings(max_examples=100, suppress_health_check=[HealthCheck.too_slow])
 @given(
     custom_field_defs=st.lists(_custom_field_def_strategy, min_size=1, max_size=8),
 )

@@ -4,7 +4,7 @@ import {
   Title, Paper, Text, Group, Stack, Badge, Button, TextInput,
   Box, Alert, Anchor, Loader, Switch, Tabs,
 } from "@mantine/core";
-import { api, type PaperlessEntity, type PaperlessCustomField, type VisionAnalysisResult } from "../api";
+import { api, type PaperlessEntity, type PaperlessCustomField, type VisionAnalysisResult, type GroomingEvidence, type GroomingEvidenceAction } from "../api";
 import TagInput from "../TagInput";
 import AutocompleteInput from "../AutocompleteInput";
 import CfNameEditor from "../CfNameEditor";
@@ -24,6 +24,65 @@ interface QueueItem {
   document_type: string | null;
   storage_path: string | null;
   custom_fields: Record<string, unknown>;
+}
+
+function parseEvidence(raw: Record<string, unknown>): GroomingEvidence | null {
+  if (raw.analysis_mode !== "grooming" || !raw.evidence_json) return null;
+  try {
+    return JSON.parse(String(raw.evidence_json)) as GroomingEvidence;
+  } catch {
+    return null;
+  }
+}
+
+// All-adds grooming suggestions can't clobber: the card defaults the document's
+// current tags to included, so tags gained after the scan survive approval.
+function isAddOnly(evidence: GroomingEvidence | null): boolean {
+  return evidence !== null
+    && evidence.actions.length > 0
+    && evidence.actions.every(a => a.action === "add");
+}
+
+const EVIDENCE_ICONS: Record<string, string> = { add: "＋", remove: "−", replace: "⇄", review: "?" };
+const EVIDENCE_COLORS: Record<string, string> = { add: "teal", remove: "red", replace: "blue", review: "yellow" };
+
+function EvidenceRow({ action }: { action: GroomingEvidenceAction }) {
+  const { t } = useTranslation();
+  const [expanded, setExpanded] = useState(false);
+  const passage = action.best_passage || "";
+  const truncated = passage.length > 150 && !expanded;
+  return (
+    <Group gap="xs" align="flex-start" wrap="nowrap">
+      <Badge size="sm" variant="light" color={EVIDENCE_COLORS[action.action] ?? "gray"} style={{ flexShrink: 0 }}>
+        {EVIDENCE_ICONS[action.action] ?? "·"} {action.entity_name}
+        {action.action === "replace" && action.replacement_entity_name ? ` → ${action.replacement_entity_name}` : ""}
+      </Badge>
+      {action.action === "review" && (
+        <Badge size="sm" variant="filled" color="yellow" style={{ flexShrink: 0 }}>
+          {t("queue.needsDecision")}
+        </Badge>
+      )}
+      <Text size="xs" c="dimmed" style={{ minWidth: 0 }}>
+        {t("queue.evidenceSimilarity", { score: action.score.toFixed(2) })}
+        {action.cohort_percentile !== null && action.cohort_percentile !== undefined
+          ? ` · ${t("queue.evidencePercentile", { pct: action.cohort_percentile })}`
+          : ""}
+        {passage && (
+          <>
+            {" · "}
+            <Text span size="xs" fs="italic">
+              "{truncated ? passage.slice(0, 150) + "…" : passage}"
+            </Text>
+            {passage.length > 150 && (
+              <Anchor size="xs" ml={4} onClick={() => setExpanded(e => !e)}>
+                {expanded ? t("queue.evidenceLess") : t("queue.evidenceMore")}
+              </Anchor>
+            )}
+          </>
+        )}
+      </Text>
+    </Group>
+  );
 }
 
 export default function QueuePage() {
@@ -150,7 +209,7 @@ export default function QueuePage() {
   }, [openPreviews, previewUrls, previewLoading]);
 
   const approve = useMutation({
-    mutationFn: ({ id, item, docId }: { id: string; item: QueueItem; docId: number }) => {
+    mutationFn: ({ id, item, docId, includeCurrentByDefault }: { id: string; item: QueueItem; docId: number; includeCurrentByDefault?: boolean }) => {
       const currentTags = existingTagsMap[docId] ?? [];
       const suggestedTags = item.tags; // LLM output
       const overrides = tagOverrides[id] ?? {};
@@ -165,9 +224,14 @@ export default function QueuePage() {
       const finalTags: string[] = [];
       for (const tag of allTagNames) {
         const inSuggested = suggestedTags.includes(tag);
+        const inCurrent = currentTags.includes(tag);
         const override = overrides[tag];
-        // Default: keep if LLM included it; override takes precedence
-        const shouldInclude = override !== undefined ? override : inSuggested;
+        // Default: keep if LLM included it; override takes precedence.
+        // Add-only grooming suggestions also keep current tags by default —
+        // the scan only adds, so nothing the user applied meanwhile is dropped.
+        const shouldInclude = override !== undefined
+          ? override
+          : inSuggested || (Boolean(includeCurrentByDefault) && inCurrent);
         if (shouldInclude) finalTags.push(tag);
       }
 
@@ -385,11 +449,17 @@ export default function QueuePage() {
                 const suggestedTags = item.tags;
                 const overrides = tagOverrides[id] ?? {};
                 const isReanalyzing = reanalyzingIds.has(id);
+                const evidence = parseEvidence(raw);
+                const groomingAddOnly = isAddOnly(evidence);
                 return (
                   <Tabs.Panel key={id} value={id}>
                     {/* Per-suggestion actions */}
                     <Group gap="xs" mb="sm" wrap="wrap">
-                      <Text size="xs" c="dimmed">{String(raw.llm_provider ?? "")} · {String(raw.llm_model ?? "")} · {fmtDateTime(raw.created_at)}</Text>
+                      <Text size="xs" c="dimmed">
+                        {evidence
+                          ? `${t("queue.groomingProvenance")} · ${fmtDateTime(evidence.scanned_at)}`
+                          : `${String(raw.llm_provider ?? "")} · ${String(raw.llm_model ?? "")} · ${fmtDateTime(raw.created_at)}`}
+                      </Text>
                       <Box style={{ flex: 1 }} />
                       <Button size="xs" variant="default" onClick={() => handleReanalyze(id)} loading={isReanalyzing}>
                         {t("queue.reanalyze")}
@@ -414,6 +484,16 @@ export default function QueuePage() {
                       </Text>
                     )}
 
+                    {/* Grooming scan evidence */}
+                    {evidence && evidence.actions.length > 0 && (
+                      <Paper withBorder p="xs" radius="sm" mb="sm" bg="var(--mantine-color-default-hover)">
+                        <Text size="xs" fw={600} c="dimmed" mb={6}>{t("queue.groomingEvidence")}</Text>
+                        <Stack gap={6}>
+                          {evidence.actions.map((a, i) => <EvidenceRow key={i} action={a} />)}
+                        </Stack>
+                      </Paper>
+                    )}
+
             {/* Edit form */}
             <Stack gap="xs">
               <TextInput
@@ -436,8 +516,11 @@ export default function QueuePage() {
                       const inCurrent = currentTags.includes(tag);
                       const inSuggested = suggestedTags.includes(tag);
                       const override = overrides[tag];
-                      // Default: keep tag if LLM included it in suggested set
-                      const effectiveInclude = override !== undefined ? override : inSuggested;
+                      // Default: keep tag if LLM included it in suggested set.
+                      // Add-only grooming suggestions also keep current tags.
+                      const effectiveInclude = override !== undefined
+                        ? override
+                        : inSuggested || (groomingAddOnly && inCurrent);
 
                       // Green suggestion the user removed → hide entirely
                       if (!effectiveInclude && !inCurrent) return [];
@@ -463,10 +546,11 @@ export default function QueuePage() {
                           style={{ cursor: "pointer", ...extraStyle }}
                           onClick={() => {
                             const newInclude = !effectiveInclude;
+                            const naturalDefault = inSuggested || (groomingAddOnly && inCurrent);
                             setTagOverrides(prev => {
                               const prevItem = { ...(prev[id] ?? {}) };
                               // If toggling back to the natural default, remove the override
-                              if (newInclude === inSuggested) {
+                              if (newInclude === naturalDefault) {
                                 delete prevItem[tag];
                               } else {
                                 prevItem[tag] = newInclude;
@@ -542,7 +626,7 @@ export default function QueuePage() {
               )}
               <Group gap="xs">
                 <Button size="sm"
-                  onClick={() => approve.mutate({ id, item, docId: item.document_id })}
+                  onClick={() => approve.mutate({ id, item, docId: item.document_id, includeCurrentByDefault: groomingAddOnly })}
                   loading={approve.isPending && approve.variables?.id === id}>
                   {t("common.approve")}
                 </Button>

@@ -13,7 +13,7 @@ from typing import Any
 import pytest
 import pytest_asyncio
 from httpx import ASGITransport, AsyncClient
-from hypothesis import HealthCheck, given, settings
+from hypothesis import given
 from hypothesis import strategies as st
 
 from backend.settings_service import SettingsService
@@ -22,34 +22,33 @@ from backend.settings_service import SettingsService
 # Strategies for invalid settings
 # ---------------------------------------------------------------------------
 
-_invalid_settings = st.one_of(
-    # Retention days below minimum (30)
-    st.fixed_dictionaries({"audit_retention_days": st.integers(max_value=29)}),
-    # Unknown provider
-    st.fixed_dictionaries({"llm_provider": st.just("unknown_provider")}),
-    # Invalid vector store backend
-    st.fixed_dictionaries({"vector_store_backend": st.just("nonexistent")}),
-    # Negative poll interval
-    st.fixed_dictionaries({"poll_interval_seconds": st.just(-1)}),
-    # Negative batch size
-    st.fixed_dictionaries({"batch_size": st.just(-5)}),
-)
+# Fixed invalid values — these are not properties (no randomness adds value).
+# See test_settings_validation_rejects_invalid_fixed below.
+_FIXED_INVALID_SETTINGS = [
+    {"llm_provider": "unknown_provider"},
+    {"vector_store_backend": "nonexistent"},
+    {"poll_interval_seconds": -1},
+    {"batch_size": -5},
+]
 
 
 # ---------------------------------------------------------------------------
 # Property 13: Settings validation rejects invalid values
 # ---------------------------------------------------------------------------
 
-@settings(max_examples=100, suppress_health_check=[HealthCheck.too_slow])
-@given(invalid_values=_invalid_settings)
-def test_property_13_settings_validation_rejects_invalid(
+@given(
+    invalid_values=st.fixed_dictionaries(
+        {"audit_retention_days": st.integers(max_value=29)}
+    )
+)
+def test_property_13_settings_validation_rejects_low_retention(
     invalid_values: dict[str, Any],
 ) -> None:
     """
-    # Feature: paperless-iq, Property 13: Settings validation rejects invalid values
+    # Feature: paperless-iq, Property 13a: Low retention days rejected
 
-    Invalid setting values must be rejected with a descriptive error message
-    and must not be persisted.
+    For any audit_retention_days < 30, the update must raise ValueError and
+    leave the config unchanged.
 
     Validates: Requirements 5.3
     """
@@ -59,7 +58,21 @@ def test_property_13_settings_validation_rejects_invalid(
     with pytest.raises(ValueError, match="Invalid settings"):
         svc.update(invalid_values)
 
-    # Config must be unchanged after failed validation
+    after = svc.get_masked()
+    assert after == original, "Config was modified despite validation failure"
+
+
+@pytest.mark.parametrize("invalid_values", _FIXED_INVALID_SETTINGS)
+def test_settings_validation_rejects_invalid_fixed(
+    invalid_values: dict[str, Any],
+) -> None:
+    """Property 13b: Fixed invalid values are rejected without persisting."""
+    svc = SettingsService()
+    original = svc.get_masked()
+
+    with pytest.raises(ValueError, match="Invalid settings"):
+        svc.update(invalid_values)
+
     after = svc.get_masked()
     assert after == original, "Config was modified despite validation failure"
 
@@ -68,78 +81,82 @@ def test_property_13_settings_validation_rejects_invalid(
 # Property 14: Authentication enforcement
 # ---------------------------------------------------------------------------
 
-# Protected endpoints to test (method, path)
-_PROTECTED_ENDPOINTS = [
+# All routes that must require auth.  Intentionally-public routes (auth/*, status,
+# theme, health, webhook receiver) are excluded from this list.
+_PROTECTED_ENDPOINTS: list[tuple[str, str]] = [
     ("GET", "/api/settings"),
     ("PUT", "/api/settings"),
     ("GET", "/api/queue"),
+    ("POST", "/api/queue"),
+    ("POST", "/api/queue/bulk-approve"),
+    ("POST", "/api/queue/bulk-reject"),
+    ("POST", "/api/queue/empty"),
+    ("POST", "/api/queue/reanalyze"),
+    ("POST", "/api/queue/reanalyze-all"),
     ("GET", "/api/audit"),
+    ("GET", "/api/audit/export"),
     ("GET", "/api/search?q=test"),
     ("GET", "/api/documents"),
     ("GET", "/api/config/export"),
     ("POST", "/api/config/import"),
     ("POST", "/api/analyze"),
+    ("POST", "/api/analyze/vision"),
+    ("POST", "/api/reindex"),
+    ("POST", "/api/reindex/since"),
+    ("POST", "/api/vector/migrate"),
+    ("POST", "/api/tracking/reset"),
+    ("POST", "/api/tracking/reset-rejected"),
+    ("GET", "/api/tracking/stats"),
+    ("GET", "/api/piq-users"),
+    ("GET", "/api/piq-users/me"),
+    ("POST", "/api/webhook/register"),
+    ("GET", "/api/memories"),
+    ("POST", "/api/discover"),
+    ("POST", "/api/discover/sessions"),
 ]
 
 
-@pytest_asyncio.fixture
-async def unauth_client():
-    """Async HTTP test client WITHOUT any auth headers."""
-    import os
-    # Set PAPERLESS_URL so auth is enforced (auth.py checks this, not SECRET_KEY)
-    os.environ["PAPERLESS_URL"] = "http://paperless.test"
-    os.environ["SECRET_KEY"] = "test-secret-key-for-auth"
-
-    # Re-import to pick up the env var
-    import importlib
-    import backend.auth
-    importlib.reload(backend.auth)
-
-    from backend.main import app
-    async with AsyncClient(
-        transport=ASGITransport(app=app),
-        base_url="http://test",
-    ) as client:
-        yield client
-
-    # Clean up
-    os.environ.pop("PAPERLESS_URL", None)
-    os.environ.pop("SECRET_KEY", None)
-    importlib.reload(backend.auth)
-
-
-@settings(max_examples=100, suppress_health_check=[HealthCheck.too_slow, HealthCheck.function_scoped_fixture])
-@given(
-    endpoint_idx=st.integers(min_value=0, max_value=len(_PROTECTED_ENDPOINTS) - 1),
-)
+@pytest.mark.parametrize(("method", "path"), _PROTECTED_ENDPOINTS)
 @pytest.mark.asyncio
 async def test_property_14_authentication_enforcement(
-    unauth_client: AsyncClient,
-    endpoint_idx: int,
+    monkeypatch: pytest.MonkeyPatch,
+    method: str,
+    path: str,
 ) -> None:
     """
     # Feature: paperless-iq, Property 14: Authentication enforcement
 
     Unauthenticated requests to protected endpoints must receive HTTP 401 or 403.
+    Uses monkeypatch.setenv so auth.py reads the env var at call time — no
+    importlib.reload needed.
 
     Validates: Requirements 5.4
     """
-    method, path = _PROTECTED_ENDPOINTS[endpoint_idx]
+    # auth.py's _is_auth_required() reads PAPERLESS_URL at call time
+    monkeypatch.setenv("PAPERLESS_URL", "http://paperless.test")
+    monkeypatch.setenv("SECRET_KEY", "test-secret-key-for-auth")
 
-    if method == "GET":
-        resp = await unauth_client.get(path)
-    elif method == "PUT":
-        resp = await unauth_client.put(path, json={})
-    elif method == "POST":
-        resp = await unauth_client.post(path, json={})
-    else:
-        pytest.fail(f"Unknown method: {method}")
+    from backend.main import app
+
+    async with AsyncClient(
+        transport=ASGITransport(app=app),
+        base_url="http://test",
+    ) as client:
+        if method == "GET":
+            resp = await client.get(path)
+        elif method == "PUT":
+            resp = await client.put(path, json={})
+        elif method == "POST":
+            resp = await client.post(path, json={})
+        elif method == "DELETE":
+            resp = await client.delete(path)
+        else:
+            pytest.fail(f"Unknown method: {method}")
 
     assert resp.status_code in (401, 403), (
         f"{method} {path} returned {resp.status_code}, expected 401 or 403"
     )
 
-    # Must not expose protected data
     body = resp.json()
     assert "items" not in body or body.get("items") == [], (
         f"{method} {path} exposed protected data without auth"
@@ -150,7 +167,6 @@ async def test_property_14_authentication_enforcement(
 # Strategies for settings round-trip dicts
 # ---------------------------------------------------------------------------
 
-# Field names: core fields or custom field keys like "cf:1", "cf:42"
 _field_name_strategy = st.one_of(
     st.sampled_from(["title", "tags", "correspondent", "document_type", "storage_path"]),
     st.integers(min_value=1, max_value=9999).map(lambda i: f"cf:{i}"),
@@ -183,7 +199,6 @@ _per_doctype_prompt_templates_strategy = st.dictionaries(
 # ---------------------------------------------------------------------------
 
 
-@settings(max_examples=100, suppress_health_check=[HealthCheck.too_slow])
 @given(
     field_descriptions=_field_descriptions_strategy,
     per_field_prompts=_per_field_prompt_templates_strategy,
@@ -207,28 +222,24 @@ def test_property_3_settings_round_trip(
     """
     svc = SettingsService()
 
-    # Update field_descriptions
     svc.update({"field_descriptions": field_descriptions})
     assert svc.config.field_descriptions == field_descriptions, (
         f"field_descriptions mismatch: expected {field_descriptions}, "
         f"got {svc.config.field_descriptions}"
     )
 
-    # Update per_field_prompt_templates
     svc.update({"per_field_prompt_templates": per_field_prompts})
     assert svc.config.per_field_prompt_templates == per_field_prompts, (
         f"per_field_prompt_templates mismatch: expected {per_field_prompts}, "
         f"got {svc.config.per_field_prompt_templates}"
     )
 
-    # Update per_doctype_prompt_templates
     svc.update({"per_doctype_prompt_templates": per_doctype_prompts})
     assert svc.config.per_doctype_prompt_templates == per_doctype_prompts, (
         f"per_doctype_prompt_templates mismatch: expected {per_doctype_prompts}, "
         f"got {svc.config.per_doctype_prompt_templates}"
     )
 
-    # Verify all three fields are still correct after sequential updates
     assert svc.config.field_descriptions == field_descriptions
     assert svc.config.per_field_prompt_templates == per_field_prompts
     assert svc.config.per_doctype_prompt_templates == per_doctype_prompts

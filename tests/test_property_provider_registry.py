@@ -10,7 +10,7 @@ from __future__ import annotations
 import json
 
 import pytest
-from hypothesis import given, settings, HealthCheck
+from hypothesis import given
 from hypothesis import strategies as st
 
 from backend.models import PaperlessIQConfig
@@ -94,7 +94,6 @@ def _bedrock_config(model: str, region: str, access_key: str, secret_key: str) -
 # Property 9: Provider registry returns LLMProvider for valid config
 # ---------------------------------------------------------------------------
 
-@settings(max_examples=100, suppress_health_check=[HealthCheck.too_slow])
 @given(
     model=_model_strategy,
     api_key=_api_key_strategy,
@@ -116,7 +115,6 @@ def test_property_9_anthropic_returns_llm_provider(
     assert isinstance(result["anthropic"], LLMProvider)
 
 
-@settings(max_examples=100, suppress_health_check=[HealthCheck.too_slow])
 @given(
     model=_model_strategy,
     api_key=_api_key_strategy,
@@ -138,7 +136,6 @@ def test_property_9_openai_returns_llm_provider(
     assert isinstance(result["openai"], LLMProvider)
 
 
-@settings(max_examples=100, suppress_health_check=[HealthCheck.too_slow])
 @given(
     model=_model_strategy,
     secret_key=_secret_key_strategy,
@@ -159,7 +156,6 @@ def test_property_9_ollama_returns_llm_provider(
     assert isinstance(result["ollama"], LLMProvider)
 
 
-@settings(max_examples=100, suppress_health_check=[HealthCheck.too_slow])
 @given(
     model=_model_strategy,
     region=_region_strategy,
@@ -188,7 +184,6 @@ def test_property_9_bedrock_returns_llm_provider(
 # Property 10: Provider registry raises on missing credentials
 # ---------------------------------------------------------------------------
 
-@settings(max_examples=100, suppress_health_check=[HealthCheck.too_slow])
 @given(
     model=_model_strategy,
     secret_key=_secret_key_strategy,
@@ -210,7 +205,6 @@ def test_property_10_anthropic_raises_on_empty_credentials(
         build_providers(config, secret_key)
 
 
-@settings(max_examples=100, suppress_health_check=[HealthCheck.too_slow])
 @given(
     model=_model_strategy,
     secret_key=_secret_key_strategy,
@@ -232,7 +226,6 @@ def test_property_10_openai_raises_on_empty_credentials(
         build_providers(config, secret_key)
 
 
-@settings(max_examples=100, suppress_health_check=[HealthCheck.too_slow])
 @given(
     model=_model_strategy,
     secret_key=_secret_key_strategy,

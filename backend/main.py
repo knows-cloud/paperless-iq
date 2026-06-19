@@ -18,6 +18,7 @@ logging.basicConfig(
 from contextlib import asynccontextmanager
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
+from collections.abc import Callable, Coroutine
 from typing import Annotated, Any, AsyncGenerator
 from uuid import UUID, uuid4
 
@@ -37,6 +38,7 @@ from backend.approval_queue import ApprovalQueueService
 from backend.audit_log import AuditLogService, rows_to_csv
 from backend.auth import (
     check_login_rate_limit,
+    PaperlessUnreachableError,
     check_webhook_secret,
     create_session,
     get_session_user,
@@ -45,7 +47,7 @@ from backend.auth import (
     validate_paperless_credentials,
 )
 from backend.auth import _is_auth_required
-from backend.database import AsyncSessionLocal, get_session
+from backend.database import AsyncSessionLocal, DATABASE_URL, get_session
 from backend.keystore import get_machine_key
 from backend.inbox_monitor import InboxMonitor, Scheduler
 from backend.manual_analysis import ManualAnalysisService
@@ -54,6 +56,8 @@ from backend.ollama_queue import OllamaQueue, Priority
 from backend.orm_models import (
     ConversationSessionORM,
     DocumentTrackingORM,
+    EntityDescriptionORM,
+    GroomingDismissalORM,
     SuggestionORM,
     UserMemoryORM,
     UserPermissionsORM,
@@ -65,6 +69,7 @@ from backend.vector_migrate import migrate_embeddings, migrate_memories
 from backend.rate_limiter import RateLimiter
 from backend.settings_service import SettingsService
 from backend.protocols import VectorStore
+from backend.grooming import GroomingService
 
 logger = logging.getLogger(__name__)
 
@@ -169,85 +174,189 @@ async def _fetch_all_inbox_doc_ids(
     return all_ids
 
 
-async def _automation_loop(
-    app: FastAPI,
-    poll_interval: int,
-    batch_size: int | None = None,
-) -> None:
-    """Unified automation loop for inbox monitoring and scheduled batch processing.
+def _make_analysis_callbacks(app: FastAPI, session: AsyncSession, label: str):
+    """Build the ``(fetch_inbox_docs, submit_for_analysis)`` closures shared by
+    the inbox poller and the scheduled (cron) batch run."""
+    config = _settings_svc.config
+    paperless_client: PaperlessNGXClient | None = app.state.paperless_client
+    manual_svc: ManualAnalysisService | None = app.state.manual_analysis_svc
+    inbox_tag_id = config.inbox_tag_id
 
-    When ``batch_size`` is None the loop acts as an inbox monitor (processes every
-    document with the inbox tag on each poll).  When ``batch_size`` is an integer
-    the loop runs as a scheduler (processes up to *batch_size* unanalysed documents
-    per tick).
+    async def fetch_inbox_docs() -> list[int]:
+        return await _fetch_all_inbox_doc_ids(paperless_client, inbox_tag_id)
+
+    async def submit_for_analysis(doc_id: int) -> Any:
+        try:
+            oq = getattr(app.state, "ollama_queue", None)
+            if oq:
+                suggestion = await oq.submit(
+                    Priority.ANALYSIS,
+                    lambda did=doc_id: manual_svc.analyze(did),
+                    label=f"Auto-analyzing doc {doc_id}",
+                )
+            else:
+                suggestion = await manual_svc.analyze(doc_id)
+            queue_svc = ApprovalQueueService(session)
+            enqueued = await queue_svc.enqueue(suggestion)
+            if config.auto_apply:
+                # LLM now outputs the complete desired tag set (current state
+                # was passed to it), so merge_tags=False is correct.
+                # creation policies filter unknown entities before enqueue;
+                # allow_new policies leave them for creation at approve time.
+                create_missing = (
+                    config.tag_creation_policy == "allow_new"
+                    or config.correspondent_creation_policy == "allow_new"
+                    or config.doctype_creation_policy == "allow_new"
+                )
+                await queue_svc.approve(
+                    enqueued.id, merge_tags=False, create_missing=create_missing,
+                )
+                logger.info("%s auto-approved suggestion for doc %d.", label, doc_id)
+            else:
+                logger.info("%s enqueued suggestion for doc %d.", label, doc_id)
+        except Exception:
+            logger.exception("%s analysis failed for doc %d", label, doc_id)
+
+    return fetch_inbox_docs, submit_for_analysis
+
+
+async def _automation_loop(app: FastAPI, poll_interval: int) -> None:
+    """Inbox monitor: process every inbox-tagged document on each poll.
+
+    Scheduled *batch* analysis is no longer driven from here — it runs on the
+    ``schedule_cron`` cron loop (see ``_run_scheduler_batch`` / ``_cron_loop``).
     """
-    mode_label = "Scheduler" if batch_size is not None else "Inbox polling"
     while True:
         try:
             async with AsyncSessionLocal() as session:
-                config = _settings_svc.config
                 paperless_client: PaperlessNGXClient | None = app.state.paperless_client
                 manual_svc: ManualAnalysisService | None = app.state.manual_analysis_svc
-
                 if paperless_client is None or manual_svc is None:
-                    logger.warning("%s skipped: services not configured.", mode_label)
+                    logger.warning("Inbox polling skipped: services not configured.")
                     await asyncio.sleep(poll_interval)
                     continue
-
-                inbox_tag_id = config.inbox_tag_id
-
-                async def fetch_inbox_docs() -> list[int]:
-                    return await _fetch_all_inbox_doc_ids(paperless_client, inbox_tag_id)
-
-                async def submit_for_analysis(doc_id: int) -> Any:
-                    try:
-                        oq = getattr(app.state, "ollama_queue", None)
-                        if oq:
-                            suggestion = await oq.submit(
-                                Priority.ANALYSIS,
-                                lambda did=doc_id: manual_svc.analyze(did),
-                                label=f"Auto-analyzing doc {doc_id}",
-                            )
-                        else:
-                            suggestion = await manual_svc.analyze(doc_id)
-                        queue_svc = ApprovalQueueService(session)
-                        enqueued = await queue_svc.enqueue(suggestion)
-                        if config.auto_apply:
-                            # LLM now outputs the complete desired tag set (current state
-                            # was passed to it), so merge_tags=False is correct.
-                            # creation policies filter unknown entities before enqueue;
-                            # allow_new policies leave them for creation at approve time.
-                            create_missing = (
-                                config.tag_creation_policy == "allow_new"
-                                or config.correspondent_creation_policy == "allow_new"
-                                or config.doctype_creation_policy == "allow_new"
-                            )
-                            await queue_svc.approve(
-                                enqueued.id, merge_tags=False, create_missing=create_missing,
-                            )
-                            logger.info("%s auto-approved suggestion for doc %d.", mode_label, doc_id)
-                        else:
-                            logger.info("%s enqueued suggestion for doc %d.", mode_label, doc_id)
-                    except Exception:
-                        logger.exception("%s analysis failed for doc %d", mode_label, doc_id)
-
-                if batch_size is not None:
-                    scheduler = Scheduler(session, fetch_inbox_docs, submit_for_analysis, batch_size)
-                    batches = await scheduler.run_batch()
-                    if batches:
-                        total = sum(len(b) for b in batches)
-                        logger.info("Scheduler processed %d documents in %d batches.", total, len(batches))
-                else:
-                    monitor = InboxMonitor(session, fetch_inbox_docs, submit_for_analysis)
-                    submitted = await monitor.poll()
-                    if submitted:
-                        logger.info("Inbox poll submitted %d documents.", len(submitted))
+                fetch_inbox_docs, submit_for_analysis = _make_analysis_callbacks(
+                    app, session, "Inbox polling"
+                )
+                monitor = InboxMonitor(session, fetch_inbox_docs, submit_for_analysis)
+                submitted = await monitor.poll()
+                if submitted:
+                    logger.info("Inbox poll submitted %d documents.", len(submitted))
         except asyncio.CancelledError:
             raise
         except Exception:
-            logger.exception("%s loop error", mode_label)
+            logger.exception("Inbox polling loop error")
 
         await asyncio.sleep(poll_interval)
+
+
+async def _run_scheduler_batch(app: FastAPI) -> None:
+    """One scheduled batch-analysis run (cron-driven via ``schedule_cron``)."""
+    async with AsyncSessionLocal() as session:
+        paperless_client: PaperlessNGXClient | None = app.state.paperless_client
+        manual_svc: ManualAnalysisService | None = app.state.manual_analysis_svc
+        if paperless_client is None or manual_svc is None:
+            logger.warning("Scheduled batch skipped: services not configured.")
+            return
+        batch_size = _settings_svc.config.batch_size
+        fetch_inbox_docs, submit_for_analysis = _make_analysis_callbacks(
+            app, session, "Scheduler"
+        )
+        scheduler = Scheduler(session, fetch_inbox_docs, submit_for_analysis, batch_size)
+        batches = await scheduler.run_batch()
+        if batches:
+            total = sum(len(b) for b in batches)
+            logger.info("Scheduler processed %d documents in %d batches.", total, len(batches))
+
+
+# ── Cron-driven scheduling (shared by schedule_cron and grooming_scan_cron) ──
+
+def _cron_next(expr: str, after: datetime) -> datetime | None:
+    """Next fire time strictly after ``after`` (UTC), or None if ``expr`` is
+    not a valid cron expression."""
+    try:
+        from croniter import croniter
+        return croniter(expr, after).get_next(datetime)
+    except Exception:
+        return None
+
+
+async def _cron_loop(
+    name: str,
+    get_expr: Callable[[], str | None],
+    run_job: Callable[[], Coroutine[Any, Any, None]],
+    *,
+    check_interval: int = 30,
+) -> None:
+    """Generic cron-driven loop.
+
+    Re-reads the cron expression every tick (via ``get_expr``) so a settings
+    change takes effect without a restart. Idle when the expression is
+    None/empty; logs once and stays idle when it is invalid. Fires ``run_job``
+    once each time the schedule comes due. ``check_interval`` bounds firing
+    latency (cron schedules are coarse, so 30s is plenty).
+    """
+    cur_expr: str | None = None
+    next_run: datetime | None = None
+    while True:
+        try:
+            expr = (get_expr() or "").strip() or None
+            if expr != cur_expr:
+                cur_expr = expr
+                next_run = _cron_next(expr, datetime.now(timezone.utc)) if expr else None
+                if expr and next_run is None:
+                    logger.warning("%s: invalid cron %r — schedule disabled.", name, expr)
+                elif expr:
+                    logger.info("%s: scheduled (next run %s UTC).", name, next_run)
+            if next_run is not None and datetime.now(timezone.utc) >= next_run:
+                logger.info("%s: cron due — running.", name)
+                await run_job()
+                next_run = _cron_next(cur_expr, datetime.now(timezone.utc))
+        except asyncio.CancelledError:
+            raise
+        except Exception:
+            logger.exception("%s: cron loop error", name)
+
+        await asyncio.sleep(check_interval)
+
+
+async def _run_scheduled_grooming_scan(app: FastAPI) -> None:
+    """One scheduled grooming scan (cron-driven via ``grooming_scan_cron``).
+
+    Incremental: only entities that are new, whose description changed, or whose
+    documents were re-embedded since their last scan are re-examined (see
+    ``collect_scan_candidates(incremental=True)``).
+    Respects the same guards as the manual scan route — disabled on bedrock_kb,
+    skipped while the embed circuit breaker is open or a scan already runs."""
+    config = _settings_svc.config
+    if not getattr(config, "grooming_enabled", False):
+        return
+    if getattr(config, "vector_store_backend", "local") == "bedrock_kb":
+        logger.info("Scheduled grooming scan skipped: unavailable on bedrock_kb backend.")
+        return
+    vs = getattr(app.state, "vector_store", None)
+    if vs is None:
+        logger.info("Scheduled grooming scan skipped: vector store not configured.")
+        return
+    oq = getattr(app.state, "ollama_queue", None)
+    if oq is not None and oq.cached_health.get("embed") is False:
+        logger.info("Scheduled grooming scan skipped: embed circuit breaker open.")
+        return
+
+    from backend.grooming import _scan_lock
+    if _scan_lock.locked():
+        logger.info("Scheduled grooming scan skipped: a scan is already running.")
+        return
+
+    entity_types = getattr(
+        config, "grooming_entity_types", ["tag", "correspondent", "document_type"]
+    )
+    pc = getattr(app.state, "paperless_client", None)
+    providers = getattr(app.state, "providers", None)
+    async with AsyncSessionLocal() as session:
+        svc = GroomingService(session, pc, providers, config, vector_store=vs)
+        await svc.start_scan(entity_types, incremental=True)
+    logger.info("Scheduled grooming scan started (incremental) for %s.", entity_types)
 
 
 async def _heal_dim_mismatch(vs: Any, embed_provider: Any) -> bool:
@@ -384,6 +493,7 @@ async def _background_index(
                         await vector_store.upsert(doc_id, content, meta)
                         if queue:
                             queue.record_embed_success()
+                        await _record_document_embed(doc_id, meta.get("title"), "system:index")
                         indexed += 1
                         if queue:
                             queue.set_embedding_progress(
@@ -581,13 +691,324 @@ async def _session_expiry_loop(app: FastAPI) -> None:
         await asyncio.sleep(3600)
 
 
+async def _record_document_embed(doc_id: int, title: str | None, source: str) -> None:
+    """Stamp ``last_embedded_at`` and write an ``embedded`` audit event.
+
+    Called after every successful document embed so the audit log carries a
+    full embed history (with the document title) — making double-embeds
+    (e.g. webhook-on-add + post-approval) visible — and so the content-drift
+    reindex has a per-document "vector last refreshed at" to compare against.
+    ``source`` is the trigger: ``"system:index"``, ``"approval"``, ``"webhook"``,
+    ``"system:flush"``, ``"drift"``, …
+    """
+    try:
+        async with AsyncSessionLocal() as db:
+            tracking = await db.get(DocumentTrackingORM, doc_id)
+            now = datetime.now(timezone.utc)
+            if tracking is None:
+                tracking = DocumentTrackingORM(document_id=doc_id, first_seen_at=now)
+                db.add(tracking)
+            tracking.last_embedded_at = now
+            await AuditLogService(db).record_event(
+                action_type="embedded",
+                change_source=source,
+                document_id=doc_id,
+                document_title=title or None,
+                new_value=f"document embedded ({source})",
+                changed_at=now,
+            )  # record_event commits — flushes the tracking stamp too
+    except Exception:
+        logger.debug("Embed audit/stamp failed for doc %d", doc_id, exc_info=True)
+
+
+async def schedule_reembed(
+    doc_id: int,
+    content: str,
+    meta: dict,
+    vs: Any,
+    source: str = "system",
+) -> None:
+    """Re-embed a document, deferring if embed_refresh_mode != 'immediate'.
+
+    - immediate: calls vs.upsert() right away (current behaviour, default),
+      then records the embed (audit event + last_embedded_at).
+    - daily/manual: stamps reembed_dirty_since and returns.  The daily flush
+      loop (or the manual /api/embeddings/refresh route) does the actual
+      re-embed later and records it then.
+
+    First-time indexing (in _background_index) bypasses this and calls
+    vs.upsert() directly — deferred re-embedding only applies to re-embeds
+    of already-indexed documents.  ``source`` labels the trigger in the audit
+    log (e.g. "approval", "webhook", "drift").
+    """
+    mode = getattr(_settings_svc.config, "embed_refresh_mode", "immediate")
+    if mode == "immediate":
+        await vs.upsert(doc_id, content, meta)
+        await _record_document_embed(doc_id, meta.get("title"), source)
+        return
+
+    # Stamp dirty for later flush
+    async with AsyncSessionLocal() as db:
+        tracking = await db.get(DocumentTrackingORM, doc_id)
+        if tracking and tracking.reembed_dirty_since is None:
+            tracking.reembed_dirty_since = datetime.now(timezone.utc)
+            await db.commit()
+
+
+async def _daily_reembed_loop(app: FastAPI) -> None:
+    """Flush dirty documents once per day at embed_refresh_hour (UTC).
+
+    Only active when embed_refresh_mode == "daily".  Skips gracefully if
+    the vector store or Paperless client is unavailable.
+    """
+    while True:
+        await asyncio.sleep(60)  # check every minute whether it's flush time
+        try:
+            config = _settings_svc.config
+            if getattr(config, "embed_refresh_mode", "immediate") != "daily":
+                continue
+            now_utc = datetime.now(timezone.utc)
+            flush_hour = getattr(config, "embed_refresh_hour", 3)
+            if now_utc.hour != flush_hour or now_utc.minute != 0:
+                continue
+            vs = getattr(app.state, "vector_store", None)
+            pc = getattr(app.state, "paperless_client", None)
+            if vs and pc:
+                await _flush_dirty_reembeds(vs, pc)
+        except Exception:
+            logger.warning("Daily re-embed loop error", exc_info=True)
+
+
+async def _flush_dirty_reembeds(vs: Any, pc: Any) -> None:
+    """Re-embed all documents marked dirty (reembed_dirty_since IS NOT NULL)."""
+    async with AsyncSessionLocal() as db:
+        result = await db.execute(
+            select(DocumentTrackingORM).where(DocumentTrackingORM.reembed_dirty_since.isnot(None))
+        )
+        dirty_rows = result.scalars().all()
+
+    if not dirty_rows:
+        return
+
+    base_url = pc._base_url
+    headers = pc._headers
+
+    # Resolve entity ID → name lookups once. The Paperless document endpoint
+    # returns integer IDs for tags/correspondent/document_type; _build_embed_prefix
+    # needs names (joining raw ints raises TypeError), so mirror the indexing path.
+    tag_id_to_name: dict[int, str] = {}
+    corr_id_to_name: dict[int, str] = {}
+    dt_id_to_name: dict[int, str] = {}
+    cf_id_to_name: dict[int, str] = {}
+    async with httpx.AsyncClient(headers=headers, timeout=30) as lookup_client:
+        for entity, lookup in [
+            ("tags", tag_id_to_name),
+            ("correspondents", corr_id_to_name),
+            ("document_types", dt_id_to_name),
+            ("custom_fields", cf_id_to_name),
+        ]:
+            eurl: str | None = f"{base_url}/api/{entity}/?page_size=100"
+            while eurl:
+                r = await lookup_client.get(eurl)
+                if r.status_code != 200:
+                    break
+                d = r.json()
+                for item in d.get("results", []):
+                    lookup[item["id"]] = item.get("name", "")
+                eurl = d.get("next")
+
+    logger.info("Re-embed flush: processing %d dirty document(s).", len(dirty_rows))
+    flushed = 0
+    for tracking in dirty_rows:
+        doc_id = tracking.document_id
+        try:
+            content = await pc.get_document_ocr_text(doc_id)
+            if not content:
+                continue
+            # Fetch current metadata
+            async with httpx.AsyncClient(headers=headers, timeout=30) as client:
+                r = await client.get(f"{base_url}/api/documents/{doc_id}/")
+                if r.status_code != 200:
+                    continue
+                doc = r.json()
+            doc_tags = doc.get("tags") or []
+            custom_fields: dict[str, Any] = {}
+            for cf_entry in doc.get("custom_fields") or []:
+                fid = cf_entry.get("field")
+                val = cf_entry.get("value")
+                name = cf_id_to_name.get(fid, "") if fid is not None else ""
+                if name and val is not None:
+                    custom_fields[name] = val
+            meta = {
+                "title": doc.get("title", ""),
+                "tags": [tag_id_to_name.get(tid, "") for tid in doc_tags if tag_id_to_name.get(tid)],
+                "tag_ids": doc_tags,
+                "correspondent": corr_id_to_name.get(doc.get("correspondent") or 0, ""),
+                "document_type": dt_id_to_name.get(doc.get("document_type") or 0, ""),
+                "custom_fields": custom_fields,
+            }
+            await vs.upsert(doc_id, content, meta)
+            async with AsyncSessionLocal() as db:
+                t = await db.get(DocumentTrackingORM, doc_id)
+                if t:
+                    t.reembed_dirty_since = None
+                    await db.commit()
+            await _record_document_embed(doc_id, doc.get("title"), "system:flush")
+            flushed += 1
+        except Exception:
+            logger.warning("Re-embed flush failed for doc %d", doc_id, exc_info=True)
+    logger.info("Re-embed flush complete: %d/%d documents re-embedded.", flushed, len(dirty_rows))
+
+
+def _parse_paperless_dt(value: str | None) -> datetime | None:
+    """Parse a Paperless ISO timestamp to an aware UTC datetime, or None."""
+    if not value:
+        return None
+    try:
+        dt = datetime.fromisoformat(value.replace("Z", "+00:00"))
+    except (ValueError, TypeError):
+        return None
+    return dt if dt.tzinfo else dt.replace(tzinfo=timezone.utc)
+
+
+async def _run_content_drift_reindex(app: FastAPI) -> None:
+    """Re-embed documents whose Paperless ``modified`` is newer than our last
+    embed — a safety net for content/OCR edits that didn't fire the webhook.
+
+    Queries a window slightly wider than the configured interval, then re-embeds
+    only documents whose vector is actually stale (``modified`` after
+    ``last_embedded_at``), so it never double-embeds unchanged documents.
+    """
+    config = _settings_svc.config
+    days = getattr(config, "content_drift_reindex_days", 0)
+    if days <= 0:
+        return
+    vs = getattr(app.state, "vector_store", None)
+    pc = getattr(app.state, "paperless_client", None)
+    if not vs or not pc:
+        return
+
+    base, headers = pc._base_url, pc._headers
+    cutoff = (datetime.now(timezone.utc) - timedelta(days=days + 1)).date().isoformat()
+
+    # id→name lookups so the re-embedded vector keeps its D-18 metadata prefix.
+    tag_names: dict[int, str] = {}
+    corr_names: dict[int, str] = {}
+    dt_names: dict[int, str] = {}
+    cf_names: dict[int, str] = {}
+    async with httpx.AsyncClient(headers=headers, timeout=30) as lc:
+        for entity, lookup in (
+            ("tags", tag_names), ("correspondents", corr_names),
+            ("document_types", dt_names), ("custom_fields", cf_names),
+        ):
+            eurl: str | None = f"{base}/api/{entity}/?page_size=100"
+            while eurl:
+                r = await lc.get(eurl)
+                if r.status_code != 200:
+                    break
+                d = r.json()
+                for item in d.get("results", []):
+                    lookup[item["id"]] = item.get("name", "")
+                eurl = d.get("next")
+
+    checked = reembedded = 0
+    url: str | None = (
+        f"{base}/api/documents/?page_size=100&ordering=-modified"
+        f"&modified__date__gte={cutoff}"
+    )
+    async with httpx.AsyncClient(headers=headers, timeout=60) as client:
+        while url:
+            r = await client.get(url)
+            if r.status_code != 200:
+                logger.warning("Content-drift reindex: Paperless returned %d.", r.status_code)
+                break
+            data = r.json()
+            for doc in data.get("results", []):
+                doc_id = doc["id"]
+                checked += 1
+                modified = _parse_paperless_dt(doc.get("modified"))
+                async with AsyncSessionLocal() as db:
+                    t = await db.get(DocumentTrackingORM, doc_id)
+                    last = t.last_embedded_at if t else None
+                if last is not None:
+                    if last.tzinfo is None:
+                        last = last.replace(tzinfo=timezone.utc)
+                    if modified is not None and last >= modified:
+                        continue  # vector already at/after the content change
+                content = doc.get("content", "")
+                if not content:
+                    continue
+                raw_cfs = doc.get("custom_fields") or []
+                custom_fields: dict[str, Any] = {}
+                for cf_entry in raw_cfs:
+                    fid = cf_entry.get("field")
+                    val = cf_entry.get("value")
+                    name = cf_names.get(fid, "") if fid is not None else ""
+                    if name and val is not None:
+                        custom_fields[name] = val
+                doc_tags = doc.get("tags", [])
+                meta = {
+                    "title": doc.get("title", ""),
+                    "tags": [tag_names.get(tid, "") for tid in doc_tags if tag_names.get(tid)],
+                    "tag_ids": doc_tags,
+                    "correspondent": corr_names.get(doc.get("correspondent") or 0, ""),
+                    "document_type": dt_names.get(doc.get("document_type") or 0, ""),
+                    "custom_fields": custom_fields,
+                }
+                try:
+                    await schedule_reembed(doc_id, content, meta, vs, source="drift")
+                    reembedded += 1
+                except Exception:
+                    logger.warning("Content-drift re-embed failed for doc %d", doc_id, exc_info=True)
+            url = data.get("next")
+    logger.info(
+        "Content-drift reindex: checked %d doc(s) modified since %s, re-embedded %d.",
+        checked, cutoff, reembedded,
+    )
+
+
+async def _content_drift_loop(app: FastAPI) -> None:
+    """Periodic content-drift safety net. Idles when content_drift_reindex_days
+    <= 0. First run one interval after startup, then every interval — the
+    webhook stays the primary, real-time re-embed path."""
+    days0 = getattr(_settings_svc.config, "content_drift_reindex_days", 7) or 7
+    next_run = datetime.now(timezone.utc) + timedelta(days=days0)
+    while True:
+        await asyncio.sleep(3600)  # hourly check is plenty for a weekly job
+        try:
+            days = getattr(_settings_svc.config, "content_drift_reindex_days", 0)
+            if days <= 0:
+                continue
+            if datetime.now(timezone.utc) >= next_run:
+                await _run_content_drift_reindex(app)
+                next_run = datetime.now(timezone.utc) + timedelta(days=days)
+        except Exception:
+            logger.warning("Content-drift loop error", exc_info=True)
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     """Application lifespan: startup and shutdown hooks."""
     logger.info("Paperless IQ starting up")
 
-    # Bring the database schema to head via Alembic. Existing pre-Alembic
-    # databases are auto-adopted (stamped at the baseline) on first run.
+    # Fail closed: authentication is enforced only when PAPERLESS_URL is set
+    # (login validates credentials against Paperless). Without it the app would
+    # serve every page with no login at all. Refuse to start rather than run
+    # open — a misconfiguration must never silently disable auth.
+    if not os.environ.get("PAPERLESS_URL", "").strip():
+        logger.critical(
+            "PAPERLESS_URL is not set. Paperless IQ will not start without it: "
+            "authentication depends on Paperless, and starting anyway would leave "
+            "every page reachable with no login. Set PAPERLESS_URL (and "
+            "PAPERLESS_TOKEN) and restart."
+        )
+        raise RuntimeError(
+            "PAPERLESS_URL is required — refusing to start without authentication configured."
+        )
+
+    # Bring the database schema to head via Alembic. Existing pre-Alembic and
+    # stale-revision databases are auto-adopted (stamped at the matching
+    # baseline) on first run — see backend/db_migrate.py.
     from backend.db_migrate import run_migrations
     await run_migrations()
 
@@ -607,6 +1028,7 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     app.state.rate_limiter = RateLimiter()
     app.state.inbox_task = None
     app.state.scheduler_task = None
+    app.state.grooming_scan_task = None
     app.state.session_expiry_task = None
     app.state.vector_store = None
     app.state.ollama_queue = None
@@ -634,11 +1056,29 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
             app.state.paperless_client = paperless_client
             logger.info("Paperless NGX client initialized for %s", paperless_url)
         else:
+            # Name exactly which variable is missing — the two have different
+            # consequences and the generic "URL or TOKEN" message hides which.
+            missing = [
+                name for name, val in
+                (("PAPERLESS_URL", paperless_url), ("PAPERLESS_TOKEN", paperless_token))
+                if not val
+            ]
             logger.warning(
-                "PAPERLESS_URL or PAPERLESS_TOKEN not set — Paperless NGX integration disabled."
+                "Paperless NGX integration disabled — missing env var(s): %s.",
+                ", ".join(missing),
             )
     except Exception:
         logger.warning("Could not create Paperless NGX client.", exc_info=True)
+
+    # PAPERLESS_URL is guaranteed set (startup guard above). A missing token
+    # still leaves auth enforced but breaks every Paperless operation, so warn
+    # loudly rather than fail — the deployment is secure but non-functional.
+    if not paperless_token:
+        logger.warning(
+            "PAPERLESS_TOKEN is not set — login is enforced, but Paperless "
+            "operations (search, metadata writes, indexing) will fail until it "
+            "is configured."
+        )
 
     # Create ManualAnalysisService if both providers and client are available
     if providers and paperless_client:
@@ -699,16 +1139,34 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
         except Exception:
             logger.warning("Could not initialise memory store.", exc_info=True)
 
-    # Start automation tasks if enabled
+    # Inbox poller — continuous; started only when automation is enabled and
+    # toggled with it (see the settings-update handler).
     if config.automation_enabled:
-        logger.info("Automation enabled — starting inbox monitor and scheduler.")
+        logger.info("Automation enabled — starting inbox monitor.")
         app.state.inbox_task = asyncio.create_task(
             _automation_loop(app, config.poll_interval_seconds)
         )
-        if config.schedule_cron:
-            app.state.scheduler_task = asyncio.create_task(
-                _automation_loop(app, config.poll_interval_seconds, batch_size=config.batch_size)
-            )
+
+    # Scheduled batch analysis — cron loop honouring schedule_cron. Always
+    # running; self-gates on automation_enabled + a valid cron, and re-reads
+    # config each tick so settings changes apply without a restart.
+    app.state.scheduler_task = asyncio.create_task(
+        _cron_loop(
+            "Scheduler",
+            lambda: _settings_svc.config.schedule_cron if _settings_svc.config.automation_enabled else None,
+            lambda: _run_scheduler_batch(app),
+        )
+    )
+
+    # Scheduled grooming scan — cron loop honouring grooming_scan_cron. Always
+    # running; self-gates on grooming_enabled + a valid cron.
+    app.state.grooming_scan_task = asyncio.create_task(
+        _cron_loop(
+            "Grooming scan",
+            lambda: _settings_svc.config.grooming_scan_cron if _settings_svc.config.grooming_enabled else None,
+            lambda: _run_scheduled_grooming_scan(app),
+        )
+    )
 
     # Always run the session expiry loop — extracts memories then deletes expired sessions
     app.state.session_expiry_task = asyncio.create_task(_session_expiry_loop(app))
@@ -716,10 +1174,16 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     # Audit log cleanup loop — runs daily, honours audit_retention_days setting
     app.state.audit_cleanup_task = asyncio.create_task(_audit_cleanup_loop())
 
+    # Daily re-embed flush loop (no-op when embed_refresh_mode != "daily")
+    app.state.daily_reembed_task = asyncio.create_task(_daily_reembed_loop(app))
+
+    # Weekly content-drift reindex (no-op when content_drift_reindex_days <= 0)
+    app.state.content_drift_task = asyncio.create_task(_content_drift_loop(app))
+
     yield
 
     # Shutdown: cancel automation tasks
-    for task_name in ("inbox_task", "scheduler_task", "session_expiry_task", "audit_cleanup_task", "embed_health_monitor_task"):
+    for task_name in ("inbox_task", "scheduler_task", "grooming_scan_task", "session_expiry_task", "audit_cleanup_task", "embed_health_monitor_task", "daily_reembed_task", "content_drift_task"):
         task: asyncio.Task[Any] | None = getattr(app.state, task_name, None)
         if task is not None and not task.done():
             task.cancel()
@@ -802,8 +1266,19 @@ def require_perm(*perms: str):
         perms_row = result.scalar_one_or_none()
         config = _settings_svc.config
         if perms_row and perms_row.ng_admin and config.sync_ng_admins:
+            # ng_admin bypass, but still gate can_groom on grooming_enabled
+            if perms == ("can_groom",) and not getattr(config, "grooming_enabled", False):
+                raise HTTPException(
+                    status_code=status.HTTP_403_FORBIDDEN,
+                    detail="Grooming is not enabled. Enable it in Settings → AI Provider.",
+                )
             return
         if perms_row and any(getattr(perms_row, p, False) for p in perms):
+            if "can_groom" in perms and not getattr(config, "grooming_enabled", False):
+                raise HTTPException(
+                    status_code=status.HTTP_403_FORBIDDEN,
+                    detail="Grooming is not enabled. Enable it in Settings → AI Provider.",
+                )
             return
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
@@ -918,6 +1393,7 @@ async def login(body: LoginBody, request: Request) -> dict:
 
     Returns ``{"token": "...", "user": "..."}`` on success.
     Returns HTTP 401 on invalid credentials.
+    Returns HTTP 502 when Paperless NGX cannot be reached.
     Returns HTTP 429 when the per-IP login rate limit is exceeded.
     """
     client_ip = request.client.host if request.client else "unknown"
@@ -927,7 +1403,17 @@ async def login(body: LoginBody, request: Request) -> dict:
             detail="Too many login attempts. Please wait a few minutes and try again.",
         )
 
-    ok, _ng_token, is_ng_admin = await validate_paperless_credentials(body.username, body.password)
+    try:
+        ok, _ng_token, is_ng_admin = await validate_paperless_credentials(body.username, body.password)
+    except PaperlessUnreachableError as exc:
+        # Don't disguise a network/config problem as a credential error.
+        raise HTTPException(
+            status_code=status.HTTP_502_BAD_GATEWAY,
+            detail=(
+                f"Cannot reach Paperless NGX at {exc.url}. Check that PAPERLESS_URL "
+                "is correct and that Paperless is reachable from this container."
+            ),
+        )
     if not ok:
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
@@ -1053,7 +1539,7 @@ async def approve_suggestion(
                         "document_type": result.document_type or "",
                         "custom_fields": result.custom_fields or {},
                     }
-                    await vs.upsert(result.document_id, content, meta)
+                    await schedule_reembed(result.document_id, content, meta, vs, source="approval")
             except Exception:
                 logger.debug("Post-approve indexing failed for doc %d", result.document_id, exc_info=True)
         asyncio.create_task(_index_bg())
@@ -1110,12 +1596,16 @@ async def bulk_reject(
 async def empty_queue(
     svc: Annotated[ApprovalQueueService, Depends(_queue_service)],
 ) -> dict:
-    """Reject all pending suggestions (empty the queue)."""
+    """Reject all pending suggestions (empty the queue).
+
+    Clutter-clearing, not judgment: grooming dismissal memory is NOT written,
+    so a later scan may re-suggest what was wiped here.
+    """
     pending, total = await svc.list(status="pending", page=1, page_size=10000)
     rejected = 0
     for s in pending:
         try:
-            await svc.reject(s.id)
+            await svc.reject(s.id, record_dismissals=False)
             rejected += 1
         except ValueError:
             pass
@@ -1228,9 +1718,10 @@ async def reanalyze_queue_item(
     except Exception as exc:
         raise HTTPException(status_code=500, detail=f"Re-analysis failed (original kept): {exc}")
 
-    # Only reject the old one after successful analysis
+    # Only reject the old one after successful analysis. This is a swap, not a
+    # judgment — don't record grooming dismissals.
     try:
-        await svc.reject(body.suggestion_id)
+        await svc.reject(body.suggestion_id, record_dismissals=False)
     except ValueError:
         pass
 
@@ -1271,9 +1762,10 @@ async def reanalyze_all_queue(
                     suggestion = await manual_svc.analyze(doc_id)
                 async with AsyncSessionLocal() as session:
                     q = ApprovalQueueService(session)
-                    # Reject old only after successful analysis
+                    # Reject old only after successful analysis — a swap, not
+                    # a judgment: don't record grooming dismissals.
                     try:
-                        await q.reject(old_id)
+                        await q.reject(old_id, record_dismissals=False)
                     except ValueError:
                         pass
                     await q.enqueue(suggestion)
@@ -1706,6 +2198,12 @@ async def discover(body: DiscoverBody, request: Request) -> dict:
     2. Builds a context from the top-N document passages
     3. Sends the question + context to the LLM for a grounded answer with quotes
     """
+    # An empty/whitespace question would be sent to the embedder as empty text,
+    # which some backends (e.g. Bedrock Titan/Cohere) reject with an opaque
+    # "Malformed request" ValidationException. Reject it up front instead.
+    if not body.question or not body.question.strip():
+        raise HTTPException(status_code=400, detail="Question must not be empty.")
+
     vs = getattr(request.app.state, "vector_store", None)
     if vs is None:
         raise HTTPException(
@@ -2074,6 +2572,7 @@ async def manual_analyze(body: AnalyzeBody, request: Request) -> dict:
                     action_type="analysis_triggered",
                     change_source=f"user:{actor}" if actor else "manual_analysis",
                     document_id=body.document_id,
+                    document_title=suggestion.title,
                     new_value=f"ocr analysis via {suggestion.llm_provider}/{suggestion.llm_model}",
                 )
         except Exception:
@@ -2549,11 +3048,13 @@ async def update_settings(request: Request, body: dict[str, Any] = Body(...)) ->
         request.app.state.providers = None
         request.app.state.manual_analysis_svc = None
 
-    # Toggle automation tasks when automation_enabled changes
+    # Toggle the inbox poller when automation_enabled changes. The scheduler and
+    # grooming-scan cron loops are always-running and self-gate on config (they
+    # re-read schedule_cron / grooming_scan_cron each tick), so they need no
+    # start/stop here — a cron edit takes effect within one check interval.
     new_automation = new_config.automation_enabled
 
     if new_automation and not old_automation:
-        # Start inbox polling if not already running
         inbox_task: asyncio.Task[Any] | None = getattr(request.app.state, "inbox_task", None)
         if inbox_task is None or inbox_task.done():
             request.app.state.inbox_task = asyncio.create_task(
@@ -2561,28 +3062,12 @@ async def update_settings(request: Request, body: dict[str, Any] = Body(...)) ->
             )
             logger.info("Inbox polling started after settings update.")
 
-        # Start scheduler if cron is configured and not already running
-        scheduler_task: asyncio.Task[Any] | None = getattr(request.app.state, "scheduler_task", None)
-        if new_config.schedule_cron and (scheduler_task is None or scheduler_task.done()):
-            request.app.state.scheduler_task = asyncio.create_task(
-                _automation_loop(request.app, new_config.poll_interval_seconds, batch_size=new_config.batch_size)
-            )
-            logger.info("Scheduler started after settings update.")
-
     elif not new_automation and old_automation:
-        # Cancel inbox task if running
         inbox_task = getattr(request.app.state, "inbox_task", None)
         if inbox_task is not None and not inbox_task.done():
             inbox_task.cancel()
             logger.info("Inbox polling cancelled after settings update.")
         request.app.state.inbox_task = None
-
-        # Cancel scheduler task if running
-        scheduler_task = getattr(request.app.state, "scheduler_task", None)
-        if scheduler_task is not None and not scheduler_task.done():
-            scheduler_task.cancel()
-            logger.info("Scheduler cancelled after settings update.")
-        request.app.state.scheduler_task = None
 
     # Rate limiter: currently uses default 60/60. Could be extended here
     # if rate limit fields are added to PaperlessIQConfig.
@@ -3008,7 +3493,7 @@ async def _reindex_document(doc_id: int, vs: VectorStore, pc: PaperlessNGXClient
         if queue:
             await queue.await_embed_available()
         try:
-            await vs.upsert(doc_id, content, meta)
+            await schedule_reembed(doc_id, content, meta, vs, source="webhook")
             if queue:
                 queue.record_embed_success()
             logger.info("Webhook reindex: document %d re-indexed.", doc_id)
@@ -3276,6 +3761,7 @@ async def get_my_permissions(request: Request) -> dict:
     When auth is not required (no PAPERLESS_URL), returns a fully-permissive
     response so unauthenticated dev mode works without front-end guards.
     """
+    grooming_enabled = getattr(_settings_svc.config, "grooming_enabled", False)
     if not _is_auth_required():
         return {
             "username": "anonymous",
@@ -3286,6 +3772,7 @@ async def get_my_permissions(request: Request) -> dict:
             "can_analyze": True,
             "can_discover": True,
             "can_settings": True,
+            "can_groom": grooming_enabled,
         }
 
     username = getattr(request.state, "user", None)
@@ -3304,9 +3791,11 @@ async def get_my_permissions(request: Request) -> dict:
                 "can_analyze": False,
                 "can_discover": False,
                 "can_settings": False,
+                "can_groom": False,
             }
         config = _settings_svc.config
         effective_all = row.ng_admin and config.sync_ng_admins
+        grooming_enabled = getattr(config, "grooming_enabled", False)
         return {
             "username": row.username,
             "ng_admin": row.ng_admin,
@@ -3316,6 +3805,7 @@ async def get_my_permissions(request: Request) -> dict:
             "can_analyze": effective_all or row.can_analyze,
             "can_discover": effective_all or row.can_discover,
             "can_settings": effective_all or row.can_settings,
+            "can_groom": ((effective_all or row.can_groom) and grooming_enabled),
         }
 
 
@@ -3346,6 +3836,7 @@ async def list_piq_users(
             "can_analyze": effective_all or row.can_analyze,
             "can_discover": effective_all or row.can_discover,
             "can_settings": effective_all or row.can_settings,
+            "can_groom": effective_all or row.can_groom,
             "updated_at": row.updated_at.isoformat() if row.updated_at else None,
             "has_piq_record": True,
         }
@@ -3391,6 +3882,7 @@ class PiqUserUpdate(BaseModel):
     can_analyze: bool = False
     can_discover: bool = False
     can_settings: bool = False
+    can_groom: bool = False
 
 
 @app.put("/api/piq-users/{username}", tags=["users"],
@@ -3411,6 +3903,7 @@ async def update_piq_user(
     row.can_analyze = body.can_analyze
     row.can_discover = body.can_discover
     row.can_settings = body.can_settings
+    row.can_groom = body.can_groom
     row.updated_at = datetime.now(timezone.utc)
     await session.commit()
     return {"detail": f"Permissions updated for '{username}'."}
@@ -3429,6 +3922,273 @@ async def delete_piq_user(
     await session.delete(row)
     await session.commit()
     return {"detail": f"Permission record for '{username}' deleted."}
+
+
+# ---------------------------------------------------------------------------
+# Embeddings — deferred re-embed management (Step 0)
+# ---------------------------------------------------------------------------
+
+@app.get("/api/embeddings/pending", tags=["embeddings"],
+         dependencies=[Depends(require_perm("can_settings"))])
+async def get_pending_reembeds(session: AsyncSession = Depends(get_session)) -> dict:
+    """Return count and oldest dirty timestamp for deferred re-embeds."""
+    result = await session.execute(
+        select(DocumentTrackingORM).where(DocumentTrackingORM.reembed_dirty_since.isnot(None))
+    )
+    rows = result.scalars().all()
+    oldest = min((r.reembed_dirty_since for r in rows if r.reembed_dirty_since), default=None)
+    return {
+        "count": len(rows),
+        "oldest_dirty_since": oldest.isoformat() if oldest else None,
+    }
+
+
+_embed_flush_lock = asyncio.Lock()
+
+
+@app.post("/api/embeddings/refresh", tags=["embeddings"],
+          dependencies=[Depends(require_perm("can_settings"))])
+async def trigger_embed_refresh(request: Request) -> dict:
+    """Flush all deferred re-embeds now (409 if a flush is already running)."""
+    if _embed_flush_lock.locked():
+        raise HTTPException(status_code=409, detail="Re-embed flush already running.")
+    vs = getattr(request.app.state, "vector_store", None)
+    pc = getattr(request.app.state, "paperless_client", None)
+    if not vs or not pc:
+        raise HTTPException(status_code=503, detail="Vector store or Paperless client unavailable.")
+
+    async def _flush_bg() -> None:
+        async with _embed_flush_lock:
+            await _flush_dirty_reembeds(vs, pc)
+
+    asyncio.create_task(_flush_bg())
+    return {"detail": "Re-embed flush started."}
+
+
+# ---------------------------------------------------------------------------
+# Library Grooming — entities, descriptions, generation, dedup (Steps 1–4)
+# ---------------------------------------------------------------------------
+
+def _grooming_svc(
+    request: Request,
+    session: AsyncSession = Depends(get_session),
+) -> GroomingService:
+    pc = getattr(request.app.state, "paperless_client", None)
+    providers = getattr(request.app.state, "providers", None)
+    vs = getattr(request.app.state, "vector_store", None)
+    return GroomingService(session, pc, providers, _settings_svc.config, vector_store=vs)
+
+
+_VALID_ENTITY_TYPES = {"tag", "correspondent", "document_type"}
+
+
+def _check_etype(entity_type: str) -> None:
+    if entity_type not in _VALID_ENTITY_TYPES:
+        raise HTTPException(status_code=400, detail=f"entity_type must be one of {sorted(_VALID_ENTITY_TYPES)}")
+
+
+@app.get("/api/grooming/entities", tags=["grooming"],
+         dependencies=[Depends(require_perm("can_groom"))])
+async def grooming_list_entities(
+    entity_type: str = Query(...),
+    svc: GroomingService = Depends(_grooming_svc),
+) -> list[dict]:
+    """Sync entities from Paperless and return the enriched list."""
+    _check_etype(entity_type)
+    return await svc.sync_and_list_entities(entity_type)
+
+
+class EntityPatch(BaseModel):
+    description: str | None = None
+    excluded: bool | None = None
+
+
+@app.patch("/api/grooming/entities/{entity_type}/{entity_id}", tags=["grooming"],
+           dependencies=[Depends(require_perm("can_groom"))])
+async def grooming_patch_entity(
+    entity_type: str,
+    entity_id: int,
+    body: EntityPatch,
+    svc: GroomingService = Depends(_grooming_svc),
+) -> dict:
+    """Update description and/or excluded flag for one entity."""
+    _check_etype(entity_type)
+    return await svc.update_entity(entity_type, entity_id, body.description, body.excluded)
+
+
+# ── Description generation ─────────────────────────────────────────────────
+
+class GenerateBody(BaseModel):
+    entity_type: str | None = None
+    entity_id: int | None = None
+    overwrite: bool = False
+
+
+@app.post("/api/grooming/generate", tags=["grooming"],
+          dependencies=[Depends(require_perm("can_groom"))])
+async def grooming_generate(
+    body: GenerateBody,
+    svc: GroomingService = Depends(_grooming_svc),
+) -> dict:
+    """Generate LLM descriptions.
+
+    - With ``entity_id``: generate for one entity (synchronous, returns immediately).
+    - Without ``entity_id``: start a background bulk task (202, 409 if running).
+    """
+    if body.entity_type:
+        _check_etype(body.entity_type)
+
+    if body.entity_id is not None:
+        # Single entity — synchronous
+        if body.entity_type is None:
+            raise HTTPException(status_code=400, detail="entity_type required when entity_id is provided")
+        description = await svc.generate_description_for(body.entity_type, body.entity_id)
+        return {"description": description}
+
+    # Bulk generation
+    from backend.grooming import _generate_lock
+    if _generate_lock.locked():
+        raise HTTPException(status_code=409, detail="Bulk generation already running.")
+    count = await svc.count_pending_generate(body.entity_type, body.overwrite)
+    await svc.start_bulk_generate(body.entity_type, body.overwrite)
+    return {"detail": f"Bulk generation started for ~{count} entities.", "count": count}
+
+
+@app.get("/api/grooming/generate/status", tags=["grooming"],
+         dependencies=[Depends(require_perm("can_groom"))])
+async def grooming_generate_status() -> dict:
+    return GroomingService.get_generate_status()
+
+
+@app.post("/api/grooming/generate/cancel", tags=["grooming"],
+          dependencies=[Depends(require_perm("can_groom"))])
+async def grooming_generate_cancel(svc: GroomingService = Depends(_grooming_svc)) -> dict:
+    svc.cancel_bulk_generate()
+    return {"detail": "Cancellation requested."}
+
+
+# ── Deduplication ──────────────────────────────────────────────────────────
+
+@app.get("/api/grooming/{entity_type}/dedup", tags=["grooming"],
+         dependencies=[Depends(require_perm("can_groom"))])
+async def grooming_dedup_candidates(
+    entity_type: str,
+    svc: GroomingService = Depends(_grooming_svc),
+) -> list[dict]:
+    """Return duplicate clusters for the given entity type."""
+    _check_etype(entity_type)
+    return await svc.get_dedup_candidates(entity_type)
+
+
+class DedupDismissBody(BaseModel):
+    entity_id: int
+    other_entity_id: int
+
+
+@app.post("/api/grooming/{entity_type}/dedup/dismiss", tags=["grooming"],
+          dependencies=[Depends(require_perm("can_groom"))])
+async def grooming_dedup_dismiss(
+    entity_type: str,
+    body: DedupDismissBody,
+    svc: GroomingService = Depends(_grooming_svc),
+) -> Response:
+    """Permanently dismiss a dedup pair so it is never shown again."""
+    _check_etype(entity_type)
+    await svc.dismiss_dedup_pair(entity_type, body.entity_id, body.other_entity_id)
+    return Response(status_code=204)
+
+
+class MergeBody(BaseModel):
+    keep_id: int
+    remove_ids: list[int]
+
+
+@app.post("/api/grooming/{entity_type}/merge", tags=["grooming"],
+          dependencies=[Depends(require_perm("can_groom"))])
+async def grooming_merge(
+    entity_type: str,
+    body: MergeBody,
+    request: Request,
+    svc: GroomingService = Depends(_grooming_svc),
+) -> dict:
+    """Merge entities: reassign documents from remove_ids to keep_id, delete losers."""
+    _check_etype(entity_type)
+    if not body.remove_ids:
+        raise HTTPException(status_code=400, detail="remove_ids must not be empty")
+    actor = getattr(request.state, "user", "unknown")
+    result = await svc.merge_entities(entity_type, body.keep_id, body.remove_ids, actor)
+
+    # Schedule re-embed for affected documents (handled via schedule_reembed during approval;
+    # for merges we mark dirty directly since we don't have the content here)
+    if result["documents_updated"] > 0:
+        vs = getattr(request.app.state, "vector_store", None)
+        if vs and getattr(_settings_svc.config, "embed_refresh_mode", "immediate") != "immediate":
+            # Bulk-stamp dirty: fetch all doc IDs that were reassigned
+            # (already written to Paperless; stamp reembed_dirty_since)
+            pass  # Handled by webhook events on the Paperless side
+
+    return result
+
+
+# ── Mismatch scan (Step 5) ──────────────────────────────────────────────────
+
+class ScanBody(BaseModel):
+    entity_types: list[str] = ["tag", "correspondent", "document_type"]
+    dry_run: bool = False
+
+
+def _check_scan_available(request: Request) -> None:
+    """Raise when the scan cannot run: Bedrock KB backend (no vector queries),
+    open embed circuit breaker, or no vector store at all."""
+    config = _settings_svc.config
+    if getattr(config, "vector_store_backend", "local") == "bedrock_kb":
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="Scan is unavailable on the Bedrock KB backend (no vector queries).",
+        )
+    vs = getattr(request.app.state, "vector_store", None)
+    if vs is None:
+        raise HTTPException(status_code=503, detail="Vector store not configured.")
+    oq = getattr(request.app.state, "ollama_queue", None)
+    if oq is not None and oq.cached_health.get("embed") is False:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="Embedding service unavailable — scan paused until it recovers.",
+        )
+
+
+@app.post("/api/grooming/scan", tags=["grooming"],
+          dependencies=[Depends(require_perm("can_groom"))])
+async def grooming_scan(
+    body: ScanBody,
+    request: Request,
+    svc: GroomingService = Depends(_grooming_svc),
+) -> dict:
+    """Run the mismatch scan: dry_run returns the scored candidate list
+    without enqueueing; otherwise a background task enqueues suggestions
+    (202; 409 while one runs)."""
+    for et in body.entity_types:
+        _check_etype(et)
+    if not body.entity_types:
+        raise HTTPException(status_code=400, detail="entity_types must not be empty")
+    _check_scan_available(request)
+
+    from backend.grooming import _scan_lock
+    if _scan_lock.locked():
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="A scan is already running.")
+
+    if body.dry_run:
+        candidates = await svc.run_scan_dry(body.entity_types)
+        return {"dry_run": True, "candidates": candidates}
+
+    await svc.start_scan(body.entity_types)
+    return {"detail": "Scan started.", "dry_run": False}
+
+
+@app.get("/api/grooming/scan/status", tags=["grooming"],
+         dependencies=[Depends(require_perm("can_groom"))])
+async def grooming_scan_status() -> dict:
+    return GroomingService.get_scan_status()
 
 
 # ---------------------------------------------------------------------------

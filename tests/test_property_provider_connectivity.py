@@ -13,7 +13,7 @@ from __future__ import annotations
 from unittest.mock import AsyncMock, patch
 
 import pytest
-from hypothesis import HealthCheck, given, settings
+from hypothesis import given
 from hypothesis import strategies as st
 
 from backend.providers.anthropic_provider import AnthropicProvider
@@ -138,10 +138,6 @@ async def simulate_settings_save(
 # Property 8: Provider connectivity error surfacing
 # ---------------------------------------------------------------------------
 
-@settings(
-    max_examples=100,
-    suppress_health_check=[HealthCheck.too_slow],
-)
 @given(
     provider_name=_provider_name_strategy,
     model=_model_strategy,
@@ -193,10 +189,6 @@ async def test_property_8_connectivity_error_surfaced(
     )
 
 
-@settings(
-    max_examples=100,
-    suppress_health_check=[HealthCheck.too_slow],
-)
 @given(
     provider_name=_provider_name_strategy,
     model=_model_strategy,

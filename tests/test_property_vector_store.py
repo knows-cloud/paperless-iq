@@ -14,7 +14,7 @@ import hashlib
 from typing import Any
 
 import pytest
-from hypothesis import HealthCheck, given, settings
+from hypothesis import given
 from hypothesis import strategies as st
 
 from backend.models import SearchResult
@@ -42,7 +42,7 @@ class _MockLLMProvider:
     async def complete(self, prompt: str, max_tokens: int) -> str:
         return "{}"
 
-    async def embed(self, text: str) -> list[float]:
+    async def embed(self, text: str, *, is_query: bool = False) -> list[float]:
         h = hashlib.sha256(text.encode()).digest()
         # 64-dimensional embedding from hash bytes
         return [b / 255.0 for b in h[:32]] + [b / 255.0 for b in h[:32]]
@@ -71,6 +71,7 @@ _doc_text = st.text(
 def _make_store() -> ChromaVectorStore:
     """Create a ChromaVectorStore backed by an ephemeral (in-memory) client."""
     import asyncio
+    import uuid
     import chromadb
 
     provider = _MockLLMProvider()
@@ -87,8 +88,10 @@ def _make_store() -> ChromaVectorStore:
     store._embed_sem = asyncio.Semaphore(1)
     store._embed_concurrency = 1
     store._client = chromadb.EphemeralClient()
+    # EphemeralClient shares its in-memory system across instantiations, so a
+    # fixed collection name leaks documents between tests — use a unique one.
     store._collection = store._client.get_or_create_collection(
-        name="test_collection",
+        name=f"test_collection_{uuid.uuid4().hex}",
         configuration=store._collection_config,
     )
     return store
@@ -98,7 +101,6 @@ def _make_store() -> ChromaVectorStore:
 # Property 9: Embedding round-trip
 # ---------------------------------------------------------------------------
 
-@settings(max_examples=100, suppress_health_check=[HealthCheck.too_slow], deadline=None)
 @given(
     doc_id=_doc_id_strategy,
     text=_doc_text,
@@ -142,7 +144,6 @@ async def test_property_9_embedding_round_trip(
 # Property 10: Search result count bound
 # ---------------------------------------------------------------------------
 
-@settings(max_examples=100, suppress_health_check=[HealthCheck.too_slow], deadline=None)
 @given(
     num_docs=st.integers(min_value=1, max_value=15),
     top_n=st.integers(min_value=1, max_value=20),
@@ -174,7 +175,6 @@ async def test_property_10_search_result_count_bound(
 # Property 11: Search result structure
 # ---------------------------------------------------------------------------
 
-@settings(max_examples=100, suppress_health_check=[HealthCheck.too_slow], deadline=None)
 @given(
     doc_id=_doc_id_strategy,
     text=_doc_text,
@@ -210,7 +210,6 @@ async def test_property_11_search_result_structure(
 # Property 12: Vector store backend re-index completeness
 # ---------------------------------------------------------------------------
 
-@settings(max_examples=100, suppress_health_check=[HealthCheck.too_slow], deadline=None)
 @given(
     doc_ids=st.lists(
         st.integers(min_value=1, max_value=10_000),

@@ -73,23 +73,44 @@ def _table_names(db_path) -> set[str]:
         con.close()
 
 
+# Head of the migration chain (001 → 002 → 003).
+_HEAD_REVISION = "003"
+
+
 def test_fresh_db_migrates_to_head(temp_db):
     _run_migrations()
 
-    assert _current_revision(temp_db) == db_migrate._BASELINE_REVISION
-    assert db_migrate._SENTINEL_TABLE in _table_names(temp_db)
+    assert _current_revision(temp_db) == _HEAD_REVISION
+    # A core table from the initial migration must exist.
+    assert "document_tracking" in _table_names(temp_db)
 
 
 def test_pre_alembic_db_is_stamped_not_recreated(temp_db):
-    # Sentinel table present, no alembic_version at all (classic pre-Alembic DB).
+    # A pre-Alembic database has the full application schema but no
+    # alembic_version bookkeeping. Build the real schema, then drop the
+    # alembic_version table to simulate that state.
+    _run_migrations()
     con = sqlite3.connect(temp_db)
-    con.execute(f"CREATE TABLE {db_migrate._SENTINEL_TABLE} (id INTEGER PRIMARY KEY)")
+    con.execute(
+        "INSERT INTO document_tracking (document_id, first_seen_at, embedding_stored) "
+        "VALUES (4242, '2024-01-01 00:00:00', 0)"
+    )
+    con.execute("DROP TABLE alembic_version")
     con.commit()
     con.close()
 
-    _run_migrations()  # must not raise re-creating the table
+    _run_migrations()  # must adopt the schema, not re-create/ALTER it
 
-    assert _current_revision(temp_db) == db_migrate._BASELINE_REVISION
+    assert _current_revision(temp_db) == _HEAD_REVISION
+    # The pre-existing row survived — tables were stamped, not recreated.
+    con = sqlite3.connect(temp_db)
+    try:
+        rows = con.execute(
+            "SELECT document_id FROM document_tracking WHERE document_id = 4242"
+        ).fetchall()
+    finally:
+        con.close()
+    assert rows == [(4242,)]
 
 
 def test_empty_alembic_version_is_restamped(temp_db):
@@ -104,7 +125,7 @@ def test_empty_alembic_version_is_restamped(temp_db):
     con.close()
     assert _current_revision(temp_db) is None
 
-    # Second boot must recover cleanly rather than crash on CREATE TABLE.
+    # Second boot must recover cleanly rather than crash on CREATE TABLE / ALTER.
     _run_migrations()
 
-    assert _current_revision(temp_db) == db_migrate._BASELINE_REVISION
+    assert _current_revision(temp_db) == _HEAD_REVISION

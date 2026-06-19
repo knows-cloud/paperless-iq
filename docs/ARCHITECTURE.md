@@ -37,12 +37,16 @@ graph TD
 ### `backend/main.py` (~2 200 lines)
 The FastAPI application entry-point. Contains:
 - All HTTP route handlers (`@app.get/post/put/delete`)
-- `lifespan()` — startup/shutdown: DB init, background task launch, settings seed
-- `_automation_loop(batch_size=None|N)` — unified background loop (inbox monitor or scheduler)
+- `lifespan()` — startup/shutdown: **fail-closed auth guard** (refuse to start without `PAPERLESS_URL`, D-24), Alembic migrations, background task launch, settings seed
+- `_automation_loop(app, poll_interval)` — the **inbox poller** (continuous; processes every inbox-tagged document each poll)
+- `_cron_loop(name, get_expr, run_job)` — generic **cron-driven** loop (croniter); re-reads its expression each tick so settings changes apply without a restart (D-02). Drives `_run_scheduler_batch` (`schedule_cron`) and `_run_scheduled_grooming_scan` (`grooming_scan_cron`, incremental)
+- `_make_analysis_callbacks(app, session, label)` — the per-document analyse→enqueue→(auto-approve) closures shared by the poller and the batch job
+- `schedule_reembed()` / `_daily_reembed_loop` / `_flush_dirty_reembeds` — deferred re-embedding chokepoint and flush (D-22); `_record_document_embed()` stamps `last_embedded_at` + writes an `embedded` audit event at every embed
+- `_content_drift_loop` / `_run_content_drift_reindex` — weekly safety net re-embedding documents whose Paperless `modified` is newer than `last_embedded_at` (`content_drift_reindex_days`, D-22)
 - `_session_expiry_loop(app)` — hourly background task: extracts memories from sessions older than 24 hours, then deletes them (see D-19)
 - `_background_index(doc_id)` — background task to embed a document after it is processed
 - `_extract_memories_from_session(session, ...)` — extracts and deduplicates memories; called from explicit session close and from `_session_expiry_loop`
-- Helper utilities: `_paperless_list()`, `_apply_settings()`, auth middleware
+- Helper utilities: `_paperless_list()`, `_apply_settings()`, `_run_alembic_migrations()`, auth middleware
 
 **Session management rule:**
 - HTTP route handlers receive `session: AsyncSession = Depends(get_session)` — the session lifecycle is managed by FastAPI's dependency injection.
@@ -112,18 +116,32 @@ Chunking is handled by `_chunk` → `_chunk_text` (char windows) or `_chunk_text
 
 `make_memory_store(config, provider)` factory selects the backend matching `vector_store_backend`.
 
+### `backend/grooming.py`
+`GroomingService` — all Library/vocabulary-maintenance operations, instantiated per request via the `_grooming_svc()` dependency (and standalone for the scheduled scan). Covers:
+- **Entity sync** from Paperless + lazy description rows (`sync_and_list_entities`, `update_entity`)
+- **Descriptions** — single + bulk LLM generation (`_generate_one`, `start_bulk_generate`); the only LLM spend in grooming
+- **Entity embedding** — `_embed_entity_row` stores the vector as JSON on the row (D-21), not in a collection
+- **Dedup** — name + embedding candidate clusters via transitive closure (`get_dedup_candidates`), `merge_entities` (Paperless bulk edit + audit rows + loser deletion)
+- **Mismatch scan** — `collect_scan_candidates` (zero-LLM/zero-embed: entity vector → `query_chunks_by_vector` → classify with hysteresis), `run_scan_dry` (calibration preview), `start_scan`/`_scan_bg` (background, capped enqueue, dismissal memory). Pure classification helpers (`classify_tag_entity`, `classify_single_valued_entity`, `compute_cohort_percentiles`) are module-level and unit-tested.
+
+Module-level `_generate_lock` / `_scan_lock` (plain `asyncio.Lock`s — single-process app) serialise the two background operations; status dicts back the polled `/status` endpoints.
+
 ### `backend/orm_models.py`
-SQLAlchemy 2 ORM declarations. Seven tables:
+SQLAlchemy 2 ORM declarations. Nine tables:
 
 | Table | Purpose |
 |-------|---------|
-| `suggestions` | Pending / approved / rejected metadata suggestions |
+| `suggestions` | Pending / approved / rejected metadata suggestions (incl. `evidence_json` for grooming scans) |
 | `audit_log` | Field-level change history |
-| `document_tracking` | Documents seen by the inbox monitor (first seen, last analyzed, embedding status) |
+| `document_tracking` | Documents seen by the inbox monitor (first seen, last analyzed, `reembed_dirty_since` (pending deferred re-embed), `last_embedded_at` (vector last refreshed; drives content-drift reindex)) |
 | `settings` | Single-row JSON blob for `PaperlessIQConfig` |
 | `conversation_sessions` | Discovery chat sessions (verbatim turns + rolling summary) |
 | `user_memories` | Long-term memory facts |
-| `user_permissions` | Per-user access-control flags; created/updated at every login |
+| `user_permissions` | Per-user access-control flags incl. `can_groom`; created/updated at every login |
+| `entity_descriptions` | Per-entity description + embedding vector (JSON) + scan bookkeeping (D-21) |
+| `grooming_dismissals` | Permanent rejection memory for dedup pairs and scan actions (D-23) |
+
+Schema changes are applied by **Alembic** (`backend/alembic/`) at startup — `_run_alembic_migrations()` self-heals pre-Alembic and stale-revision databases by stamping the live-schema baseline before upgrading.
 
 ### `backend/models.py`
 Pydantic v2 models. Separate from ORM models — the API serialises Pydantic, persistence uses ORM. Mapping is explicit (`from_attributes=True`).
@@ -285,7 +303,7 @@ This means every save is a full replacement — the backend receives the complet
 
 ### Authentication
 - Session tokens are HMAC-SHA256 signed (`jti.username_b64.exp.sig`) using the machine key. Valid for 7 days. Revocation is in-memory (cleared on restart).
-- Auth is enforced only when `PAPERLESS_URL` is set. Without it the app runs in open/dev mode.
+- Auth is enforced only when `PAPERLESS_URL` is set — and the app **refuses to start** without it (the lifespan logs a `CRITICAL` and raises, so uvicorn exits). There is no running open mode (D-24). The `_is_auth_required()` helper still returns False when unset so route tests can run open via ASGITransport, which bypasses the lifespan guard.
 - Login is rate-limited to 10 attempts per IP per 5-minute window (in-memory, resets on restart).
 - `POST /api/auth/login` validates credentials against Paperless NGX (`/api/token/`), checks admin status, upserts the `user_permissions` row, and issues the session token.
 - Public paths exempt from auth: `/api/auth/*`, `/api/status`, `/api/theme`, `/api/logos`, `/health`.

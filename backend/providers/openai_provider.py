@@ -80,8 +80,11 @@ class OpenAIProvider:
             images=images,
         )
 
-    async def embed(self, text: str) -> list[float]:
-        """Generate embeddings using the configured embed model."""
+    async def embed(self, text: str, *, is_query: bool = False) -> list[float]:
+        """Generate embeddings using the configured embed model.
+
+        OpenAI embedding models are symmetric, so ``is_query`` is ignored.
+        """
         client = self._client()
         response = await client.embeddings.create(
             model=self._embed_model,

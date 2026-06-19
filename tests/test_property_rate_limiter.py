@@ -7,13 +7,14 @@
 
 from __future__ import annotations
 
-from hypothesis import given, settings, assume
+from unittest.mock import patch
+
+from hypothesis import given
 from hypothesis import strategies as st
 
 from backend.rate_limiter import RateLimiter
 
 
-@settings(max_examples=100)
 @given(
     max_requests=st.integers(min_value=1, max_value=50),
     window_seconds=st.integers(min_value=1, max_value=120),
@@ -23,27 +24,37 @@ def test_rate_limiter_enforcement(max_requests: int, window_seconds: int) -> Non
 
     For any max_requests in [1, 50] and window_seconds in [1, 120], consuming
     exactly max_requests tokens must succeed, and the very next check must
-    return (False, positive_int).
+    return (False, positive_int).  After advancing the fake clock by retry_after
+    seconds the next check must be allowed (validates retry-after computation).
 
     **Validates: Requirements 15.1, 15.3**
     """
-    rl = RateLimiter(max_requests=max_requests, window_seconds=window_seconds)
-    client = "test-client"
+    fake_now = [0.0]
 
-    # All max_requests calls should be allowed
-    for i in range(max_requests):
+    with patch("backend.rate_limiter.time.monotonic", side_effect=lambda: fake_now[0]):
+        rl = RateLimiter(max_requests=max_requests, window_seconds=window_seconds)
+        client = "test-client"
+
+        # All max_requests calls should be allowed
+        for i in range(max_requests):
+            allowed, retry = rl.check(client)
+            assert allowed is True, f"Request {i + 1}/{max_requests} should be allowed"
+            assert retry == 0
+
+        # The next call must be denied
         allowed, retry = rl.check(client)
-        assert allowed is True, f"Request {i + 1}/{max_requests} should be allowed"
-        assert retry == 0
+        assert allowed is False, "Request after exhausting limit should be denied"
+        assert isinstance(retry, int)
+        assert retry > 0, "retry_after must be a positive integer"
 
-    # The next call must be denied
-    allowed, retry = rl.check(client)
-    assert allowed is False, "Request after exhausting limit should be denied"
-    assert isinstance(retry, int)
-    assert retry > 0, "retry_after must be a positive integer"
+        # After advancing the clock by retry_after the next call must be allowed
+        fake_now[0] += retry
+        allowed_after, _ = rl.check(client)
+        assert allowed_after is True, (
+            "After advancing clock by retry_after seconds, next call must be allowed"
+        )
 
 
-@settings(max_examples=100)
 @given(
     max_requests=st.integers(min_value=1, max_value=50),
     window_seconds=st.integers(min_value=1, max_value=120),
@@ -63,19 +74,23 @@ def test_rate_limiter_per_client_isolation(
 
     **Validates: Requirements 15.5**
     """
+    from hypothesis import assume
     assume(key_a != key_b)
 
-    rl = RateLimiter(max_requests=max_requests, window_seconds=window_seconds)
+    fake_now = [0.0]
 
-    # Exhaust client A's limit
-    for _ in range(max_requests):
-        rl.check(key_a)
+    with patch("backend.rate_limiter.time.monotonic", side_effect=lambda: fake_now[0]):
+        rl = RateLimiter(max_requests=max_requests, window_seconds=window_seconds)
 
-    # Client A should now be denied
-    allowed_a, _ = rl.check(key_a)
-    assert allowed_a is False, "Client A should be denied after exhausting limit"
+        # Exhaust client A's limit
+        for _ in range(max_requests):
+            rl.check(key_a)
 
-    # Client B should still be allowed
-    allowed_b, retry_b = rl.check(key_b)
-    assert allowed_b is True, "Client B should be allowed when only A is exhausted"
-    assert retry_b == 0
+        # Client A should now be denied
+        allowed_a, _ = rl.check(key_a)
+        assert allowed_a is False, "Client A should be denied after exhausting limit"
+
+        # Client B should still be allowed
+        allowed_b, retry_b = rl.check(key_b)
+        assert allowed_b is True, "Client B should be allowed when only A is exhausted"
+        assert retry_b == 0

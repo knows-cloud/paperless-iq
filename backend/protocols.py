@@ -40,8 +40,13 @@ class LLMProvider(Protocol):
         """Single-turn convenience wrapper — equivalent to chat([user_msg])."""
         ...
 
-    async def embed(self, text: str) -> list[float]:
-        """Generate an embedding vector for the given text."""
+    async def embed(self, text: str, *, is_query: bool = False) -> list[float]:
+        """Generate an embedding vector for the given text.
+
+        ``is_query`` distinguishes a search query from a document being indexed.
+        Asymmetric embedding models (e.g. Cohere) optimise the two differently;
+        providers that don't differentiate may ignore it.
+        """
         ...
 
     async def health_check(self) -> bool:
@@ -95,6 +100,24 @@ class VectorStore(Protocol):
         """Collect entity metadata (tags/correspondents/types/custom fields)
         from the top-N most similar documents. ``exclude_tag_id`` lets a backend
         omit documents carrying a given tag (e.g. the inbox tag)."""
+        ...
+
+    async def query_chunks_by_vector(
+        self,
+        vector: list[float],
+        top_n_chunks: int,
+        entity_filter: dict | None = None,
+    ) -> list[dict[str, Any]]:
+        """Like query_chunks() but takes a precomputed vector — no embed call.
+
+        Each result carries ``document_id``, ``title``, ``passage``, ``score``
+        and chunk metadata (``tags_json``, ``correspondent``,
+        ``document_type``). ``entity_filter`` restricts results to chunks
+        carrying a given entity (cohort scoring for the grooming scan), e.g.
+        ``{"correspondent": "Telekom"}`` or ``{"tag_id": 12}``. Backends that
+        cannot express a given filter raise ``NotImplementedError`` for that
+        filter (Chroma cannot filter on tag_id; Bedrock KB supports no vector
+        queries at all)."""
         ...
 
     async def count(self) -> int:

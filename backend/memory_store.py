@@ -38,9 +38,9 @@ class MemoryStore:
     def __init__(self, llm_provider: LLMProvider) -> None:
         self._llm = llm_provider
 
-    async def _embed(self, text: str) -> list[float]:
+    async def _embed(self, text: str, *, is_query: bool = False) -> list[float]:
         try:
-            return await self._llm.embed(text)
+            return await self._llm.embed(text, is_query=is_query)
         except Exception as exc:
             # Surface the real provider exception so the root cause is visible even
             # when a caller's broad except only logs a higher-level message.
@@ -116,7 +116,7 @@ class ChromaMemoryStore(MemoryStore):
         count = self._col.count()
         if count == 0:
             return []
-        embedding = await self._embed(text)
+        embedding = await self._embed(text, is_query=True)
         loop = asyncio.get_running_loop()
         results = await loop.run_in_executor(
             None,
@@ -251,7 +251,7 @@ class QdrantMemoryStore(MemoryStore):
     async def query(self, text: str, top_n: int = 5) -> list[tuple[str, float]]:
         if not await self._present():
             return []
-        embedding = await self._embed(text)
+        embedding = await self._embed(text, is_query=True)
         res = await self._client.query_points(
             collection_name=self._collection,
             query=embedding,

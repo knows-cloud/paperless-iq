@@ -151,6 +151,32 @@ the chat LLM** — embedding models are small and fast.
 | Parallel embeddings | `embed_concurrency` | `1` | Embedding API calls in flight at once. For Ollama this is chunks-per-document; for cloud providers it now also overlaps **whole documents** during indexing. `1` is safe for a local Ollama. Raise to **4–8** for a remote/GPU Ollama, and to **~8** for Bedrock (the Bedrock embeddings panel defaults this to 8). The vector store's embed semaphore caps total concurrent calls, so raising it never exceeds this number regardless of how many documents are being indexed. |
 | Embedding batch size | `embed_batch_size` | `32` | Texts sent per embedding API call. **Only Cohere Embed models on Bedrock** batch multiple texts in one call (up to 96) — this cuts request count and cost during indexing. Titan and all non-Bedrock providers ignore it and always send one text per call. |
 
+### Embedding refresh
+
+Controls **when metadata changes re-embed a document**. A re-embed happens after an
+approval writes new metadata, after a webhook edit, and after a grooming merge —
+because chunk embeddings carry a metadata prefix (tags/correspondent/type), so changing
+those should refresh the vector. First-time indexing always embeds immediately and is
+unaffected. The chokepoint is `schedule_reembed()`; only *re*-embeds of already-indexed
+documents are deferred.
+
+| Setting | Key | Default | Notes & caveats |
+|---------|-----|---------|-----------------|
+| Refresh mode | `embed_refresh_mode` | `immediate` | `immediate` = re-embed the moment metadata changes (vectors always fresh; default, zero behaviour change). `daily` = stamp the document dirty and re-embed all dirty docs once per day. `manual` = stamp dirty and wait for the user to flush. Daily/manual **debounce** repeated same-day edits (one re-embed, not N) and spread embedding cost — useful on metered embedding APIs or after a large grooming merge. The dirty document re-fetches its current content + metadata from Paperless at flush time, so the deferred vector reflects the latest state, not the state when it was stamped. |
+| Daily flush hour (UTC) | `embed_refresh_hour` | `3` | `0–23`. Only used when mode = `daily`. The flush loop checks every minute and runs when the UTC hour matches. |
+| Content-drift reindex (days) | `content_drift_reindex_days` | `7` | Safety net for **content/OCR edits** that didn't fire the webhook. Every N days, documents whose Paperless `modified` is newer than our last embed are re-embedded. `0` disables it. The **webhook remains the primary, real-time path** — this only catches drift it missed. First run is one interval after startup. Compares against the per-document `last_embedded_at`, so it never re-embeds an unchanged document. |
+
+When dirty re-embeds are pending (`daily`/`manual`), the count is exposed at
+`GET /api/embeddings/pending`; `POST /api/embeddings/refresh` flushes them now (the UI
+surfaces a banner). See **D-22** for why merges defer rather than re-embed inline.
+
+> **Embed visibility.** Every document embed writes an `embedded` event to the audit
+> log (with the document title and a `change_source` naming the trigger:
+> `system:index`, `approval`, `webhook`, `system:flush`, `drift`). This makes
+> double-embeds visible — e.g. a freshly *added* document fires the webhook *and* gets
+> picked up for analysis → embedded on approval. Filter the Audit page by the `embedded`
+> action (and by source) to see the history; old rows are pruned by `audit_retention_days`.
+
 ### Similarity Search Tuning
 
 Query-time relevance knobs — all applied **live** (no re-index). Index-build settings
@@ -239,9 +265,42 @@ documents.
 | Automation enabled | `automation_enabled` | `false` | Master switch for the background loop. **Caveat:** when on, it continuously runs analysis *and* embedding/entity search — which means it also exercises the reranker continuously. With `rerank_method = local` this keeps the CPU busy and can starve interactive Discovery. |
 | Inbox tag | `inbox_tag_id` | `null` | The tag that marks "needs processing." Documents with it are picked up; suggestions exclude already-tagged (reviewed) docs. |
 | Auto-apply | `auto_apply` | `false` | When on, approved suggestions are written back to Paperless automatically. Off = suggestions wait in the queue for human approval. |
-| Poll interval (s) | `poll_interval_seconds` | `10` | How often the loop checks for new documents. **Minimum 1** (validator-enforced). |
-| Batch size | `batch_size` | `10` | Documents processed per loop iteration. **Minimum 1** (validator-enforced). |
-| Schedule (cron) | `schedule_cron` | `null` | Optional cron expression to gate when automation runs. |
+| Poll interval (s) | `poll_interval_seconds` | `10` | How often the **inbox poller** checks for new documents. **Minimum 1** (validator-enforced). |
+| Batch size | `batch_size` | `10` | Documents processed per **scheduled** batch run. **Minimum 1** (validator-enforced). |
+| Schedule (cron) | `schedule_cron` | `null` | Cron expression for **scheduled batch analysis** (separate from the always-on inbox poller). A real cron schedule (croniter) — e.g. `0 2 * * *` = 2 AM daily. Empty/null disables it. **Invalid expressions are rejected on save** (422). Edits apply within ~30s, no restart. |
+
+---
+
+## Library & Grooming
+
+Vocabulary maintenance — entity descriptions, duplicate detection, and a similarity
+**mismatch scan** that suggests tag/correspondent/type corrections. The whole feature
+is **off by default** and gated behind a dedicated `can_groom` permission. The Library
+page is hidden for everyone (admins included) until `grooming_enabled` is on. The scan
+is **zero-LLM / zero-embed** (it reuses stored entity vectors); the only LLM spend is
+description generation. See **D-21/D-22/D-23** for the design decisions.
+
+| Setting | Key | Default | Notes & caveats |
+|---------|-----|---------|-----------------|
+| Enable grooming | `grooming_enabled` | `false` | Master switch. Off = Library page hidden, scheduled scans idle. |
+| Entity types | `grooming_entity_types` | `["tag","correspondent","document_type"]` | Which entity kinds the Library manages. |
+| Dedup — name threshold | `grooming_dedup_name_threshold` | `0.85` | `[0,1]` fuzzy-name similarity to flag a name-duplicate pair (LLM-free). |
+| Dedup — embedding threshold | `grooming_dedup_embed_threshold` | `0.90` | `[0,1]` cosine between **entity** vectors to flag a semantic-duplicate pair. Only fires for entities that have a generated description (hence an embedding). |
+| Description — sample docs | `grooming_desc_sample_docs` | `5` | How many representative documents are sampled to generate an entity's description. |
+| Description — snippet chars | `grooming_desc_snippet_chars` | `300` | Characters of content per sampled doc included in the generation prompt. |
+| Scan — add threshold | `grooming_add_threshold` | `0.80` | Doc similarity at/above which the scan suggests **adding** the entity. **Must be > remove threshold** (validator-enforced — the dead band between them is the hysteresis that prevents flip-flopping). |
+| Scan — remove threshold | `grooming_remove_threshold` | `0.35` | Doc similarity below which an applied tag is suggested for **removal**. |
+| Scan — remove percentile | `grooming_remove_percentile` | `10` | Cohort-relative rule: a doc in the bottom N% of its entity's cohort can be flagged even if it clears the absolute remove threshold. Counters the D-18 prefix inflation on removals. **Cohort scoring needs a filterable backend** — Qdrant for tags; both backends for correspondent/document_type. On Chroma, tag cohorts fall back to the absolute rule only. Needs a cohort of ≥10 docs to engage. |
+| Scan — min supporting chunks | `grooming_min_supporting_chunks` | `2` | An **add** needs at least this many chunks above the add threshold — one lucky chunk isn't enough. |
+| Scan — top-K | `grooming_scan_top_k` | `100` | Chunks retrieved per entity vector query. Also gates the "absence is evidence" remove rule (only when `top_k ≥ 3 × entity_doc_count`). |
+| Scan — max suggestions / run | `grooming_max_suggestions_per_scan` | `50` | Hard cap on documents enqueued per scan, highest `|score − threshold|` first — protects the queue from flooding on the first scan of a large corpus. |
+| Scan schedule (cron) | `grooming_scan_cron` | `null` | Cron for **scheduled** scans (croniter; e.g. `0 3 * * *`). Empty/null = manual-only (Library → Scan → *Scan now*). Invalid expressions rejected on save. **Scheduled scans are incremental** — only entities that are new, whose description changed, or whose documents were re-embedded since their last scan (content drift) are re-examined; the manual *Scan now* is always a full scan. The scan is **hard-disabled on the `bedrock_kb` backend** (no vector queries) and skips while the embed circuit breaker is open. |
+| Re-suggest after (days) | `grooming_resuggest_after_days` | `0` | `0` = a rejected suggestion is **never** re-suggested (rejection = permanent answer, D-23). `>0` = a dismissal expires after N days and may resurface. |
+
+> **Dry run first.** Embedding-model and corpus differences make universal thresholds
+> impossible. Use **Library → Scan → Dry run** to preview scored candidates without
+> enqueueing, and tune `grooming_add_threshold` / `grooming_remove_threshold` against
+> your actual data before turning on a scheduled scan.
 
 ---
 
@@ -249,10 +308,12 @@ documents.
 
 | Setting | Key | Default | Notes & caveats |
 |---------|-----|---------|-----------------|
-| Sync NGX admins | `sync_ng_admins` | `true` | Paperless NGX superusers/staff automatically get full Paperless IQ access. Per-user permissions (`can_access`, `can_view_queue`, `can_approve`, `can_analyze`, `can_discover`, `can_settings`) are managed in this tab's user list, not in this config blob. |
+| Sync NGX admins | `sync_ng_admins` | `true` | Paperless NGX superusers/staff automatically get full Paperless IQ access. Per-user permissions (`can_access`, `can_view_queue`, `can_approve`, `can_analyze`, `can_discover`, `can_settings`, `can_groom`) are managed in this tab's user list, not in this config blob. `can_groom` is additionally gated by `grooming_enabled` — even an admin can't see the Library when grooming is off. |
 
-> Authentication is only enforced when `PAPERLESS_URL` (env) is set. The
-> `PAPERLESS_TOKEN` lives **only** in the environment and never in the settings DB.
+> Authentication is **required**: Paperless IQ refuses to start unless `PAPERLESS_URL`
+> (env) is set, because login validates against Paperless (there is no open mode — see
+> **D-24**). The `PAPERLESS_TOKEN` lives **only** in the environment and never in the
+> settings DB.
 
 ---
 
@@ -305,8 +366,8 @@ database. Several are deliberately kept out of the DB for security.
 
 | Variable | Purpose | Caveats |
 |----------|---------|---------|
-| `PAPERLESS_URL` | Internal Paperless NGX address (Docker network). | Presence of this is what **enables authentication**. |
-| `PAPERLESS_TOKEN` | Paperless NGX API token. | **Environment only — never stored in the settings DB.** Required. |
+| `PAPERLESS_URL` | Internal Paperless NGX address (Docker network). | **Required — the app refuses to start without it** (login validates against Paperless; there is no open mode, see D-24). |
+| `PAPERLESS_TOKEN` | Paperless NGX API token. | **Environment only — never stored in the settings DB.** Required for Paperless operations; if absent the app still starts (auth enforced) but warns loudly that search/writes/indexing will fail. |
 | `SECRET_KEY` | Fernet key for encrypting credentials. | Auto-generated on first run into `/data/.secret_key`. Set explicitly if you need to restore an encrypted DB backup after a volume loss. |
 | `DATABASE_URL` | SQLite path. | Defaults to `/data/paperless_iq.db` in the volume. |
 | `PIQ_VECTOR_STORE_BACKEND` | Overrides the vector backend at boot. | Optional; the UI setting normally governs this. |
