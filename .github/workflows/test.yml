@@ -32,6 +32,9 @@ jobs:
             hypothesis-${{ github.ref_name }}-
             hypothesis-main-
 
+      - name: Audit Python dependencies
+        run: uvx pip-audit
+
       - name: Run pytest
         run: uv run pytest -q
 
