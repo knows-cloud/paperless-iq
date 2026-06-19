@@ -20,7 +20,17 @@ on:
   push:
     branches: [main]
     paths:
+      - "docs/Home.md"
+      - "docs/Getting-Started.md"
+      - "docs/Document-Analysis.md"
+      - "docs/Discovery.md"
+      - "docs/Automation.md"
+      - "docs/Grooming.md"
+      - "docs/LLM-Providers.md"
+      - "docs/Vector-Stores.md"
       - "docs/SETTINGS.md"
+      - "docs/Troubleshooting.md"
+      - "docs/ARCHITECTURE.md"
       - ".github/workflows/wiki-sync.yml"
   workflow_dispatch: {}
 
@@ -51,21 +61,45 @@ jobs:
           fi
 
           # Curated allowlist — the repo is public, so only user-facing docs are
-          # published. Format: "<docs source>.md|<Wiki Page Name>". Add lines here
+          # published. Format: "<docs source>|<Wiki Page Name>". Add lines here
           # to publish more pages (and to the push-trigger paths above).
-          PAGES="SETTINGS|Settings"
+          PAGES="
+          Home|Home
+          Getting-Started|Getting-Started
+          Document-Analysis|Document-Analysis
+          Discovery|Discovery
+          Automation|Automation
+          Grooming|Grooming
+          LLM-Providers|LLM-Providers
+          Vector-Stores|Vector-Stores
+          SETTINGS|Settings
+          Troubleshooting|Troubleshooting
+          ARCHITECTURE|Architecture
+          "
+
           : > wiki/_Sidebar.md
-          echo "### Documentation" >> wiki/_Sidebar.md
+          printf '### Paperless IQ\n' >> wiki/_Sidebar.md
+          printf '- [[Home]]\n\n' >> wiki/_Sidebar.md
+          printf '### User Guide\n' >> wiki/_Sidebar.md
+          printf '- [[Getting-Started]]\n' >> wiki/_Sidebar.md
+          printf '- [[Document-Analysis]]\n' >> wiki/_Sidebar.md
+          printf '- [[Discovery]]\n' >> wiki/_Sidebar.md
+          printf '- [[Automation]]\n' >> wiki/_Sidebar.md
+          printf '- [[Grooming]]\n' >> wiki/_Sidebar.md
+          printf '\n### Reference\n' >> wiki/_Sidebar.md
+          printf '- [[LLM-Providers]]\n' >> wiki/_Sidebar.md
+          printf '- [[Vector-Stores]]\n' >> wiki/_Sidebar.md
+          printf '- [[Settings]]\n' >> wiki/_Sidebar.md
+          printf '- [[Troubleshooting]]\n' >> wiki/_Sidebar.md
+          printf '\n### Developer\n' >> wiki/_Sidebar.md
+          printf '- [[Architecture]]\n' >> wiki/_Sidebar.md
+
           echo "$PAGES" | while IFS='|' read -r src page; do
+            src="${src// /}"
+            page="${page// /}"
             [ -n "$src" ] || continue
             cp "docs/${src}.md" "wiki/${page}.md"
-            echo "- [[${page}]]" >> wiki/_Sidebar.md
           done
-
-          # Seed a Home page only if the wiki doesn't already have one.
-          if [ ! -f wiki/Home.md ]; then
-            printf '# Paperless IQ\n\nDocumentation mirrored from the repo'\''s `docs/` folder. See the sidebar.\n' > wiki/Home.md
-          fi
 
           cd wiki
           git config user.name "github-actions[bot]"
