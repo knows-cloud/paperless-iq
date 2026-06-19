@@ -36,7 +36,7 @@ jobs:
         run: uv run pytest -q
 
   frontend:
-    name: Frontend (tsc + i18n)
+    name: Frontend (tsc + i18n + audit)
     runs-on: ubuntu-latest
     permissions:
       contents: read
@@ -55,6 +55,9 @@ jobs:
 
       - name: Install dependencies
         run: npm ci
+
+      - name: Audit dependencies
+        run: npm audit --audit-level=low
 
       - name: TypeScript check
         run: npx tsc --noEmit
