@@ -77,22 +77,30 @@ jobs:
           ARCHITECTURE|Architecture
           "
 
-          : > wiki/_Sidebar.md
-          printf '### Paperless IQ\n' >> wiki/_Sidebar.md
-          printf '- [[Home]]\n\n' >> wiki/_Sidebar.md
-          printf '### User Guide\n' >> wiki/_Sidebar.md
-          printf '- [[Getting-Started]]\n' >> wiki/_Sidebar.md
-          printf '- [[Document-Analysis]]\n' >> wiki/_Sidebar.md
-          printf '- [[Discovery]]\n' >> wiki/_Sidebar.md
-          printf '- [[Automation]]\n' >> wiki/_Sidebar.md
-          printf '- [[Grooming]]\n' >> wiki/_Sidebar.md
-          printf '\n### Reference\n' >> wiki/_Sidebar.md
-          printf '- [[LLM-Providers]]\n' >> wiki/_Sidebar.md
-          printf '- [[Vector-Stores]]\n' >> wiki/_Sidebar.md
-          printf '- [[Settings]]\n' >> wiki/_Sidebar.md
-          printf '- [[Troubleshooting]]\n' >> wiki/_Sidebar.md
-          printf '\n### Developer\n' >> wiki/_Sidebar.md
-          printf '- [[Architecture]]\n' >> wiki/_Sidebar.md
+          # Build the sidebar with `printf '%s\n'` and one argument per line.
+          # Do NOT use `printf '- [[Home]]\n'`: a format string beginning with
+          # "- " is parsed as an option flag under bash and aborts the job
+          # ("printf: - : invalid option"). A '%s\n' format is immune.
+          printf '%s\n' \
+            '### Paperless IQ' \
+            '- [[Home]]' \
+            '' \
+            '### User Guide' \
+            '- [[Getting-Started]]' \
+            '- [[Document-Analysis]]' \
+            '- [[Discovery]]' \
+            '- [[Automation]]' \
+            '- [[Grooming]]' \
+            '' \
+            '### Reference' \
+            '- [[LLM-Providers]]' \
+            '- [[Vector-Stores]]' \
+            '- [[Settings]]' \
+            '- [[Troubleshooting]]' \
+            '' \
+            '### Developer' \
+            '- [[Architecture]]' \
+            > wiki/_Sidebar.md
 
           echo "$PAGES" | while IFS='|' read -r src page; do
             src="${src// /}"
