@@ -28,7 +28,7 @@ dependencies = [
 # Local cross-encoder reranker (rerank_method="local"). Heavy (pulls torch);
 # installed only on demand. Imported lazily at runtime — see backend/rerankers.py.
 rerank-local = [
-    "sentence-transformers>=3.0",
+    "sentence-transformers>=5.6.0",
 ]
 # Sparse encoder for Qdrant hybrid search (qdrant_hybrid_search). Pulls
 # onnxruntime; imported lazily — see QdrantVectorStore._ensure_sparse_encoder.
