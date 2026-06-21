@@ -7,6 +7,12 @@ updates:
       interval: "weekly"
       day: "monday"
     open-pull-requests-limit: 10
+    groups:
+      # @mantine/core pins an exact peer on @mantine/hooks, so split PRs
+      # produce an ERESOLVE conflict. Always bump the pair together.
+      mantine:
+        patterns:
+          - "@mantine/*"
 
   # uv/pip — Python backend dependencies
   - package-ecosystem: "uv"
