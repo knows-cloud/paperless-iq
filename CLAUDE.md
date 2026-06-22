@@ -106,12 +106,23 @@ frontend/src/
 
 ---
 
-## Before You Commit
+## Before You Commit / Push
+
+Run the lint, typecheck, and test gates locally **before pushing to GitHub** and
+fix anything they surface — do not rely on CI to catch it. Note that CI's backend
+job historically ran only pip-audit + pytest, so a green CI does **not** prove the
+backend is ruff-clean; always run ruff yourself.
 
 1. `npx tsc --noEmit` from `frontend/` — zero errors required
-2. `ruff check backend` — zero errors required (config in `pyproject.toml`)
-3. `uv run pytest` — must not introduce new failures (note: the property suite is currently flaky from cross-test state pollution — a different test may fail per run but each passes in isolation)
-4. `npm run check:i18n` from `frontend/` — all 5 locale files must have identical key sets
-5. If you changed the DB schema, generate an Alembic migration (`alembic revision --autogenerate`) — never inline `ALTER`/`create_all` (see D-21)
-6. If you changed a design decision, update `docs/DECISIONS.md`
-7. If you changed the module structure, update `docs/ARCHITECTURE.md`
+2. `npm run lint` from `frontend/` — eslint (`eslint src`); catches React-hooks/code-quality issues `tsc` misses. Zero errors required (warnings are tolerated but should trend down)
+3. `ruff check backend` — zero errors required (config in `pyproject.toml`); use `--fix` for autofixable lints
+4. `uv run bandit -rq backend --severity-level medium` — security linter; finds smells ruff's default rules don't (hardcoded secrets, `shell=True`, weak crypto). Zero medium/high findings required. (Plain `bandit -rq backend` also flags 12 intentional Low `try/except/pass` (B110) — those are accepted, hence the `medium` gate.)
+5. `uv run pytest` — must not introduce new failures (note: the property suite is currently flaky from cross-test state pollution — a different test may fail per run but each passes in isolation)
+6. `npm run check:i18n` from `frontend/` — all 5 locale files must have identical key sets
+7. If you changed the DB schema, generate an Alembic migration (`alembic revision --autogenerate`) — never inline `ALTER`/`create_all` (see D-21)
+8. If you changed a design decision, update `docs/DECISIONS.md`
+9. If you changed the module structure, update `docs/ARCHITECTURE.md`
+
+CI mirrors the lint/test gates (`.github/workflows/test.yml`): the backend job runs
+`ruff check backend`, `bandit -rq backend --severity-level medium`, then pytest; the
+frontend job runs `tsc`, `eslint`, `npm run check:i18n`, and `npm audit`.

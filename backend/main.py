@@ -47,7 +47,7 @@ from backend.auth import (
     validate_paperless_credentials,
 )
 from backend.auth import _is_auth_required
-from backend.database import AsyncSessionLocal, DATABASE_URL, get_session
+from backend.database import AsyncSessionLocal, get_session
 from backend.keystore import get_machine_key
 from backend.inbox_monitor import InboxMonitor, Scheduler
 from backend.manual_analysis import ManualAnalysisService
@@ -56,8 +56,6 @@ from backend.ollama_queue import OllamaQueue, Priority
 from backend.orm_models import (
     ConversationSessionORM,
     DocumentTrackingORM,
-    EntityDescriptionORM,
-    GroomingDismissalORM,
     SuggestionORM,
     UserMemoryORM,
     UserPermissionsORM,
