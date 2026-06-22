@@ -80,6 +80,15 @@ With Qdrant you get:
 - **Scalar and binary quantisation** — reduce memory footprint for large archives
 - **Seamless migration** — switching backends migrates your existing embeddings without re-embedding anything
 
+### Library — Entity Grooming
+
+The Library page gives administrators tools to keep the entity space clean and the LLM context tight. It is gated behind the `can_groom` permission flag.
+
+- **Entity descriptions** — write or auto-generate LLM descriptions for every tag, correspondent, and document type. These descriptions are injected into the smart entity selection prompt so the LLM can distinguish between similarly-named entities and make better-informed picks from the shortlist.
+- **Deduplication** — detects near-duplicate entities using a combination of fuzzy name matching and embedding cosine similarity (both thresholds configurable). One click merges duplicates in Paperless-NGX, consolidating all document assignments automatically.
+- **Mismatch scan** — re-analyses already-approved documents against the current entity set and flags ones where the LLM would now suggest different tags, correspondents, or document types. Useful after bulk merges or entity renames to catch stale assignments.
+- **Scheduled scans** — mismatch scans run automatically on a configurable cron schedule; on-demand scan also available.
+
 ### Four LLM Providers, Zero Lock-in
 
 Run entirely on your own hardware, or use any major cloud provider:
@@ -163,6 +172,13 @@ Most tools give you one knob. Paperless IQ gives you a control panel:
 - **Field-level change history** — every metadata write is recorded with old value, new value, change source (manual vs. auto), and linked suggestion
 - **Configurable retention** — audit entries are automatically pruned after a configurable number of days (minimum 90)
 
+### Library — Entity Grooming
+- **Entity descriptions** — write or LLM-generate descriptions for every tag, correspondent, and document type; injected into smart entity selection prompts so the LLM distinguishes similarly-named entities
+- **Deduplication** — finds near-duplicate entity names via fuzzy string matching and embedding cosine similarity; merge candidates in Paperless-NGX with one click, reassigning all documents automatically
+- **Dismissals** — suppress individual dedup pairs that are intentionally distinct (dismissed pairs are not re-surfaced)
+- **Mismatch scan** — re-analyses approved documents against the current entity set and surfaces ones where the LLM would now suggest different metadata; runs on-demand or on a cron schedule
+- **Permission-gated** — Library page requires the `can_groom` permission flag; configured per user in Access Control
+
 ### Settings
 Settings are organised into eight tabs:
 
@@ -175,7 +191,7 @@ Settings are organised into eight tabs:
 | **Automation** | Enable/disable, auto-apply, poll interval, batch size, cron schedule, creation policies |
 | **Appearance** | Mantine primary colour, typography (font family and size), nav icons, UI language, colour scheme (light/dark/auto) |
 | **Memories** | Enable/disable long-term memory, list/edit/delete individual facts, clear all |
-| **Access Control** | Per-user permission flags, NG admin sync toggle, maintenance actions (reindex, reset tracking) |
+| **Access Control** | Per-user permission flags (including `can_groom`), NG admin sync toggle, maintenance actions (reindex, reset tracking) |
 
 ### UI & UX
 - **Responsive mobile layout** — sidebar slides in from the left as a drawer on small screens; a backdrop overlay and auto-close on navigation
@@ -307,6 +323,7 @@ Set `SECRET_KEY` explicitly only if you need to restore an encrypted database fr
 | `PIQ_LLM_PROVIDER` | `ollama` | `ollama` · `anthropic` · `openai` · `bedrock` |
 | `PIQ_LLM_MODEL` | `llama3` | Model name (provider-specific) |
 | `PIQ_LLM_CREDENTIALS` | — | API key (Anthropic/OpenAI) or JSON credentials (Bedrock) |
+| `PIQ_OPENAI_BASE_URL` | — | Custom base URL for OpenAI-compatible APIs (e.g. LM Studio, Open WebUI). Overrides the default OpenAI endpoint. |
 | `PIQ_OLLAMA_URL` | `http://localhost:11434` | Ollama server URL |
 | `PIQ_LLM_TIMEOUT_SECONDS` | `120` | LLM request timeout |
 | `PIQ_EMBED_PROVIDER` | `ollama` | Embedding provider: `ollama` · `openai` · `bedrock` |
