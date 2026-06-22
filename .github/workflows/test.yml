@@ -35,6 +35,12 @@ jobs:
       - name: Audit Python dependencies
         run: uvx pip-audit
 
+      - name: Lint backend (ruff)
+        run: uv run ruff check backend
+
+      - name: Security scan backend (bandit)
+        run: uv run bandit -rq backend --severity-level medium
+
       - name: Run pytest
         run: uv run pytest -q
 
@@ -64,6 +70,9 @@ jobs:
 
       - name: TypeScript check
         run: npx tsc --noEmit
+
+      - name: Lint (eslint)
+        run: npm run lint
 
       - name: i18n completeness check
         run: npm run check:i18n
