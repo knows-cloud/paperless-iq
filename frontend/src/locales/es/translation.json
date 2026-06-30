@@ -582,5 +582,7 @@
   "grooming.settings.scan.cron.label": "Cron de escaneo",
   "grooming.settings.scan.cron.tip": "Expresión cron para ejecuciones automáticas de escaneo. Dejar vacío para desactivar.",
   "grooming.settings.scan.resuggestDays.label": "Re-sugerir después de (días)",
-  "grooming.settings.scan.resuggestDays.tip": "Días tras los cuales puede regenerarse una sugerencia descartada. 0 = nunca."
+  "grooming.settings.scan.resuggestDays.tip": "Días tras los cuales puede regenerarse una sugerencia descartada. 0 = nunca.",
+  "version.updateAvailable": "Actualización disponible",
+  "version.updateTooltip": "v{{latest}} está disponible – ver notas de la versión"
 }

@@ -371,7 +371,6 @@ class GroomingService:
         )
         rows: dict[int, EntityDescriptionORM] = {r.entity_id: r for r in result.scalars().all()}
 
-        now = datetime.now(timezone.utc)
         for item in entities:
             eid = item["id"]
             name = item["name"]
@@ -483,7 +482,6 @@ class GroomingService:
         snippet_chars = getattr(self._config, "grooming_desc_snippet_chars", 300)
 
         # Fetch documents using this entity
-        etype_plural = {"tag": "tags", "correspondent": "correspondents", "document_type": "document_types"}[row.entity_type]
         filter_param = {"tag": "tags__id", "correspondent": "correspondent__id", "document_type": "document_type__id"}[row.entity_type]
         docs = await self._fetch_entity_docs(filter_param, row.entity_id, limit=sample_count)
 

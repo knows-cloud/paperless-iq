@@ -20,6 +20,7 @@ import LoginPage from "./pages/LoginPage";
 import LibraryPage from "./pages/LibraryPage";
 import { api, clearStoredToken } from "./api";
 import type { UserPermissions } from "./api";
+import VersionBadge from "./components/VersionBadge";
 
 type Page = "manual" | "queue" | "discovery" | "processing" | "audit" | "settings" | "library";
 
@@ -225,6 +226,11 @@ export default function App() {
             </Button>
           </Box>
         )}
+
+        {/* Version badge */}
+        <Box px="md" pb="sm" pt={authRequired && authUser ? 0 : "xs"}>
+          <VersionBadge />
+        </Box>
       </AppShell.Navbar>
 
       <AppShell.Main>
