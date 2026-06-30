@@ -5,17 +5,17 @@ description = "AI-powered metadata suggestions for Paperless NGX"
 requires-python = ">=3.12"
 dependencies = [
     "aiosqlite>=0.22.1",
-    "alembic>=1.14.0",
-    "anthropic>=0.111.0",
-    "boto3>=1.43.34",
+    "alembic>=1.18.5",
+    "anthropic>=0.112.0",
+    "boto3>=1.43.37",
     "chromadb>=1.5.5",
     "croniter>=2.0",
     "cryptography>=48.0.1",
-    "fastapi>=0.138.0",
-    "greenlet>=3.5.2",
+    "fastapi>=0.138.1",
+    "greenlet>=3.5.3",
     "httpx>=0.28.1",
     "ollama>=0.6.1",
-    "openai>=2.43.0",
+    "openai>=2.44.0",
     "pydantic>=2.12.5",
     "Pillow>=10.0",
     "pypdfium2>=5.10.1",
@@ -42,6 +42,7 @@ dev = [
     "hypothesis>=6.155.7",
     "pytest>=9.1.1",
     "pytest-asyncio>=1.3.0",
+    "ruff>=0.15.20",
 ]
 
 [tool.pytest.ini_options]
