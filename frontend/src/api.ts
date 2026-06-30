@@ -97,6 +97,13 @@ export interface ConnectionTestResult {
   version?: string;
 }
 
+export interface VersionInfo {
+  version: string;
+  update_available: boolean;
+  latest_version?: string;
+  releases_url?: string;
+}
+
 export interface AuthMeResponse {
   user: string | null;
   auth_required: boolean;
@@ -323,6 +330,7 @@ export const api = {
   getStoragePaths: () => request<PaperlessEntity[]>("/paperless/storage_paths"),
   getTheme: () => request<{ primary_color: string; sidebar_from: string; sidebar_to: string; font: string; font_size: string; text_color: string; bg_color: string; card_color: string; card_alt_hex: string; card_alt_opacity: number; nav_icons: Record<string, string>; ui_language: string; chip_color: string }>("/theme"),
   getStatus: () => request<{ llm_online: boolean; embed_online: boolean; queue_pending: number; queue_processing: number; embedded_chunks: number; total_documents: number; processing: Record<string, unknown>; paperless_url: string; paperless_public_url: string }>("/status"),
+  getVersion: () => request<VersionInfo>("/version"),
   getDocumentPreview: (id: number) => requestBlob(`/documents/${id}/preview`),
   triggerReindex: () => request<{ detail: string }>("/reindex", { method: "POST" }),
   migrateVectorStore: () => request<{ migrated: number; memories_migrated: number; needs_reindex: boolean; detail: string }>("/vector/migrate", { method: "POST" }),

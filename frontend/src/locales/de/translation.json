@@ -582,5 +582,7 @@
   "grooming.settings.scan.cron.label": "Scan-Cron",
   "grooming.settings.scan.cron.tip": "Cron-Ausdruck für automatische Scan-Läufe. Leer lassen zum Deaktivieren.",
   "grooming.settings.scan.resuggestDays.label": "Erneut vorschlagen nach (Tage)",
-  "grooming.settings.scan.resuggestDays.tip": "Tage nach denen ein verworfener Vorschlag erneut generiert werden kann. 0 = nie."
+  "grooming.settings.scan.resuggestDays.tip": "Tage nach denen ein verworfener Vorschlag erneut generiert werden kann. 0 = nie.",
+  "version.updateAvailable": "Update verfügbar",
+  "version.updateTooltip": "v{{latest}} ist verfügbar – Versionshinweise ansehen"
 }

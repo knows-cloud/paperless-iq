@@ -123,6 +123,45 @@ backend is ruff-clean; always run ruff yourself.
 8. If you changed a design decision, update `docs/DECISIONS.md`
 9. If you changed the module structure, update `docs/ARCHITECTURE.md`
 
+---
+
+## Release Process
+
+Releases produce a versioned Docker image published to `ghcr.io/knows-cloud/paperless-iq`.
+The GitHub Actions workflow (`.github/workflows/release.yml`) fires automatically on a
+`vX.Y.Z` tag and pushes three image tags: the full semver, the minor-pinned alias, and `latest`.
+
+### Steps to cut a release
+
+1. **Bump the version** — update `version` in **both** files to the same value:
+   - `pyproject.toml` → `version = "X.Y.Z"`
+   - `frontend/package.json` → `"version": "X.Y.Z"`
+
+2. **Run all pre-commit gates** (see above) and fix anything they surface.
+
+3. **Commit and push to main:**
+   ```bash
+   git add pyproject.toml frontend/package.json
+   git commit -m "chore: bump version to X.Y.Z"
+   git push origin main
+   ```
+
+4. **Tag and push the tag** — this triggers the release workflow:
+   ```bash
+   git tag vX.Y.Z
+   git push origin vX.Y.Z
+   ```
+
+5. **Verify** — the Actions tab on GitHub will show the `Release` workflow building
+   the multi-arch image. Once green, `ghcr.io/knows-cloud/paperless-iq:X.Y.Z`
+   and `:latest` are live. The version banner in the UI will show "Update available"
+   to anyone running an older image within an hour of the release.
+
+### Version source of truth
+
+`pyproject.toml` is the canonical version. `importlib.metadata.version("paperless-iq")`
+reads it at runtime via the installed package dist-info. `frontend/package.json` must
+be kept in sync manually — never bump one without the other.
 CI mirrors the lint/test gates (`.github/workflows/test.yml`): the backend job runs
 `ruff check backend`, `bandit -rq backend --severity-level medium`, then pytest; the
 frontend job runs `tsc`, `eslint`, `npm run check:i18n`, and `npm audit`.

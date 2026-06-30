@@ -3,10 +3,12 @@
 from __future__ import annotations
 
 import asyncio
+import importlib.metadata
 import json as _json
 import logging
 import os
 import re as _re
+import time
 
 # Configure application logging so INFO messages from all backend modules appear
 # in the container log alongside uvicorn's own access log.
@@ -32,6 +34,17 @@ from sqlalchemy import delete as sa_delete, func, select, update as sa_update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from backend.analyzer import PaperlessNGXClient
+
+
+def _get_app_version() -> str:
+    """Read the package version from installed metadata or pyproject.toml fallback."""
+    try:
+        return importlib.metadata.version("paperless-iq")
+    except importlib.metadata.PackageNotFoundError:
+        import tomllib
+        pyproject = Path(__file__).parent.parent / "pyproject.toml"
+        with open(pyproject, "rb") as f:
+            return tomllib.load(f)["project"]["version"]
 from backend.models import VisionAnalysisResult
 from backend.pdf_utils import get_page_count
 from backend.approval_queue import ApprovalQueueService
@@ -1202,7 +1215,7 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
 app = FastAPI(
     title="Paperless IQ",
     description="AI-powered metadata suggestions for Paperless NGX",
-    version="0.1.0",
+    version=_get_app_version(),
     lifespan=lifespan,
 )
 
@@ -3155,6 +3168,46 @@ async def translate_prompt(body: TranslatePromptBody, request: Request) -> dict:
 
 
 # ---------------------------------------------------------------------------
+# Version endpoint
+# ---------------------------------------------------------------------------
+
+_GITHUB_RELEASES_URL = "https://api.github.com/repos/knows-cloud/paperless-iq/releases/latest"
+_GITHUB_RELEASES_PAGE = "https://github.com/knows-cloud/paperless-iq/releases"
+_version_cache: dict[str, Any] = {}  # keys: latest_version, fetched_at
+
+
+async def _fetch_latest_release() -> str | None:
+    """Return the latest GitHub release tag, cached for 1 hour. None on any error."""
+    now = time.monotonic()
+    if _version_cache.get("latest_version") and now - _version_cache.get("fetched_at", 0) < 3600:
+        return _version_cache["latest_version"]
+    try:
+        async with httpx.AsyncClient(timeout=5, headers={"User-Agent": "paperless-iq"}) as client:
+            resp = await client.get(_GITHUB_RELEASES_URL)
+        if resp.status_code == 200:
+            tag = resp.json().get("tag_name", "")
+            latest = tag.lstrip("v")
+            _version_cache["latest_version"] = latest
+            _version_cache["fetched_at"] = now
+            return latest
+    except Exception:
+        pass
+    return None
+
+
+@app.get("/api/version", tags=["system"])
+async def get_version() -> dict:
+    """Return the running app version and whether a newer release is available."""
+    current = _get_app_version()
+    latest = await _fetch_latest_release()
+    update_available = bool(latest and latest != current)
+    result: dict[str, Any] = {"version": current, "update_available": update_available}
+    if update_available:
+        result["latest_version"] = latest
+        result["releases_url"] = _GITHUB_RELEASES_PAGE
+    return result
+
+
 # Status & Reindex endpoints
 # ---------------------------------------------------------------------------
 
