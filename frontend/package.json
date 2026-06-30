@@ -36,6 +36,6 @@
     "knip": "^6.17.1",
     "typescript": "^6.0.3",
     "typescript-eslint": "^8.61.1",
-    "vite": "^8.0.16"
+    "vite": "^8.1.1"
   }
 }
