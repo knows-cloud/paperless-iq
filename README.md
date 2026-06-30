@@ -215,9 +215,7 @@ Add to your Paperless-NGX `docker-compose.yml`:
 
 ```yaml
   paperless-iq:
-    build:
-      context: /path/to/paperless-iq
-      dockerfile: docker/Dockerfile
+    image: ghcr.io/knows-cloud/paperless-iq:latest
     restart: unless-stopped
     depends_on:
       - webserver
@@ -244,10 +242,24 @@ volumes:
 Then:
 
 ```bash
-docker compose up -d --build paperless-iq
+docker compose up -d paperless-iq
 ```
 
 Access the UI at `http://localhost:8082`.
+
+### Keeping up to date
+
+The Paperless IQ sidebar shows your current version. When a newer release is available an "Update available" badge appears — click it to see the changelog.
+
+To update:
+
+```bash
+docker compose pull paperless-iq && docker compose up -d paperless-iq
+```
+
+To pin to a specific version instead of `latest`, use an image tag like
+`ghcr.io/knows-cloud/paperless-iq:1.0` (minor-pinned, gets patch updates) or
+`ghcr.io/knows-cloud/paperless-iq:1.0.0` (exact).
 
 ### Using Qdrant
 
@@ -463,7 +475,21 @@ uv run uvicorn backend.main:app --reload
 uv run alembic upgrade head
 ```
 
-### Rebuilding the Docker image after code changes
+### Building from source
+
+If you want to run from a local clone instead of the pre-built image, replace
+`image:` with a `build:` block in your compose file:
+
+```yaml
+  paperless-iq:
+    build:
+      context: /path/to/paperless-iq
+      dockerfile: docker/Dockerfile
+      args:
+        PIQ_EXTRAS: qdrant-hybrid,rerank-local
+```
+
+Then rebuild after code changes:
 
 ```bash
 docker compose build paperless-iq && docker compose up -d paperless-iq

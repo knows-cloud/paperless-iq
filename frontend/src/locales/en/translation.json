@@ -582,5 +582,7 @@
   "grooming.settings.scan.cron.label": "Scan cron",
   "grooming.settings.scan.cron.tip": "Cron expression for automated scan runs (e.g. '0 2 * * *' for 2 AM daily). Leave blank to disable.",
   "grooming.settings.scan.resuggestDays.label": "Re-suggest after (days)",
-  "grooming.settings.scan.resuggestDays.tip": "Days after which a dismissed suggestion may be re-generated. 0 = never re-suggest."
+  "grooming.settings.scan.resuggestDays.tip": "Days after which a dismissed suggestion may be re-generated. 0 = never re-suggest.",
+  "version.updateAvailable": "Update available",
+  "version.updateTooltip": "v{{latest}} is available — see release notes"
 }
