@@ -106,12 +106,57 @@ frontend/src/
 
 ---
 
-## Before You Commit
+## Before You Commit / Push
+
+Run the lint, typecheck, and test gates locally **before pushing to GitHub** and
+fix anything they surface — do not rely on CI to catch it.
 
 1. `npx tsc --noEmit` from `frontend/` — zero errors required
-2. `ruff check backend` — zero errors required (config in `pyproject.toml`)
-3. `uv run pytest` — must not introduce new failures (note: the property suite is currently flaky from cross-test state pollution — a different test may fail per run but each passes in isolation)
-4. `npm run check:i18n` from `frontend/` — all 5 locale files must have identical key sets
-5. If you changed the DB schema, generate an Alembic migration (`alembic revision --autogenerate`) — never inline `ALTER`/`create_all` (see D-21)
-6. If you changed a design decision, update `docs/DECISIONS.md`
-7. If you changed the module structure, update `docs/ARCHITECTURE.md`
+2. `npm run lint` from `frontend/` — eslint (`eslint src`); zero errors required (warnings tolerated)
+3. `ruff check backend` — zero errors required (config in `pyproject.toml`); use `--fix` for autofixable lints
+4. `uv run bandit -rq backend --severity-level medium` — zero medium/high findings required
+5. `uv run pytest` — must not introduce new failures (note: the property suite is currently flaky from cross-test state pollution — a different test may fail per run but each passes in isolation)
+6. `npm run check:i18n` from `frontend/` — all 5 locale files must have identical key sets
+7. If you changed the DB schema, generate an Alembic migration (`alembic revision --autogenerate`) — never inline `ALTER`/`create_all` (see D-21)
+8. If you changed a design decision, update `docs/DECISIONS.md`
+9. If you changed the module structure, update `docs/ARCHITECTURE.md`
+
+---
+
+## Release Process
+
+Releases produce a versioned Docker image published to `ghcr.io/knows-cloud/paperless-iq`.
+The GitHub Actions workflow (`.github/workflows/release.yml`) fires automatically on a
+`vX.Y.Z` tag and pushes three image tags: the full semver, the minor-pinned alias, and `latest`.
+
+### Steps to cut a release
+
+1. **Bump the version** — update `version` in **both** files to the same value:
+   - `pyproject.toml` → `version = "X.Y.Z"`
+   - `frontend/package.json` → `"version": "X.Y.Z"`
+
+2. **Run all pre-commit gates** (see above) and fix anything they surface.
+
+3. **Commit and push to main:**
+   ```bash
+   git add pyproject.toml frontend/package.json
+   git commit -m "chore: bump version to X.Y.Z"
+   git push origin main
+   ```
+
+4. **Tag and push the tag** — this triggers the release workflow:
+   ```bash
+   git tag vX.Y.Z
+   git push origin vX.Y.Z
+   ```
+
+5. **Verify** — the Actions tab on GitHub will show the `Release` workflow building
+   the multi-arch image. Once green, `ghcr.io/knows-cloud/paperless-iq:X.Y.Z`
+   and `:latest` are live. The version banner in the UI will show "Update available"
+   to anyone running an older image within an hour of the release.
+
+### Version source of truth
+
+`pyproject.toml` is the canonical version. `importlib.metadata.version("paperless-iq")`
+reads it at runtime via the installed package dist-info. `frontend/package.json` must
+be kept in sync manually — never bump one without the other.
