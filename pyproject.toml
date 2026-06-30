@@ -52,6 +52,9 @@ markers = [
 ]
 addopts = "-m 'not live'"
 
+[tool.setuptools.packages.find]
+include = ["backend*"]
+
 [tool.ruff]
 target-version = "py312"
 # Alembic-generated files have their own conventions; don't lint them.
