@@ -15,7 +15,7 @@
     "check:i18n": "node scripts/check-i18n.mjs"
   },
   "dependencies": {
-    "@mantine/core": "^9.3.2",
+    "@mantine/core": "^9.4.1",
     "@mantine/hooks": "^9.2.1",
     "@tabler/icons-react": "^3.44.0",
     "@tanstack/react-query": "^5.0.0",
