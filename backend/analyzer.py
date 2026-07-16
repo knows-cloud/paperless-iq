@@ -202,29 +202,6 @@ class PaperlessNGXClient:
                 url = data.get("next")
         return fields
 
-    async def create_entity(self, entity_type: str, name: str) -> None:
-        """
-        Create a new entity (tag, correspondent, or document type) in Paperless NGX.
-
-        entity_type must be one of: "tags", "correspondents", "document_types".
-
-        Validates: Requirements 2.7, 2.8
-        """
-        endpoint_map = {
-            "tags": "tags",
-            "correspondents": "correspondents",
-            "document_types": "document_types",
-        }
-        endpoint = endpoint_map[entity_type]
-        async with httpx.AsyncClient(headers=self._headers, timeout=30) as client:
-            resp = await client.post(
-                f"{self._base_url}/api/{endpoint}/",
-                json={"name": name},
-            )
-            resp.raise_for_status()
-            logger.info("Created new %s %r in Paperless NGX.", entity_type, name)
-
-
 def resolve_prompt_template(
     config: PaperlessIQConfig,
     document_type_id: int | None,
