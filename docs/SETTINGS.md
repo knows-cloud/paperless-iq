@@ -240,6 +240,7 @@ documents, with a frequency-based fallback.
 | Tag policy | `tag_creation_policy` | `existing_only` | `existing_only` = LLM may only pick from existing tags. `allow_new` = LLM may propose new ones. |
 | Correspondent policy | `correspondent_creation_policy` | `existing_only` | As above, for correspondents. |
 | Document-type policy | `doctype_creation_policy` | `existing_only` | As above, for document types. |
+| Storage-path policy | `storage_path_creation_policy` | `existing_only` | As above, for storage paths. |
 
 ---
 
@@ -264,7 +265,7 @@ documents.
 |---------|-----|---------|-----------------|
 | Automation enabled | `automation_enabled` | `false` | Master switch for the background loop. **Caveat:** when on, it continuously runs analysis *and* embedding/entity search — which means it also exercises the reranker continuously. With `rerank_method = local` this keeps the CPU busy and can starve interactive Discovery. |
 | Inbox tag | `inbox_tag_id` | `null` | The tag that marks "needs processing." Documents with it are picked up; suggestions exclude already-tagged (reviewed) docs. |
-| Auto-apply | `auto_apply` | `false` | When on, approved suggestions are written back to Paperless automatically. Off = suggestions wait in the queue for human approval. |
+| Auto-apply | `auto_apply` | `false` | When on, every suggestion the poller/scheduler produces is **approved automatically and immediately** — nothing waits for a human, and entities allowed by the creation policies are created in Paperless at that moment (audited as `change_source=automation`). Off = suggestions wait in the queue for human approval, and nothing is created until you approve. |
 | Poll interval (s) | `poll_interval_seconds` | `10` | How often the **inbox poller** checks for new documents. **Minimum 1** (validator-enforced). |
 | Batch size | `batch_size` | `10` | Documents processed per **scheduled** batch run. **Minimum 1** (validator-enforced). |
 | Schedule (cron) | `schedule_cron` | `null` | Cron expression for **scheduled batch analysis** (separate from the always-on inbox poller). A real cron schedule (croniter) — e.g. `0 2 * * *` = 2 AM daily. Empty/null disables it. **Invalid expressions are rejected on save** (422). Edits apply within ~30s, no restart. |

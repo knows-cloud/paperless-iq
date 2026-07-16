@@ -91,6 +91,15 @@ export function AutomationTab({ s }: Props) {
               { value: "allow_new",     label: t("common.policy.allowNew",     { entity: t("entity.documentTypes") }) },
             ]}
           />
+          <Select
+            label={t("entity.storagePathsLabel")}
+            name="storage_path_creation_policy"
+            defaultValue={String(s.storage_path_creation_policy ?? "existing_only")}
+            data={[
+              { value: "existing_only", label: t("common.policy.existingOnly", { entity: t("entity.storagePaths") }) },
+              { value: "allow_new",     label: t("common.policy.allowNew",     { entity: t("entity.storagePaths") }) },
+            ]}
+          />
         </Stack>
       </Paper>
     </Stack>

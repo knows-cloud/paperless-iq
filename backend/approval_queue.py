@@ -17,6 +17,7 @@ import json
 import logging
 import os
 import time
+from collections.abc import Mapping
 from datetime import datetime, timezone
 from typing import Any
 from uuid import UUID, uuid4
@@ -25,10 +26,43 @@ import httpx
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from backend.models import MetadataSuggestion
+from backend.models import MetadataSuggestion, PaperlessIQConfig
 from backend.orm_models import AuditLogORM, SuggestionORM
 
 logger = logging.getLogger(__name__)
+
+# Which Paperless entity types are gated by a creation policy. Keys are the
+# Paperless API endpoint names used by _resolve_or_create_entity_ids.
+CreateMissing = bool | Mapping[str, bool]
+
+
+def creation_policy_map(config: PaperlessIQConfig) -> dict[str, bool]:
+    """Per-entity-type "may create" flags derived from the configured policies.
+
+    Each entity type honours its *own* policy — an ``allow_new`` on tags must
+    not leak permission to create correspondents, document types or storage
+    paths. Custom fields have no policy of their own and are never created
+    from an unattended run.
+    """
+    return {
+        "tags": config.tag_creation_policy == "allow_new",
+        "correspondents": config.correspondent_creation_policy == "allow_new",
+        "document_types": config.doctype_creation_policy == "allow_new",
+        "storage_paths": config.storage_path_creation_policy == "allow_new",
+        "custom_fields": False,
+    }
+
+
+def _may_create(create_missing: CreateMissing, entity_type: str) -> bool:
+    """Resolve the create-permission for one entity type.
+
+    A plain ``bool`` applies to every type (used by the human-approve routes,
+    where an explicit edit is authority enough). A mapping is consulted
+    per-type and defaults to False for anything absent.
+    """
+    if isinstance(create_missing, bool):
+        return create_missing
+    return bool(create_missing.get(entity_type, False))
 
 # Simple TTL cache for entity name→ID lookups (avoids re-fetching on every approve)
 _entity_cache: dict[str, tuple[float, dict[str, int]]] = {}
@@ -201,7 +235,7 @@ class ApprovalQueueService:
         edits: dict | None = None,
         change_source: str = "human",
         merge_tags: bool = False,
-        create_missing: bool = False,
+        create_missing: CreateMissing = False,
         document_title: str | None = None,
         session_id: str | None = None,
         apply_content: bool = False,
@@ -432,6 +466,7 @@ class ApprovalQueueService:
         self,
         suggestion_ids: list[UUID],
         change_source: str = "human",
+        create_missing: CreateMissing = False,
     ) -> list[MetadataSuggestion]:
         """
         Approve multiple suggestions in sequence.
@@ -442,7 +477,12 @@ class ApprovalQueueService:
         # approving one would reject the others in the same batch.
         results: list[MetadataSuggestion] = []
         for sid in suggestion_ids:
-            result = await self.approve(sid, change_source=change_source, supersede_siblings=False)
+            result = await self.approve(
+                sid,
+                change_source=change_source,
+                create_missing=create_missing,
+                supersede_siblings=False,
+            )
             results.append(result)
         return results
 
@@ -502,14 +542,17 @@ class ApprovalQueueService:
         document_id: int,
         payload: dict[str, Any],
         merge_tags: bool = False,
-        create_missing: bool = False,
+        create_missing: CreateMissing = False,
     ) -> None:
         """
         PATCH document metadata to Paperless NGX.
 
         Resolves entity names to IDs. When merge_tags is True, fetches the
         document's existing tags and merges them with the suggested ones.
-        When create_missing is True, creates entities that don't exist yet.
+
+        ``create_missing`` decides whether entities absent from Paperless are
+        created. Pass a mapping (see ``creation_policy_map``) to gate each
+        entity type on its own policy, or a bool to apply one answer to all.
         """
         if not PAPERLESS_URL or not PAPERLESS_TOKEN:
             logger.warning(
@@ -531,7 +574,8 @@ class ApprovalQueueService:
             # which removes all tags from the document as intended.
             if payload.get("tags") is not None:
                 tag_ids = await self._resolve_or_create_entity_ids(
-                    client, base, "tags", payload["tags"], create_missing
+                    client, base, "tags", payload["tags"],
+                    _may_create(create_missing, "tags"),
                 )
                 if merge_tags:
                     existing = await self._get_document_tag_ids(client, base, document_id)
@@ -542,7 +586,8 @@ class ApprovalQueueService:
             # Correspondent
             if payload.get("correspondent"):
                 corr_ids = await self._resolve_or_create_entity_ids(
-                    client, base, "correspondents", [payload["correspondent"]], create_missing
+                    client, base, "correspondents", [payload["correspondent"]],
+                    _may_create(create_missing, "correspondents"),
                 )
                 if corr_ids:
                     patch["correspondent"] = corr_ids[0]
@@ -550,21 +595,24 @@ class ApprovalQueueService:
             # Document type
             if payload.get("document_type"):
                 dt_ids = await self._resolve_or_create_entity_ids(
-                    client, base, "document_types", [payload["document_type"]], create_missing
+                    client, base, "document_types", [payload["document_type"]],
+                    _may_create(create_missing, "document_types"),
                 )
                 if dt_ids:
                     patch["document_type"] = dt_ids[0]
 
             if payload.get("storage_path"):
                 sp_ids = await self._resolve_or_create_entity_ids(
-                    client, base, "storage_paths", [payload["storage_path"]], create_missing
+                    client, base, "storage_paths", [payload["storage_path"]],
+                    _may_create(create_missing, "storage_paths"),
                 )
                 if sp_ids:
                     patch["storage_path"] = sp_ids[0]
 
             if payload.get("custom_fields"):
                 cf_list = await self._resolve_custom_fields(
-                    client, base, payload["custom_fields"], create_missing
+                    client, base, payload["custom_fields"],
+                    _may_create(create_missing, "custom_fields"),
                 )
                 if cf_list:
                     patch["custom_fields"] = cf_list
