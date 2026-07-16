@@ -10,7 +10,7 @@ jobs:
     name: Build & push multi-arch image
     runs-on: ubuntu-latest
     permissions:
-      contents: read
+      contents: write   # create the GitHub Release for the tag
       packages: write
 
     steps:
@@ -56,3 +56,25 @@ jobs:
             PIQ_EXTRAS=qdrant-hybrid,rerank-local
           cache-from: type=gha
           cache-to: type=gha,mode=max
+
+      # Every release gets an entry on the Releases page, not just images.
+      # Runs after the push so a failed build never announces a release that
+      # has no image behind it. Notes are auto-generated from the PRs merged
+      # since the previous release — edit them afterwards to add upgrade notes
+      # or behaviour changes (see docs: Release Process).
+      # Re-running this workflow on an existing tag is a no-op rather than a
+      # failure, so a re-run after a transient build error stays green.
+      - name: Create GitHub Release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAG: ${{ github.ref_name }}
+        run: |
+          if gh release view "$TAG" >/dev/null 2>&1; then
+            echo "Release $TAG already exists — leaving it untouched."
+            exit 0
+          fi
+          gh release create "$TAG" \
+            --title "$TAG" \
+            --generate-notes \
+            --verify-tag \
+            --latest
