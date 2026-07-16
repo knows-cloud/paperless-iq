@@ -99,6 +99,7 @@ _ENV_MAP: dict[str, tuple[str, type]] = {
     "tag_creation_policy":         ("PIQ_TAG_CREATION_POLICY", str),
     "correspondent_creation_policy": ("PIQ_CORRESPONDENT_CREATION_POLICY", str),
     "doctype_creation_policy":     ("PIQ_DOCTYPE_CREATION_POLICY", str),
+    "storage_path_creation_policy": ("PIQ_STORAGE_PATH_CREATION_POLICY", str),
     "inbox_tag_id":                ("PIQ_INBOX_TAG_ID", int),
     "auto_apply":                  ("PIQ_AUTO_APPLY", bool),
     "poll_interval_seconds":       ("PIQ_POLL_INTERVAL_SECONDS", int),

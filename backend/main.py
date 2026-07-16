@@ -47,7 +47,7 @@ def _get_app_version() -> str:
             return tomllib.load(f)["project"]["version"]
 from backend.models import VisionAnalysisResult
 from backend.pdf_utils import get_page_count
-from backend.approval_queue import ApprovalQueueService
+from backend.approval_queue import ApprovalQueueService, creation_policy_map
 from backend.audit_log import AuditLogService, rows_to_csv
 from backend.auth import (
     check_login_rate_limit,
@@ -214,13 +214,12 @@ def _make_analysis_callbacks(app: FastAPI, session: AsyncSession, label: str):
                 # was passed to it), so merge_tags=False is correct.
                 # creation policies filter unknown entities before enqueue;
                 # allow_new policies leave them for creation at approve time.
-                create_missing = (
-                    config.tag_creation_policy == "allow_new"
-                    or config.correspondent_creation_policy == "allow_new"
-                    or config.doctype_creation_policy == "allow_new"
-                )
+                # Each entity type is gated on its own policy — see D-25.
                 await queue_svc.approve(
-                    enqueued.id, merge_tags=False, create_missing=create_missing,
+                    enqueued.id,
+                    merge_tags=False,
+                    create_missing=creation_policy_map(config),
+                    change_source="automation",
                 )
                 logger.info("%s auto-approved suggestion for doc %d.", label, doc_id)
             else:
@@ -1578,11 +1577,17 @@ async def reject_suggestion(
           dependencies=[Depends(require_perm("can_approve"))])
 async def bulk_approve(
     body: BulkIdsBody,
+    request: Request,
     svc: Annotated[ApprovalQueueService, Depends(_queue_service)],
 ) -> dict:
     """Bulk-approve a list of suggestions."""
+    actor = getattr(request.state, "user", None)
     try:
-        results = await svc.bulk_approve(body.ids)
+        results = await svc.bulk_approve(
+            body.ids,
+            change_source=f"user:{actor}" if actor else "human",
+            create_missing=True,  # human reviewed and approved — same as single approve
+        )
         return {"approved": [s.model_dump(mode="json") for s in results]}
     except ValueError as exc:
         raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(exc))

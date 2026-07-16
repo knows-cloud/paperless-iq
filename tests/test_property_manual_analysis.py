@@ -46,7 +46,6 @@ def _mock_paperless_client() -> AsyncMock:
     client.get_document_bytes = AsyncMock(return_value=b"Sample document bytes.")
     client.get_document_metadata = AsyncMock(return_value={"document_type": None})
     client.list_entities = AsyncMock(return_value=[])
-    client.create_entity = AsyncMock()
     return client
 
 

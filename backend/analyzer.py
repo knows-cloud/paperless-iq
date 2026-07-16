@@ -202,29 +202,6 @@ class PaperlessNGXClient:
                 url = data.get("next")
         return fields
 
-    async def create_entity(self, entity_type: str, name: str) -> None:
-        """
-        Create a new entity (tag, correspondent, or document type) in Paperless NGX.
-
-        entity_type must be one of: "tags", "correspondents", "document_types".
-
-        Validates: Requirements 2.7, 2.8
-        """
-        endpoint_map = {
-            "tags": "tags",
-            "correspondents": "correspondents",
-            "document_types": "document_types",
-        }
-        endpoint = endpoint_map[entity_type]
-        async with httpx.AsyncClient(headers=self._headers, timeout=30) as client:
-            resp = await client.post(
-                f"{self._base_url}/api/{endpoint}/",
-                json={"name": name},
-            )
-            resp.raise_for_status()
-            logger.info("Created new %s %r in Paperless NGX.", entity_type, name)
-
-
 def resolve_prompt_template(
     config: PaperlessIQConfig,
     document_type_id: int | None,
@@ -314,17 +291,22 @@ async def _apply_creation_policy(
     all_tags: list[str] | None = None,
     all_correspondents: list[str] | None = None,
     all_document_types: list[str] | None = None,
+    all_storage_paths: list[str] | None = None,
 ) -> MetadataSuggestion:
     """
-    Enforce creation policies for tags, correspondents, and document types.
+    Enforce creation policies for tags, correspondents, document types and
+    storage paths.
 
     For each entity type:
     - "existing_only": filter suggested values to those already present in Paperless NGX.
     - "allow_new": keep all suggested values as-is (creation happens at approval time).
 
     When the caller passes pre-fetched entity lists via ``all_tags``,
-    ``all_correspondents``, or ``all_document_types``, those are used directly
-    and no additional API calls are made for that entity type.
+    ``all_correspondents``, ``all_document_types`` or ``all_storage_paths``,
+    those are used directly and no additional API calls are made for that
+    entity type. Storage paths are not part of the prompt entity context, so
+    that list is normally fetched here — but only when the policy is
+    ``existing_only`` and the LLM actually proposed one.
 
     Returns a new MetadataSuggestion with the policy applied.
     """
@@ -356,6 +338,17 @@ async def _apply_creation_policy(
         existing_set = {d.lower() for d in existing}
         if suggestion.document_type.lower() not in existing_set:
             suggestion = suggestion.model_copy(update={"document_type": None})
+
+    # --- Storage path ---
+    if suggestion.storage_path and config.storage_path_creation_policy == "existing_only":
+        existing = (
+            all_storage_paths
+            if all_storage_paths is not None
+            else await paperless_client.list_entities("storage_paths")
+        )
+        existing_set = {s.lower() for s in existing}
+        if suggestion.storage_path.lower() not in existing_set:
+            suggestion = suggestion.model_copy(update={"storage_path": None})
 
     return suggestion
 

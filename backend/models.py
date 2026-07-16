@@ -205,6 +205,7 @@ class PaperlessIQConfig(BaseModel):
     tag_creation_policy: Literal["existing_only", "allow_new"] = "existing_only"
     correspondent_creation_policy: Literal["existing_only", "allow_new"] = "existing_only"
     doctype_creation_policy: Literal["existing_only", "allow_new"] = "existing_only"
+    storage_path_creation_policy: Literal["existing_only", "allow_new"] = "existing_only"
 
     # Automation
     inbox_tag_id: int | None = None

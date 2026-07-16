@@ -22,8 +22,12 @@ import pytest
 import pytest_asyncio
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 
-from backend.approval_queue import ApprovalQueueService
-from backend.models import MetadataSuggestion
+from backend.approval_queue import (
+    ApprovalQueueService,
+    _may_create,
+    creation_policy_map,
+)
+from backend.models import MetadataSuggestion, PaperlessIQConfig
 from backend.orm_models import Base
 
 
@@ -269,3 +273,87 @@ async def test_approve_without_edits_writes_original_values(session: AsyncSessio
     assert captured["title"] == "My Title"
     assert captured["tags"] == ["tag1"]
     assert captured["correspondent"] == "Corp A"
+
+
+# ---------------------------------------------------------------------------
+# 9. create_missing is resolved per entity type
+# ---------------------------------------------------------------------------
+
+def test_creation_policy_map_gates_each_entity_type_independently() -> None:
+    """allow_new on one entity type must not permit creating the others.
+
+    Regression: create_missing used to be a single OR across the three
+    policies, so allow_new on tags alone also created correspondents,
+    document types and storage paths.
+    """
+    config = PaperlessIQConfig(
+        llm_provider="openai",
+        llm_model="gpt-4o",
+        tag_creation_policy="allow_new",
+        correspondent_creation_policy="existing_only",
+        doctype_creation_policy="existing_only",
+        storage_path_creation_policy="existing_only",
+    )
+
+    assert creation_policy_map(config) == {
+        "tags": True,
+        "correspondents": False,
+        "document_types": False,
+        "storage_paths": False,
+        "custom_fields": False,
+    }
+
+
+def test_may_create_bool_applies_to_all_types() -> None:
+    """A plain bool is the human-approve case: one answer for every type."""
+    assert _may_create(True, "tags") is True
+    assert _may_create(True, "storage_paths") is True
+    assert _may_create(False, "tags") is False
+
+
+def test_may_create_mapping_defaults_missing_types_to_false() -> None:
+    """An entity type absent from the mapping must not be created."""
+    assert _may_create({"tags": True}, "tags") is True
+    assert _may_create({"tags": True}, "correspondents") is False
+
+
+@pytest.mark.asyncio
+async def test_patch_paperless_passes_per_type_flags(session: AsyncSession) -> None:
+    """_patch_paperless must gate each resolve call on that type's own flag."""
+    svc = ApprovalQueueService(session)
+    calls: dict[str, bool] = {}
+
+    async def _capture(
+        client: Any, base: str, entity_type: str, names: list[str],
+        create_missing: bool = False,
+    ) -> list[int]:
+        calls[entity_type] = create_missing
+        return [1]
+
+    payload = {
+        "title": "T",
+        "tags": ["new-tag"],
+        "correspondent": "New Corp",
+        "document_type": "New Type",
+        "storage_path": "New/Path",
+    }
+
+    with (
+        patch.object(svc, "_resolve_or_create_entity_ids", side_effect=_capture),
+        patch("backend.approval_queue.PAPERLESS_URL", "http://paperless.test"),
+        patch("backend.approval_queue.PAPERLESS_TOKEN", "tok"),
+        patch("backend.approval_queue.httpx.AsyncClient") as mock_client,
+    ):
+        mock_client.return_value.__aenter__.return_value.patch = AsyncMock()
+        await svc._patch_paperless(
+            42, payload,
+            create_missing={"tags": True, "correspondents": False,
+                            "document_types": False, "storage_paths": True},
+        )
+
+    assert calls == {
+        "tags": True,
+        "correspondents": False,
+        "document_types": False,
+        "storage_paths": True,
+    }

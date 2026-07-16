@@ -588,8 +588,12 @@ def _make_mock_paperless_with_entities(
     existing_doctypes: list[str],
 ) -> AsyncMock:
     """
-    Build a mock PaperlessNGXClient whose list_entities returns the given lists
-    and whose create_entity is a no-op that records calls.
+    Build a mock PaperlessNGXClient whose list_entities returns the given lists.
+
+    ``spec=`` matters here: PaperlessNGXClient has no entity-creation method at
+    all (D-25 — creation lives in the approval queue), so any attempt to call
+    one from analyze-time code raises AttributeError rather than silently
+    recording on a permissive mock.
     """
     client = AsyncMock(spec=PaperlessNGXClient)
 
@@ -603,7 +607,6 @@ def _make_mock_paperless_with_entities(
         return []
 
     client.list_entities = AsyncMock(side_effect=_list_entities)
-    client.create_entity = AsyncMock(return_value=None)
     return client
 
 
@@ -832,5 +835,11 @@ async def test_property_6_allow_new_keeps_all_suggested_entities(
     # All suggested tags must be kept in the result (no filtering)
     assert set(result.tags) == set(all_suggested)
 
-    # create_entity must NOT be called — creation is deferred to approval
-    paperless.create_entity.assert_not_called()
+    # Creation is deferred to approval (D-25): _apply_creation_policy may only
+    # read from Paperless, never write. Assert on what was actually called
+    # rather than on a single named method, so a future write of any shape
+    # trips this.
+    touched = {call[0].split(".")[0] for call in paperless.mock_calls if call[0]}
+    assert touched <= {"list_entities", "list_entities_with_map"}, (
+        f"_apply_creation_policy made non-read calls to Paperless: {touched}"
+    )
