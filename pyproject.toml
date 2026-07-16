@@ -21,7 +21,7 @@ dependencies = [
     "pypdfium2>=5.11.0",
     "qdrant-client>=1.12",
     "sqlalchemy>=2.0.51",
-    "uvicorn>=0.34.0",
+    "uvicorn>=0.51.0",
 ]
 
 [project.optional-dependencies]
