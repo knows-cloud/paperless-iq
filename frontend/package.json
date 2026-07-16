@@ -10,7 +10,7 @@
     "dev": "vite",
     "build": "tsc && vite build",
     "preview": "vite preview",
-    "lint": "eslint src",
+    "lint": "eslint src --max-warnings=0",
     "knip": "knip",
     "check:i18n": "node scripts/check-i18n.mjs"
   },
