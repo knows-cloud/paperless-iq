@@ -114,7 +114,7 @@ job historically ran only pip-audit + pytest, so a green CI does **not** prove t
 backend is ruff-clean; always run ruff yourself.
 
 1. `npx tsc --noEmit` from `frontend/` — zero errors required
-2. `npm run lint` from `frontend/` — eslint (`eslint src`); catches React-hooks/code-quality issues `tsc` misses. Zero errors required (warnings are tolerated but should trend down)
+2. `npm run lint` from `frontend/` — eslint (`eslint src --max-warnings=0`); catches React-hooks issues `tsc` structurally cannot (stale closures, missing effect deps). **Zero warnings required** — the gate fails on any warning. `exhaustive-deps` is a `warn`, and a bare `eslint src` exits 0 on warnings, so before `--max-warnings=0` the gate was advisory and a real stale-value bug sat unfixed for weeks. If a warning is a genuine false positive, suppress it with a targeted `// eslint-disable-next-line` **plus a comment saying why** — don't relax the gate
 3. `ruff check backend` — zero errors required (config in `pyproject.toml`); use `--fix` for autofixable lints
 4. `uv run bandit -rq backend --severity-level medium` — security linter; finds smells ruff's default rules don't (hardcoded secrets, `shell=True`, weak crypto). Zero medium/high findings required. (Plain `bandit -rq backend` also flags 12 intentional Low `try/except/pass` (B110) — those are accepted, hence the `medium` gate.)
 5. `uv run pytest` — must not introduce new failures (note: the property suite is currently flaky from cross-test state pollution — a different test may fail per run but each passes in isolation)

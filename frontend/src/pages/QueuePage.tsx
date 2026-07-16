@@ -125,7 +125,13 @@ export default function QueuePage() {
     return () => { Object.values(urls).forEach(u => URL.revokeObjectURL(u)); };
   }, []); // eslint-disable-line react-hooks/exhaustive-deps
 
-  const items = (data?.items ?? []) as Array<Record<string, unknown>>;
+  // Memoised so the `?? []` fallback doesn't mint a fresh array identity on
+  // every render, which would defeat the `groups` memo below while data is
+  // still loading.
+  const items = useMemo(
+    () => (data?.items ?? []) as Array<Record<string, unknown>>,
+    [data?.items],
+  );
 
   // Group pending suggestions by document — one card per document, a tab per
   // suggestion. Within a group: chronological (oldest → newest, newest selected

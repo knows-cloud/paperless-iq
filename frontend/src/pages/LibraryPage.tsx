@@ -45,11 +45,24 @@ function DescriptionsTab({ entityType }: { entityType: EntityType }) {
       .then(setEntities)
       .catch(err => setMsg(t("grooming.error", { msg: err.message })))
       .finally(() => setLoading(false));
+    // `t` is deliberately omitted: it changes identity on language switch, and
+    // re-running this effect would clear the selection and any unsaved edit
+    // just because the user changed language. `t` is only read in the error
+    // path, where a stale translator is harmless.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [entityType]);
 
+  // null = nothing selected; "" = selected but no description yet.
+  const selectedDescription = selected ? (selected.description ?? "") : null;
+
+  // Depends on the description *string*, not `selected`: generation finishing
+  // swaps `entities` without changing `selectedId`, which previously left the
+  // editor showing pre-generation text. Keying on the string also means an
+  // unrelated refresh of `entities` won't clobber an unsaved edit.
   useEffect(() => {
-    if (selected) setDescText(selected.description ?? "");
-  }, [selectedId]);
+    if (selectedDescription === null) return;
+    setDescText(selectedDescription);
+  }, [selectedId, selectedDescription]);
 
   // Poll generation status while running
   useEffect(() => {
@@ -68,7 +81,7 @@ function DescriptionsTab({ entityType }: { entityType: EntityType }) {
       }, 2000);
     }
     return () => { if (pollRef.current) clearInterval(pollRef.current); };
-  }, [genStatus?.running]);
+  }, [genStatus?.running, entityType]);
 
   async function handleSave() {
     if (!selected) return;
