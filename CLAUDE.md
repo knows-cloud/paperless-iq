@@ -127,9 +127,12 @@ backend is ruff-clean; always run ruff yourself.
 
 ## Release Process
 
-Releases produce a versioned Docker image published to `ghcr.io/knows-cloud/paperless-iq`.
-The GitHub Actions workflow (`.github/workflows/release.yml`) fires automatically on a
-`vX.Y.Z` tag and pushes three image tags: the full semver, the minor-pinned alias, and `latest`.
+Releases produce a versioned Docker image published to `ghcr.io/knows-cloud/paperless-iq`
+**and** an entry on the GitHub Releases page. The GitHub Actions workflow
+(`.github/workflows/release.yml`) fires automatically on a `vX.Y.Z` tag: it pushes three
+image tags (full semver, minor-pinned alias, `latest`) and then creates the GitHub Release.
+Both come from the same tag — there is no such thing as a release with images but no
+Releases entry.
 
 ### Steps to cut a release
 
@@ -139,23 +142,33 @@ The GitHub Actions workflow (`.github/workflows/release.yml`) fires automaticall
 
 2. **Run all pre-commit gates** (see above) and fix anything they surface.
 
-3. **Commit and push to main:**
+3. **Get the bump onto main** — via PR (preferred; CI runs on it) or directly:
    ```bash
    git add pyproject.toml frontend/package.json
    git commit -m "chore: bump version to X.Y.Z"
-   git push origin main
    ```
 
-4. **Tag and push the tag** — this triggers the release workflow:
+4. **Tag the commit *on main*, then push the tag** — this triggers the release workflow:
    ```bash
-   git tag vX.Y.Z
+   git fetch origin
+   git tag -a vX.Y.Z origin/main -m "vX.Y.Z"   # NOT a PR-branch commit
    git push origin vX.Y.Z
    ```
+   **Tag `origin/main`, never a pre-squash branch commit.** Squash-merging rewrites the
+   commit, so a tag cut from the PR branch points at a SHA that isn't in main's history —
+   it dangles, and every `git log <tag>..HEAD` and auto-generated changelog against it is
+   wrong. `v1.0.0` was tagged this way (`a2076f9`, not on main); check with
+   `git merge-base --is-ancestor vX.Y.Z^{commit} origin/main` before pushing.
 
-5. **Verify** — the Actions tab on GitHub will show the `Release` workflow building
-   the multi-arch image. Once green, `ghcr.io/knows-cloud/paperless-iq:X.Y.Z`
-   and `:latest` are live. The version banner in the UI will show "Update available"
-   to anyone running an older image within an hour of the release.
+5. **Verify and curate** — the Actions tab shows the `Release` workflow building the
+   multi-arch image, then creating the Release. Once green, `:X.Y.Z` and `:latest` are
+   live and the Releases page has an entry. The version banner shows "Update available"
+   to anyone on an older image within an hour.
+
+   The workflow's notes are **auto-generated from merged PRs** — a bare list. For any
+   release with behaviour changes, edit the notes afterwards
+   (`gh release edit vX.Y.Z --notes-file notes.md`) to lead with what upgraders must know.
+   `v1.1.0` is the worked example of the shape to aim for.
 
 ### Version source of truth
 
