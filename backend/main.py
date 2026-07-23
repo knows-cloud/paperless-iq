@@ -254,8 +254,14 @@ async def _automation_loop(app: FastAPI, poll_interval: int) -> None:
                     logger.info("Inbox poll submitted %d documents.", len(submitted))
         except asyncio.CancelledError:
             raise
-        except Exception:
-            logger.exception("Inbox polling loop error")
+        except Exception as exc:
+            if _is_transient_paperless_error(exc):
+                logger.warning(
+                    "Inbox polling: Paperless unavailable (%s); will retry next poll.",
+                    type(exc).__name__,
+                )
+            else:
+                logger.exception("Inbox polling loop error")
 
         await asyncio.sleep(poll_interval)
 
@@ -594,8 +600,14 @@ async def _background_index(
         logger.info("Background indexing complete: %d new documents indexed, %d inbox-skipped, %d already indexed.", indexed, inbox_skipped, already_done)
         if queue:
             queue.set_embedding_progress(total_to_index, total_to_index)  # mark complete
-    except Exception:
-        logger.warning("Background indexing failed.", exc_info=True)
+    except Exception as exc:
+        if _is_transient_paperless_error(exc):
+            logger.warning(
+                "Background indexing: Paperless unavailable (%s); will retry later.",
+                type(exc).__name__,
+            )
+        else:
+            logger.warning("Background indexing failed.", exc_info=True)
 
 
 async def _embed_health_monitor(app: FastAPI, queue: OllamaQueue) -> None:
@@ -789,6 +801,49 @@ async def _daily_reembed_loop(app: FastAPI) -> None:
             logger.warning("Daily re-embed loop error", exc_info=True)
 
 
+def _is_transient_paperless_error(exc: BaseException) -> bool:
+    """True when *exc* reflects a temporary Paperless-NGX outage rather than a
+    bug — connection failures, timeouts, and 5xx responses.
+
+    Paperless-NGX is briefly unreachable while it restarts or runs its nightly
+    maintenance tasks. Those blips are expected and self-heal on the next tick,
+    so callers log a single concise warning instead of a full traceback and
+    keep retrying. Genuine/unexpected errors still surface loudly.
+    """
+    if isinstance(exc, httpx.TransportError):
+        # ConnectError ("All connection attempts failed"), timeouts, protocol
+        # errors, pool exhaustion — all subclasses of TransportError.
+        return True
+    if isinstance(exc, httpx.HTTPStatusError):
+        return exc.response.status_code >= 500
+    return False
+
+
+async def _purge_deleted_document(vs: Any, doc_id: int) -> None:
+    """Remove all local trace of a document that no longer exists in Paperless.
+
+    Called when a re-embed flush gets a 404 for the document: the document was
+    deleted in Paperless-NGX, so its vector and its tracking row are stale.
+    Dropping both stops the row being retried forever (it would re-log the same
+    404 on every daily flush) and keeps the deleted document out of Discovery
+    search results.
+    """
+    try:
+        await vs.delete(doc_id)
+    except Exception:
+        logger.warning("Failed to purge vector for deleted doc %d", doc_id, exc_info=True)
+    async with AsyncSessionLocal() as db:
+        t = await db.get(DocumentTrackingORM, doc_id)
+        if t:
+            await db.delete(t)
+            await db.commit()
+    logger.info(
+        "Re-embed flush: document %d no longer exists in Paperless — "
+        "dropped stale tracking row and vector.",
+        doc_id,
+    )
+
+
 async def _flush_dirty_reembeds(vs: Any, pc: Any) -> None:
     """Re-embed all documents marked dirty (reembed_dirty_since IS NOT NULL)."""
     async with AsyncSessionLocal() as db:
@@ -829,6 +884,7 @@ async def _flush_dirty_reembeds(vs: Any, pc: Any) -> None:
 
     logger.info("Re-embed flush: processing %d dirty document(s).", len(dirty_rows))
     flushed = 0
+    purged = 0
     for tracking in dirty_rows:
         doc_id = tracking.document_id
         try:
@@ -865,9 +921,31 @@ async def _flush_dirty_reembeds(vs: Any, pc: Any) -> None:
                     await db.commit()
             await _record_document_embed(doc_id, doc.get("title"), "system:flush")
             flushed += 1
-        except Exception:
-            logger.warning("Re-embed flush failed for doc %d", doc_id, exc_info=True)
-    logger.info("Re-embed flush complete: %d/%d documents re-embedded.", flushed, len(dirty_rows))
+        except httpx.HTTPStatusError as exc:
+            if exc.response.status_code == 404:
+                # Document deleted in Paperless — drop the stale row + vector so
+                # it stops being retried on every flush.
+                await _purge_deleted_document(vs, doc_id)
+                purged += 1
+            elif _is_transient_paperless_error(exc):
+                logger.warning(
+                    "Re-embed flush: Paperless returned %d for doc %d; will retry.",
+                    exc.response.status_code, doc_id,
+                )
+            else:
+                logger.warning("Re-embed flush failed for doc %d", doc_id, exc_info=True)
+        except Exception as exc:
+            if _is_transient_paperless_error(exc):
+                logger.warning(
+                    "Re-embed flush: Paperless unreachable for doc %d (%s); will retry.",
+                    doc_id, type(exc).__name__,
+                )
+            else:
+                logger.warning("Re-embed flush failed for doc %d", doc_id, exc_info=True)
+    logger.info(
+        "Re-embed flush complete: %d/%d re-embedded, %d stale document(s) purged.",
+        flushed, len(dirty_rows), purged,
+    )
 
 
 def _parse_paperless_dt(value: str | None) -> datetime | None:
