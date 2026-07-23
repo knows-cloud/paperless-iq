@@ -23,7 +23,7 @@ jobs:
         run: uv sync --dev
 
       - name: Restore Hypothesis example database
-        uses: actions/cache@v4
+        uses: actions/cache@v6
         with:
           path: .hypothesis
           # Accumulates on the branch; falls back to main so CI builds on prior findings.
