@@ -14,10 +14,21 @@ updates:
         patterns:
           - "@mantine/*"
 
-  # uv/pip — Python backend dependencies
+  # uv/pip — Python backend dependencies. This block DOES cover Python; the
+  # boto3/openai/fastapi/etc. bumps come from here. Note: Dependabot opens uv
+  # *version* PRs, but its *security*-update support for the uv ecosystem lags,
+  # so alert-driven security PRs (e.g. Pillow) may need a manual bump until then.
   - package-ecosystem: "uv"
     directory: "/"
     schedule:
       interval: "weekly"
       day: "monday"
     open-pull-requests-limit: 10
+
+  # GitHub Actions used by the CI/release workflows
+  - package-ecosystem: "github-actions"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+      day: "monday"
+    open-pull-requests-limit: 5
