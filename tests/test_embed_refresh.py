@@ -19,9 +19,13 @@ from backend.orm_models import DocumentTrackingORM
 class SpyVectorStore:
     def __init__(self) -> None:
         self.upserts: list[tuple[int, str, dict]] = []
+        self.deletes: list[int] = []
 
     async def upsert(self, doc_id: int, text: str, metadata: dict) -> None:
         self.upserts.append((doc_id, text, metadata))
+
+    async def delete(self, doc_id: int) -> None:
+        self.deletes.append(doc_id)
 
 
 def _tracking_row(doc_id: int = 7) -> DocumentTrackingORM:
@@ -145,6 +149,100 @@ async def test_flush_dirty_reembeds_upserts_and_clears_marker(db_engine, monkeyp
     async with factory() as session:
         row = await session.get(DocumentTrackingORM, 7)
         assert row.reembed_dirty_since is None  # marker cleared after flush
+
+
+@pytest.mark.asyncio
+async def test_flush_dirty_reembeds_purges_deleted_document(db_engine, monkeypatch) -> None:
+    """A dirty doc that 404s (deleted in Paperless) has its tracking row and
+    vector dropped, so it is not retried on every future flush."""
+    import httpx
+
+    import backend.main as m
+
+    factory = async_sessionmaker(bind=db_engine, expire_on_commit=False)
+    monkeypatch.setattr(m, "AsyncSessionLocal", factory)
+
+    async with factory() as session:
+        row = _tracking_row(7)
+        row.reembed_dirty_since = datetime.now(timezone.utc)
+        session.add(row)
+        await session.commit()
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        # Only the entity-lookup calls reach the mock transport; the per-doc
+        # fetch 404s from FakePC below before any metadata request is made.
+        return httpx.Response(200, json={"results": [], "next": None})
+
+    transport = httpx.MockTransport(handler)
+    real_client = httpx.AsyncClient
+
+    def patched_client(**kwargs):
+        kwargs.pop("transport", None)
+        return real_client(transport=transport, **kwargs)
+
+    monkeypatch.setattr("backend.main.httpx.AsyncClient", patched_client)
+
+    class DeletedPC:
+        _base_url = "http://paperless.test"
+        _headers: dict = {}
+
+        async def get_document_ocr_text(self, doc_id: int) -> str:
+            request = httpx.Request("GET", f"{self._base_url}/api/documents/{doc_id}/")
+            raise httpx.HTTPStatusError(
+                "Not Found", request=request, response=httpx.Response(404, request=request)
+            )
+
+    vs = SpyVectorStore()
+    await m._flush_dirty_reembeds(vs, DeletedPC())
+
+    assert vs.upserts == []           # nothing re-embedded
+    assert vs.deletes == [7]          # vector purged
+    async with factory() as session:
+        assert await session.get(DocumentTrackingORM, 7) is None  # tracking row dropped
+
+
+@pytest.mark.asyncio
+async def test_flush_dirty_reembeds_keeps_row_on_transient_error(db_engine, monkeypatch) -> None:
+    """A transient outage (ConnectError) leaves the dirty row intact for retry —
+    it must NOT be purged like a 404."""
+    import httpx
+
+    import backend.main as m
+
+    factory = async_sessionmaker(bind=db_engine, expire_on_commit=False)
+    monkeypatch.setattr(m, "AsyncSessionLocal", factory)
+
+    async with factory() as session:
+        row = _tracking_row(7)
+        row.reembed_dirty_since = datetime.now(timezone.utc)
+        session.add(row)
+        await session.commit()
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, json={"results": [], "next": None})
+
+    transport = httpx.MockTransport(handler)
+    real_client = httpx.AsyncClient
+    monkeypatch.setattr(
+        "backend.main.httpx.AsyncClient",
+        lambda **kw: real_client(transport=transport, **{k: v for k, v in kw.items() if k != "transport"}),
+    )
+
+    class DownPC:
+        _base_url = "http://paperless.test"
+        _headers: dict = {}
+
+        async def get_document_ocr_text(self, doc_id: int) -> str:
+            raise httpx.ConnectError("All connection attempts failed")
+
+    vs = SpyVectorStore()
+    await m._flush_dirty_reembeds(vs, DownPC())
+
+    assert vs.deletes == []  # NOT purged — outage is transient
+    async with factory() as session:
+        row = await session.get(DocumentTrackingORM, 7)
+        assert row is not None
+        assert row.reembed_dirty_since is not None  # still dirty, will retry
 
 
 @pytest.mark.asyncio
