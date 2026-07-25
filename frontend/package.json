@@ -1,7 +1,7 @@
 {
   "name": "paperless-iq-frontend",
   "private": true,
-  "version": "1.1.1",
+  "version": "1.1.2",
   "type": "module",
   "engines": {
     "node": ">=24"
@@ -24,7 +24,7 @@
     "postcss": "^8.5.22",
     "postcss-preset-mantine": "^1.18.0",
     "react": "^19.2.8",
-    "react-dom": "^19.2.6",
+    "react-dom": "^19.2.8",
     "react-i18next": "^17.0.11"
   },
   "devDependencies": {
