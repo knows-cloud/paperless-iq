@@ -172,7 +172,7 @@ wheels = [
 
 [[package]]
 name = "anthropic"
-version = "0.118.0"
+version = "0.120.0"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "anyio" },
@@ -184,9 +184,9 @@ dependencies = [
     { name = "sniffio" },
     { name = "typing-extensions" },
 ]
-sdist = { url = "https://files.pythonhosted.org/packages/07/ff/bbad57650babf07ae9761f1d974fcee73430387b5d3aa0ddb395234906e8/anthropic-0.118.0.tar.gz", hash = "sha256:acb3c43b7e7592cf635fa21930e67a99d32641d68ccd53f625b52f71d7870d55", size = 994705, upload-time = "2026-07-22T16:43:57.019Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/92/5c/3331da4fc009d448008a50c78d86cc929e8c937cd1442245ce3f80561c4e/anthropic-0.120.0.tar.gz", hash = "sha256:6ba6007dc9b00365b20f6101a6618f5196ac1ceef81512e4b5cc0e7436d4975d", size = 1008042, upload-time = "2026-07-24T16:32:52.384Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/91/9f/d46e77054d7efb61c85ef5e8c7e95927cc89988b6491b46d22af60d63bda/anthropic-0.118.0-py3-none-any.whl", hash = "sha256:524d835869b8e374510b3bcc552e28dbdafc035a61d63fc0088c4035286ef8fe", size = 1010922, upload-time = "2026-07-22T16:43:55.461Z" },
+    { url = "https://files.pythonhosted.org/packages/1b/8a/8522bdf809e1f95f0d9c936540987a3f6afba01d2921a2bf488dedf836a8/anthropic-0.120.0-py3-none-any.whl", hash = "sha256:591bd531563ec7b63a1e138f5c11f14cb94edda99623b349c2ce2ece8e08b8a5", size = 1022602, upload-time = "2026-07-24T16:32:50.506Z" },
 ]
 
 [[package]]
@@ -2116,7 +2116,7 @@ wheels = [
 
 [[package]]
 name = "paperless-iq"
-version = "1.1.0"
+version = "1.1.2"
 source = { virtual = "." }
 dependencies = [
     { name = "aiosqlite" },
@@ -2160,7 +2160,7 @@ dev = [
 requires-dist = [
     { name = "aiosqlite", specifier = ">=0.22.1" },
     { name = "alembic", specifier = ">=1.18.5" },
-    { name = "anthropic", specifier = ">=0.118.0" },
+    { name = "anthropic", specifier = ">=0.120.0" },
     { name = "boto3", specifier = ">=1.43.54" },
     { name = "chromadb", specifier = ">=1.5.5" },
     { name = "croniter", specifier = ">=6.2.4" },
