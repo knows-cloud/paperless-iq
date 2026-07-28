@@ -17,7 +17,7 @@ jobs:
       - uses: actions/checkout@v7
 
       - name: Set up QEMU (cross-compilation for arm64)
-        uses: docker/setup-qemu-action@v3
+        uses: docker/setup-qemu-action@v4
 
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v4
