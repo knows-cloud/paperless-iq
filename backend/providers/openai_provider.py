@@ -47,11 +47,11 @@ class OpenAIProvider:
             messages = _inject_images_openai(messages, images)
 
         client = self._client()
-        kwargs: dict = dict(
-            model=self._model,
-            max_tokens=max_tokens,
-            messages=messages,
-        )
+        kwargs: dict = {
+            "model": self._model,
+            "max_tokens": max_tokens,
+            "messages": messages,
+        }
         if output_schema:
             kwargs["response_format"] = {
                 "type": "json_schema",

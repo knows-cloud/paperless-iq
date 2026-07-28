@@ -51,7 +51,7 @@ def _decrypt_creds(stored: str) -> str:
             return decrypt_credential(stored[len(_CRED_ENC_PREFIX_V1):], secret_key)
         return stored  # plaintext / very old legacy
     except Exception:
-        logger.error("Failed to decrypt stored credentials — wrong machine key?", exc_info=True)
+        logger.exception("Failed to decrypt stored credentials — wrong machine key?")
         return ""
 
 logger = logging.getLogger(__name__)

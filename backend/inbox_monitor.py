@@ -12,8 +12,9 @@ from __future__ import annotations
 
 import logging
 import math
-from datetime import datetime, timezone
-from typing import Any, Callable, Coroutine
+from collections.abc import Callable, Coroutine
+from datetime import UTC, datetime
+from typing import Any
 
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -62,7 +63,7 @@ class InboxMonitor:
         new_ids = [did for did in inbox_doc_ids if did not in seen_ids]
 
         submitted: list[int] = []
-        now = datetime.now(timezone.utc)
+        now = datetime.now(UTC)
 
         for doc_id in new_ids:
             # Record as seen BEFORE submitting to prevent duplicates
@@ -83,7 +84,7 @@ class InboxMonitor:
         """Mark a document as analyzed after successful analysis."""
         row = await self._session.get(DocumentTrackingORM, document_id)
         if row:
-            row.last_analyzed_at = datetime.now(timezone.utc)
+            row.last_analyzed_at = datetime.now(UTC)
             await self._session.commit()
 
 
@@ -141,7 +142,7 @@ class Scheduler:
         # Process in batches
         batches: list[list[int]] = []
         num_batches = math.ceil(len(unanalyzed) / self._batch_size)
-        now = datetime.now(timezone.utc)
+        now = datetime.now(UTC)
 
         for i in range(num_batches):
             batch = unanalyzed[i * self._batch_size : (i + 1) * self._batch_size]
@@ -160,7 +161,7 @@ class Scheduler:
                 # Mark as analyzed
                 row = await self._session.get(DocumentTrackingORM, doc_id)
                 if row:
-                    row.last_analyzed_at = datetime.now(timezone.utc)
+                    row.last_analyzed_at = datetime.now(UTC)
                     await self._session.commit()
 
             batches.append(batch)

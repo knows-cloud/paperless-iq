@@ -25,7 +25,6 @@ import logging
 import os
 import secrets
 import time
-from typing import Optional
 
 import httpx
 from fastapi import HTTPException, Request, status
@@ -71,7 +70,7 @@ def create_session(username: str) -> str:
     return f"{jti}.{u_b64}.{exp}.{sig}"
 
 
-def get_session_user(token: str) -> Optional[str]:
+def get_session_user(token: str) -> str | None:
     """Validate *token* and return the username, or None if invalid/expired."""
     try:
         parts = token.split(".")

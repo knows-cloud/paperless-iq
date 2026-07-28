@@ -41,14 +41,12 @@ class MemoryStore:
     async def _embed(self, text: str, *, is_query: bool = False) -> list[float]:
         try:
             return await self._llm.embed(text, is_query=is_query)
-        except Exception as exc:
+        except Exception:
             # Surface the real provider exception so the root cause is visible even
             # when a caller's broad except only logs a higher-level message.
-            logger.error(
-                "MemoryStore._embed() failed (provider=%s): %s",
+            logger.exception(
+                "MemoryStore._embed() failed (provider=%s)",
                 type(self._llm).__name__,
-                exc,
-                exc_info=True,
             )
             raise
 

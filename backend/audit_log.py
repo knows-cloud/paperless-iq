@@ -22,7 +22,7 @@ from __future__ import annotations
 import csv
 import io
 import logging
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 from uuid import UUID, uuid4
 
 from sqlalchemy import and_, delete, func, select
@@ -80,7 +80,7 @@ class AuditLogService:
             document_title: Optional document title for display.
             session_id: Optional UUID string for correlating related events.
         """
-        now = changed_at or datetime.now(timezone.utc)
+        now = changed_at or datetime.now(UTC)
         entries: list[AuditLogEntry] = []
 
         for field_name, (prev, new) in changes.items():
@@ -130,7 +130,7 @@ class AuditLogService:
             session_id: Optional UUID string for correlating related events.
             changed_at: Override timestamp.
         """
-        now = changed_at or datetime.now(timezone.utc)
+        now = changed_at or datetime.now(UTC)
         row = AuditLogORM(
             id=str(uuid4()),
             document_id=document_id or 0,
@@ -266,7 +266,7 @@ class AuditLogService:
         Returns:
             Number of deleted entries.
         """
-        cutoff = datetime.now(timezone.utc) - timedelta(days=retention_days)
+        cutoff = datetime.now(UTC) - timedelta(days=retention_days)
         stmt = delete(AuditLogORM).where(AuditLogORM.changed_at < cutoff)
         result = await self._session.execute(stmt)
         await self._session.commit()

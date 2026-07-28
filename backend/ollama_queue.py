@@ -10,8 +10,9 @@ from __future__ import annotations
 import asyncio
 import logging
 import time
+from collections.abc import Awaitable, Callable
 from enum import IntEnum
-from typing import Any, Awaitable, Callable, TypeVar
+from typing import Any, TypeVar
 
 logger = logging.getLogger(__name__)
 
@@ -199,7 +200,7 @@ class OllamaQueue:
                 priority_val, _, future, fn, label = await asyncio.wait_for(
                     self._queue.get(), timeout=1.0
                 )
-            except asyncio.TimeoutError:
+            except TimeoutError:
                 # Nothing in queue — resume background if paused
                 if not self._pause_event.is_set():
                     self._pause_event.set()
