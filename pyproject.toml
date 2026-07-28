@@ -6,16 +6,16 @@ requires-python = ">=3.12"
 dependencies = [
     "aiosqlite>=0.22.1",
     "alembic>=1.18.5",
-    "anthropic>=0.118.0",
-    "boto3>=1.43.54",
+    "anthropic>=0.120.0",
+    "boto3>=1.43.57",
     "chromadb>=1.5.5",
     "croniter>=6.2.4",
     "cryptography>=48.0.1",
-    "fastapi>=0.139.2",
+    "fastapi>=0.140.7",
     "greenlet>=3.5.4",
     "httpx>=0.28.1",
     "ollama>=0.6.1",
-    "openai>=2.47.0",
+    "openai>=2.48.0",
     "pydantic>=2.12.5",
     "Pillow>=10.0",
     "pypdfium2>=5.12.1",
@@ -28,7 +28,7 @@ dependencies = [
 # Local cross-encoder reranker (rerank_method="local"). Heavy (pulls torch);
 # installed only on demand. Imported lazily at runtime — see backend/rerankers.py.
 rerank-local = [
-    "sentence-transformers>=5.6.0",
+    "sentence-transformers>=5.6.1",
 ]
 # Sparse encoder for Qdrant hybrid search (qdrant_hybrid_search). Pulls
 # onnxruntime; imported lazily — see QdrantVectorStore._ensure_sparse_encoder.
@@ -39,7 +39,7 @@ qdrant-hybrid = [
 [dependency-groups]
 dev = [
     "bandit>=1.9.4",
-    "hypothesis>=6.161.0",
+    "hypothesis>=6.163.0",
     "pytest>=9.1.1",
     "pytest-asyncio>=1.3.0",
     "ruff>=0.15.22",
