@@ -18,7 +18,7 @@ import logging
 import os
 import time
 from collections.abc import Mapping
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from typing import Any
 from uuid import UUID, uuid4
 
@@ -292,7 +292,7 @@ class ApprovalQueueService:
         )
 
         # Write audit log entries — one per changed field
-        now = datetime.now(timezone.utc)
+        now = datetime.now(UTC)
         for field in editable_fields:
             old_val = original[field]
             new_val = getattr(row, field)
@@ -428,7 +428,7 @@ class ApprovalQueueService:
             change_source=change_source,
             action_type="rejected",
             session_id=session_id,
-            changed_at=datetime.now(timezone.utc),
+            changed_at=datetime.now(UTC),
             suggestion_id=row.id,
         )
         self._session.add(rejection_event)

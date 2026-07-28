@@ -312,7 +312,7 @@ class PaperlessIQConfig(BaseModel):
         return v
 
     @model_validator(mode="after")
-    def validate_grooming_thresholds(self) -> "PaperlessIQConfig":
+    def validate_grooming_thresholds(self) -> PaperlessIQConfig:
         if self.grooming_add_threshold <= self.grooming_remove_threshold:
             raise ValueError(
                 "grooming_add_threshold must be greater than grooming_remove_threshold "
@@ -321,7 +321,7 @@ class PaperlessIQConfig(BaseModel):
         return self
 
     @model_validator(mode="after")
-    def validate_search_ef(self) -> "PaperlessIQConfig":
+    def validate_search_ef(self) -> PaperlessIQConfig:
         """The active backend's HNSW query candidate list (search_ef) must be
         large enough to serve the requested + overfetched results, or recall
         silently caps. Only the active backend's ef field is enforced."""

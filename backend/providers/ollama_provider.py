@@ -47,11 +47,11 @@ class OllamaProvider:
         if images:
             messages = _inject_images_ollama(messages, images)
 
-        kwargs: dict = dict(
-            model=self._model,
-            messages=messages,
-            options={"num_predict": max_tokens},
-        )
+        kwargs: dict = {
+            "model": self._model,
+            "messages": messages,
+            "options": {"num_predict": max_tokens},
+        }
         if output_schema:
             kwargs["format"] = output_schema
 

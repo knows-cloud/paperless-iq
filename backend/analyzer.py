@@ -5,7 +5,7 @@ from __future__ import annotations
 import json
 import logging
 import re
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from typing import Any
 from uuid import uuid4
 
@@ -367,7 +367,7 @@ def _build_suggestion(
         id=uuid4(),
         document_id=document_id,
         status="pending",
-        created_at=datetime.now(timezone.utc),
+        created_at=datetime.now(UTC),
         title=parsed.get("title") or None,
         tags=parsed.get("tags") or [],
         correspondent=parsed.get("correspondent") or None,

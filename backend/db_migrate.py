@@ -38,7 +38,8 @@ from alembic import command
 from alembic.config import Config
 from alembic.runtime.migration import MigrationContext
 from alembic.script import ScriptDirectory
-from sqlalchemy import create_engine, inspect as sa_inspect
+from sqlalchemy import create_engine
+from sqlalchemy import inspect as sa_inspect
 
 from backend.database import DATABASE_URL
 

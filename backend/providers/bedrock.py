@@ -163,7 +163,7 @@ class BedrockProvider:
         for _attempt in range(3):
             client = self._runtime_client()
 
-            def _invoke() -> dict:
+            def _invoke(client=client) -> dict:
                 return client.converse(**converse_kwargs)
 
             try:
@@ -241,7 +241,7 @@ class BedrockProvider:
         for attempt in range(5):
             client = self._runtime_client()
 
-            def _invoke() -> dict:
+            def _invoke(client=client) -> dict:
                 response = client.invoke_model(
                     modelId=model,
                     body=body,

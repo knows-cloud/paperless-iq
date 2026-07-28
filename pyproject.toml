@@ -60,6 +60,22 @@ target-version = "py312"
 # Alembic-generated files have their own conventions; don't lint them.
 extend-exclude = ["backend/alembic", ".venv"]
 
+[tool.ruff.lint]
+# BLE001/S110: this codebase's established resilience pattern is a broad
+# `except Exception` around network calls, best-effort cleanup and provider
+# adapters, so one document/request failure doesn't take down a batch job or
+# the whole process — see e.g. backend/main.py's version-check and
+# backend/approval_queue.py's Paperless NGX calls. bandit already gates on
+# this at --severity-level medium for the equivalent B110 findings; mirror
+# that acceptance here instead of sprinkling 50+ `# noqa` comments.
+ignore = ["BLE001", "S110"]
+
+[tool.ruff.lint.flake8-bugbear]
+# FastAPI's DI pattern is `param: T = Depends(...)` (see D-05 in CLAUDE.md) —
+# these calls are cheap sentinel factories evaluated once at route
+# registration, not the mutable-default-argument footgun B008 exists to catch.
+extend-immutable-calls = ["fastapi.Depends", "fastapi.Query", "fastapi.Body", "fastapi.Header", "fastapi.Cookie", "fastapi.Path"]
+
 [tool.ruff.lint.per-file-ignores]
 # logging.basicConfig() must run before backend modules are imported so their
 # module-level loggers inherit the config — this intentionally puts statements

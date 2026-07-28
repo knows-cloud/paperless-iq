@@ -47,7 +47,7 @@ class AnthropicProvider:
             filtered = _inject_images_anthropic(filtered, images)
 
         client = self._client()
-        kwargs: dict = dict(model=self._model, max_tokens=max_tokens, messages=filtered)
+        kwargs: dict = {"model": self._model, "max_tokens": max_tokens, "messages": filtered}
         if system:
             kwargs["system"] = system
         if output_schema:

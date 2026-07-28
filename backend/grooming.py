@@ -16,7 +16,7 @@ import asyncio
 import json
 import logging
 import unicodedata
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from difflib import SequenceMatcher
 from typing import Any
 
@@ -94,15 +94,15 @@ def _name_similarity(a: str, b: str) -> float:
     return SequenceMatcher(None, _normalise_name(a), _normalise_name(b)).ratio()
 
 
-def _as_utc(dt: "datetime | None") -> "datetime | None":
+def _as_utc(dt: datetime | None) -> datetime | None:
     """Treat naive timestamps as UTC for safe comparison."""
     if dt is None:
         return None
-    return dt.replace(tzinfo=timezone.utc) if dt.tzinfo is None else dt
+    return dt.replace(tzinfo=UTC) if dt.tzinfo is None else dt
 
 
 def _entity_needs_rescan(
-    row: "EntityDescriptionORM", latest_doc_embed: "datetime | None" = None,
+    row: EntityDescriptionORM, latest_doc_embed: datetime | None = None,
 ) -> bool:
     """For incremental (scheduled) scans: True when the entity is new (never
     scanned), its description changed since the last scan, or any document was
@@ -120,9 +120,7 @@ def _entity_needs_rescan(
     if updated is not None and updated > last:
         return True  # description edited since last scan
     embed = _as_utc(latest_doc_embed)
-    if embed is not None and embed > last:
-        return True  # a document was re-embedded since last scan
-    return False
+    return embed is not None and embed > last  # a document was re-embedded since last scan
 
 
 def _cosine(v1: list[float], v2: list[float]) -> float:
@@ -427,7 +425,7 @@ class GroomingService:
         if row is None:
             raise ValueError(f"Entity {entity_type}:{entity_id} not found")
 
-        now = datetime.now(timezone.utc)
+        now = datetime.now(UTC)
         changed = False
         if description is not None and description != row.description:
             row.description = description.strip() or None
@@ -517,7 +515,7 @@ class GroomingService:
         description = await provider.complete(prompt, max_tokens=200)
         description = description.strip().strip('"').strip()
 
-        now = datetime.now(timezone.utc)
+        now = datetime.now(UTC)
         row.description = description
         row.description_source = "llm"
         row.embedding_stored = False
@@ -796,7 +794,7 @@ class GroomingService:
                     r.raise_for_status()
 
                 # 3. Audit one row per affected document
-                now = datetime.now(timezone.utc)
+                now = datetime.now(UTC)
                 for doc_id in affected_ids:
                     doc_info = next((d for d in affected if d["id"] == doc_id), {})
                     audit = AuditLogORM(
@@ -854,7 +852,7 @@ class GroomingService:
         )
         result = await self._db.execute(q)
         cutoff = (
-            datetime.now(timezone.utc) - timedelta(days=resuggest_days)
+            datetime.now(UTC) - timedelta(days=resuggest_days)
             if resuggest_days > 0 else None
         )
         keys: set[tuple] = set()
@@ -862,7 +860,7 @@ class GroomingService:
             if cutoff is not None:
                 dismissed_at = d.dismissed_at
                 if dismissed_at is not None and dismissed_at.tzinfo is None:
-                    dismissed_at = dismissed_at.replace(tzinfo=timezone.utc)
+                    dismissed_at = dismissed_at.replace(tzinfo=UTC)
                 if dismissed_at is not None and dismissed_at < cutoff:
                     continue  # expired — may re-suggest
             keys.add((d.entity_type, d.entity_id, d.document_id, d.action))
@@ -1048,17 +1046,17 @@ class GroomingService:
 
             for eid, data in per_entity.items():
                 row = data["row"]
-                kwargs = dict(
-                    doc_scores=data["doc_scores"],
-                    supporting_chunks=data["supporting"],
-                    assigned_doc_ids=data["assigned_ids"],
-                    cohort_percentiles=data["cohort_percentiles"],
-                    add_threshold=add_threshold,
-                    remove_threshold=remove_threshold,
-                    remove_percentile=remove_percentile,
-                    min_supporting_chunks=min_chunks,
-                    top_k=top_k,
-                )
+                kwargs = {
+                    "doc_scores": data["doc_scores"],
+                    "supporting_chunks": data["supporting"],
+                    "assigned_doc_ids": data["assigned_ids"],
+                    "cohort_percentiles": data["cohort_percentiles"],
+                    "add_threshold": add_threshold,
+                    "remove_threshold": remove_threshold,
+                    "remove_percentile": remove_percentile,
+                    "min_supporting_chunks": min_chunks,
+                    "top_k": top_k,
+                }
                 if entity_type == "tag":
                     actions = classify_tag_entity(**kwargs)
                 else:
@@ -1127,7 +1125,6 @@ class GroomingService:
         asyncio.create_task(self._scan_bg(entity_types, incremental))
 
     async def _scan_bg(self, entity_types: list[str], incremental: bool = False) -> None:
-        global _scan_status
         async with _scan_lock:
             from backend.database import AsyncSessionLocal
             _scan_status.update({
@@ -1158,7 +1155,7 @@ class GroomingService:
                         enqueued, summary,
                     )
 
-                    now = datetime.now(timezone.utc)
+                    now = datetime.now(UTC)
                     scanned = await db.execute(
                         select(EntityDescriptionORM).where(
                             EntityDescriptionORM.entity_type.in_(entity_types),
@@ -1174,7 +1171,7 @@ class GroomingService:
                 _scan_status.update({
                     "running": False,
                     "current_entity": "",
-                    "last_run_at": datetime.now(timezone.utc).isoformat(),
+                    "last_run_at": datetime.now(UTC).isoformat(),
                     "last_summary": summary,
                 })
 
@@ -1185,9 +1182,10 @@ class GroomingService:
         metadata (fetched here) — anything the scan saw that has since changed
         is silently dropped rather than enqueued stale.
         """
+        from uuid import uuid4
+
         from backend.approval_queue import ApprovalQueueService
         from backend.models import MetadataSuggestion
-        from uuid import uuid4
 
         max_suggestions = getattr(self._config, "grooming_max_suggestions_per_scan", 50)
         embed_provider_name = getattr(self._config, "embed_provider", "ollama")
@@ -1216,7 +1214,7 @@ class GroomingService:
             name_maps[etype] = {e["id"]: e["name"] for e in entities}
 
         queue_svc = ApprovalQueueService(self._db)
-        now = datetime.now(timezone.utc)
+        now = datetime.now(UTC)
         enqueued = 0
 
         for doc_id, actions in by_doc.items():

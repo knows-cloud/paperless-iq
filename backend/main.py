@@ -17,11 +17,11 @@ logging.basicConfig(
     format="%(levelname)s:%(name)s: %(message)s",
     force=True,  # override any handler uvicorn may have added first
 )
+from collections.abc import AsyncGenerator, Callable, Coroutine
 from contextlib import asynccontextmanager
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
-from collections.abc import Callable, Coroutine
-from typing import Annotated, Any, AsyncGenerator
+from typing import Annotated, Any
 from uuid import UUID, uuid4
 
 import httpx
@@ -30,7 +30,9 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, Response
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
-from sqlalchemy import delete as sa_delete, func, select, update as sa_update
+from sqlalchemy import delete as sa_delete
+from sqlalchemy import func, select
+from sqlalchemy import update as sa_update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from backend.analyzer import PaperlessNGXClient
@@ -45,13 +47,12 @@ def _get_app_version() -> str:
         pyproject = Path(__file__).parent.parent / "pyproject.toml"
         with open(pyproject, "rb") as f:
             return tomllib.load(f)["project"]["version"]
-from backend.models import VisionAnalysisResult
-from backend.pdf_utils import get_page_count
 from backend.approval_queue import ApprovalQueueService, creation_policy_map
 from backend.audit_log import AuditLogService, rows_to_csv
 from backend.auth import (
-    check_login_rate_limit,
     PaperlessUnreachableError,
+    _is_auth_required,
+    check_login_rate_limit,
     check_webhook_secret,
     create_session,
     get_session_user,
@@ -59,12 +60,13 @@ from backend.auth import (
     revoke_session,
     validate_paperless_credentials,
 )
-from backend.auth import _is_auth_required
 from backend.database import AsyncSessionLocal, get_session
-from backend.keystore import get_machine_key
+from backend.grooming import GroomingService
 from backend.inbox_monitor import InboxMonitor, Scheduler
+from backend.keystore import get_machine_key
 from backend.manual_analysis import ManualAnalysisService
-from backend.models import MetadataSuggestion
+from backend.memory_store import make_memory_store
+from backend.models import MetadataSuggestion, VisionAnalysisResult
 from backend.ollama_queue import OllamaQueue, Priority
 from backend.orm_models import (
     ConversationSessionORM,
@@ -73,14 +75,13 @@ from backend.orm_models import (
     UserMemoryORM,
     UserPermissionsORM,
 )
-from backend.memory_store import make_memory_store
+from backend.pdf_utils import get_page_count
+from backend.protocols import VectorStore
 from backend.provider_registry import build_providers
-from backend.vector_factory import make_vector_store
-from backend.vector_migrate import migrate_embeddings, migrate_memories
 from backend.rate_limiter import RateLimiter
 from backend.settings_service import SettingsService
-from backend.protocols import VectorStore
-from backend.grooming import GroomingService
+from backend.vector_factory import make_vector_store
+from backend.vector_migrate import migrate_embeddings, migrate_memories
 
 logger = logging.getLogger(__name__)
 
@@ -100,7 +101,9 @@ def _resolve_embed_provider(config: Any, providers: dict) -> Any | None:
     ep = getattr(config, "embed_provider", "ollama")
 
     if ep == "ollama":
-        from backend.providers.ollama_provider import OllamaProvider  # local provider; only load if needed
+        from backend.providers.ollama_provider import (
+            OllamaProvider,  # local provider; only load if needed
+        )
         embed_model = config.embedding_model or "nomic-embed-text"
         ollama_url = config.ollama_url or os.environ.get("OLLAMA_URL", "http://localhost:11434")
         return OllamaProvider(base_url=ollama_url, model=embed_model)
@@ -121,8 +124,8 @@ def _resolve_embed_provider(config: Any, providers: dict) -> Any | None:
                 creds_str = raw.decode("latin-1") if isinstance(raw, bytes) else str(raw)
                 creds = _json.loads(creds_str)
                 secret_key = get_machine_key()
-                from backend.providers.encryption import encrypt_credential
                 from backend.providers.bedrock import BedrockProvider
+                from backend.providers.encryption import encrypt_credential
                 session_token_enc = None
                 if creds.get("session_token"):
                     session_token_enc = encrypt_credential(creds["session_token"], secret_key)
@@ -319,15 +322,15 @@ async def _cron_loop(
             expr = (get_expr() or "").strip() or None
             if expr != cur_expr:
                 cur_expr = expr
-                next_run = _cron_next(expr, datetime.now(timezone.utc)) if expr else None
+                next_run = _cron_next(expr, datetime.now(UTC)) if expr else None
                 if expr and next_run is None:
                     logger.warning("%s: invalid cron %r — schedule disabled.", name, expr)
                 elif expr:
                     logger.info("%s: scheduled (next run %s UTC).", name, next_run)
-            if next_run is not None and datetime.now(timezone.utc) >= next_run:
+            if next_run is not None and datetime.now(UTC) >= next_run:
                 logger.info("%s: cron due — running.", name)
                 await run_job()
-                next_run = _cron_next(cur_expr, datetime.now(timezone.utc))
+                next_run = _cron_next(cur_expr, datetime.now(UTC))
         except asyncio.CancelledError:
             raise
         except Exception:
@@ -679,7 +682,7 @@ async def _session_expiry_loop(app: FastAPI) -> None:
             providers = getattr(app.state, "providers", None)
             memory_store = getattr(app.state, "memory_store", None)
 
-            cutoff = datetime.now(timezone.utc) - timedelta(hours=24)
+            cutoff = datetime.now(UTC) - timedelta(hours=24)
             async with AsyncSessionLocal() as db:
                 result = await db.execute(
                     select(ConversationSessionORM).where(
@@ -726,7 +729,7 @@ async def _record_document_embed(doc_id: int, title: str | None, source: str) ->
     try:
         async with AsyncSessionLocal() as db:
             tracking = await db.get(DocumentTrackingORM, doc_id)
-            now = datetime.now(timezone.utc)
+            now = datetime.now(UTC)
             if tracking is None:
                 tracking = DocumentTrackingORM(document_id=doc_id, first_seen_at=now)
                 db.add(tracking)
@@ -773,7 +776,7 @@ async def schedule_reembed(
     async with AsyncSessionLocal() as db:
         tracking = await db.get(DocumentTrackingORM, doc_id)
         if tracking and tracking.reembed_dirty_since is None:
-            tracking.reembed_dirty_since = datetime.now(timezone.utc)
+            tracking.reembed_dirty_since = datetime.now(UTC)
             await db.commit()
 
 
@@ -789,7 +792,7 @@ async def _daily_reembed_loop(app: FastAPI) -> None:
             config = _settings_svc.config
             if getattr(config, "embed_refresh_mode", "immediate") != "daily":
                 continue
-            now_utc = datetime.now(timezone.utc)
+            now_utc = datetime.now(UTC)
             flush_hour = getattr(config, "embed_refresh_hour", 3)
             if now_utc.hour != flush_hour or now_utc.minute != 0:
                 continue
@@ -953,10 +956,10 @@ def _parse_paperless_dt(value: str | None) -> datetime | None:
     if not value:
         return None
     try:
-        dt = datetime.fromisoformat(value.replace("Z", "+00:00"))
+        dt = datetime.fromisoformat(value)
     except (ValueError, TypeError):
         return None
-    return dt if dt.tzinfo else dt.replace(tzinfo=timezone.utc)
+    return dt if dt.tzinfo else dt.replace(tzinfo=UTC)
 
 
 async def _run_content_drift_reindex(app: FastAPI) -> None:
@@ -977,7 +980,7 @@ async def _run_content_drift_reindex(app: FastAPI) -> None:
         return
 
     base, headers = pc._base_url, pc._headers
-    cutoff = (datetime.now(timezone.utc) - timedelta(days=days + 1)).date().isoformat()
+    cutoff = (datetime.now(UTC) - timedelta(days=days + 1)).date().isoformat()
 
     # id→name lookups so the re-embedded vector keeps its D-18 metadata prefix.
     tag_names: dict[int, str] = {}
@@ -1020,7 +1023,7 @@ async def _run_content_drift_reindex(app: FastAPI) -> None:
                     last = t.last_embedded_at if t else None
                 if last is not None:
                     if last.tzinfo is None:
-                        last = last.replace(tzinfo=timezone.utc)
+                        last = last.replace(tzinfo=UTC)
                     if modified is not None and last >= modified:
                         continue  # vector already at/after the content change
                 content = doc.get("content", "")
@@ -1060,16 +1063,16 @@ async def _content_drift_loop(app: FastAPI) -> None:
     <= 0. First run one interval after startup, then every interval — the
     webhook stays the primary, real-time re-embed path."""
     days0 = getattr(_settings_svc.config, "content_drift_reindex_days", 7) or 7
-    next_run = datetime.now(timezone.utc) + timedelta(days=days0)
+    next_run = datetime.now(UTC) + timedelta(days=days0)
     while True:
         await asyncio.sleep(3600)  # hourly check is plenty for a weekly job
         try:
             days = getattr(_settings_svc.config, "content_drift_reindex_days", 0)
             if days <= 0:
                 continue
-            if datetime.now(timezone.utc) >= next_run:
+            if datetime.now(UTC) >= next_run:
                 await _run_content_drift_reindex(app)
-                next_run = datetime.now(timezone.utc) + timedelta(days=days)
+                next_run = datetime.now(UTC) + timedelta(days=days)
         except Exception:
             logger.warning("Content-drift loop error", exc_info=True)
 
@@ -1388,7 +1391,7 @@ async def _upsert_user_permissions(username: str, is_ng_admin: bool) -> None:
             select(UserPermissionsORM).where(UserPermissionsORM.username == username)
         )
         perms = result.scalar_one_or_none()
-        now = datetime.now(timezone.utc)
+        now = datetime.now(UTC)
 
         if perms is None:
             if is_ng_admin and config.sync_ng_admins:
@@ -1695,7 +1698,7 @@ async def empty_queue(
     Clutter-clearing, not judgment: grooming dismissal memory is NOT written,
     so a later scan may re-suggest what was wiped here.
     """
-    pending, total = await svc.list(status="pending", page=1, page_size=10000)
+    pending, _total = await svc.list(status="pending", page=1, page_size=10000)
     rejected = 0
     for s in pending:
         try:
@@ -2125,7 +2128,7 @@ async def _extract_memories_from_session(session, provider, memory_store, config
                     await db.execute(
                         sa_update(UserMemoryORM)
                         .where(UserMemoryORM.id == existing_id)
-                        .values(text=fact, updated_at=datetime.now(timezone.utc))
+                        .values(text=fact, updated_at=datetime.now(UTC))
                     )
                     await db.commit()
                     await memory_store.upsert(existing_id, fact)
@@ -2231,7 +2234,7 @@ async def update_memory(
     await db.execute(
         sa_update(UserMemoryORM)
         .where(UserMemoryORM.id == memory_id)
-        .values(text=body.text.strip(), updated_at=datetime.now(timezone.utc))
+        .values(text=body.text.strip(), updated_at=datetime.now(UTC))
     )
     await db.commit()
     if memory_store:
@@ -2510,7 +2513,7 @@ async def discover(body: DiscoverBody, request: Request) -> dict:
     try:
         _llm_timeout = getattr(config, "llm_timeout_seconds", 120) or None
         answer = await asyncio.wait_for(provider.chat(llm_messages, 2048), timeout=_llm_timeout)
-    except asyncio.TimeoutError:
+    except TimeoutError:
         raise HTTPException(
             status_code=504,
             detail=(
@@ -2573,7 +2576,7 @@ async def discover(body: DiscoverBody, request: Request) -> dict:
                         .values(
                             turns=new_turns,
                             summary=new_summary,
-                            updated_at=datetime.now(timezone.utc),
+                            updated_at=datetime.now(UTC),
                         )
                     )
                 else:
@@ -2972,8 +2975,8 @@ async def test_paperless_connection() -> JSONResponse:
         return JSONResponse(content={"status": "error", "detail": "Could not connect to Paperless NGX. Check PAPERLESS_URL."})
     except httpx.TimeoutException:
         return JSONResponse(content={"status": "error", "detail": "Connection to Paperless NGX timed out."})
-    except Exception as exc:
-        logger.exception("Connection test failed unexpectedly: %s", exc)
+    except Exception:
+        logger.exception("Connection test failed unexpectedly")
         return JSONResponse(content={"status": "error", "detail": "An unexpected error occurred. Check server logs for details."})
 
 
@@ -4038,7 +4041,7 @@ async def update_piq_user(
     row.can_discover = body.can_discover
     row.can_settings = body.can_settings
     row.can_groom = body.can_groom
-    row.updated_at = datetime.now(timezone.utc)
+    row.updated_at = datetime.now(UTC)
     await session.commit()
     return {"detail": f"Permissions updated for '{username}'."}
 
