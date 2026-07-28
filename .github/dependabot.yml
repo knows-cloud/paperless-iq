@@ -14,6 +14,19 @@ updates:
         patterns:
           - "@mantine/*"
 
+      # React 19 refuses to run when react and react-dom resolve to different
+      # versions: createRoot throws "Minified React error #527" before anything
+      # mounts, and with no error boundary above it the whole UI is a blank page.
+      # tsc, eslint and `vite build` all pass on a skew — it only fails in a
+      # browser, which nothing in CI exercises. v1.1.1 shipped exactly this
+      # (react 19.2.8 / react-dom 19.2.7, from a solo react bump) and was DOA.
+      # Always bump the pair together. Names are listed exactly, not as
+      # "react*", so react-i18next keeps getting its own independent PR.
+      react:
+        patterns:
+          - "react"
+          - "react-dom"
+
   # uv/pip — Python backend dependencies. This block DOES cover Python; the
   # boto3/openai/fastapi/etc. bumps come from here. Note: Dependabot opens uv
   # *version* PRs, but its *security*-update support for the uv ecosystem lags,
