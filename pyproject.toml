@@ -7,7 +7,7 @@ dependencies = [
     "aiosqlite>=0.22.1",
     "alembic>=1.18.5",
     "anthropic>=0.120.0",
-    "boto3>=1.43.57",
+    "boto3>=1.43.62",
     "chromadb>=1.5.5",
     "croniter>=6.2.4",
     "cryptography>=48.0.1",
@@ -15,13 +15,13 @@ dependencies = [
     "greenlet>=3.5.4",
     "httpx>=0.28.1",
     "ollama>=0.6.1",
-    "openai>=2.48.0",
+    "openai>=2.52.0",
     "pydantic>=2.12.5",
     "Pillow>=10.0",
     "pypdfium2>=5.12.1",
     "qdrant-client>=1.12",
     "sqlalchemy>=2.0.51",
-    "uvicorn>=0.51.0",
+    "uvicorn>=0.52.1",
 ]
 
 [project.optional-dependencies]
