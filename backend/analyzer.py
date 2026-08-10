@@ -62,7 +62,31 @@ def _build_output_schema(
     cf_properties: dict[str, Any] = {}
     if custom_field_defs:
         for cf in custom_field_defs:
-            cf_properties[cf["name"]] = {"type": "string", "description": cf.get("data_type", "")}
+            field_name = cf["name"]
+            data_type = cf.get("data_type", "")
+            
+            if data_type == "select":
+                options = (cf.get("extra_data") or {}).get("select_options", [])
+
+                option_labels = [
+                    option["label"]
+                    for option in options
+                    if option.get("label")
+                ]
+
+                cf_properties[field_name] = {
+                    "type": ["string", "null"],
+                    "enum": option_labels + [None],
+                    "description": (
+                        "Select field. The value MUST be one of the registered "
+                        "option labels, or null when no value is selected."
+                    ),
+                }
+            else:
+                cf_properties[field_name] = {
+                    "type": ["string", "null"],
+                    "description": data_type,
+                }
 
     properties: dict[str, Any] = {
         "title": {"type": "string", "description": "Descriptive document title"},
@@ -198,6 +222,7 @@ class PaperlessNGXClient:
                         "id": item["id"],
                         "name": item["name"],
                         "data_type": item.get("data_type", ""),
+                        "extra_data": item.get("extra_data") or {},
                     })
                 url = data.get("next")
         return fields
@@ -292,6 +317,7 @@ async def _apply_creation_policy(
     all_correspondents: list[str] | None = None,
     all_document_types: list[str] | None = None,
     all_storage_paths: list[str] | None = None,
+    custom_field_defs: list[dict[str, Any]] | None = None,
 ) -> MetadataSuggestion:
     """
     Enforce creation policies for tags, correspondents, document types and
@@ -350,6 +376,68 @@ async def _apply_creation_policy(
         if suggestion.storage_path.lower() not in existing_set:
             suggestion = suggestion.model_copy(update={"storage_path": None})
 
+    # --- Custom fields ---
+    if suggestion.custom_fields:
+        validated_custom_fields: dict[str, Any] = {}
+
+        # Custom field definitions were already fetched by DocumentAnalyzer.
+        # Build a lookup by field name.
+        custom_field_lookup = {
+            cf["name"]: cf
+            for cf in (custom_field_defs or [])
+        }
+
+        for field_name, value in suggestion.custom_fields.items():
+            cf = custom_field_lookup.get(field_name)
+
+            # Unknown custom field: keep it for the existing
+            # approval-time resolution/validation path.
+            if cf is None:
+                validated_custom_fields[field_name] = value
+                continue
+
+            # Empty value -> null
+            if value is None or (
+                isinstance(value, str) and not value.strip()
+            ):
+                validated_custom_fields[field_name] = None
+                continue
+
+            # Select fields use the human-readable option label.
+            # The label is converted to the Paperless NGX option ID
+            # later at approval time.
+            if cf.get("data_type") == "select":
+                options = (
+                    (cf.get("extra_data") or {})
+                    .get("select_options", [])
+                )
+
+                valid_labels = {
+                    str(option["label"]).strip().lower()
+                    for option in options
+                    if option.get("label")
+                }
+
+                normalized_value = str(value).strip().lower()
+
+                if normalized_value in valid_labels:
+                    validated_custom_fields[field_name] = str(value).strip()
+                else:
+                    logger.warning(
+                        "Invalid select label for custom field %r: %r. "
+                        "Expected one of registered option labels; "
+                        "setting to null.",
+                        field_name,
+                        value,
+                    )
+                    validated_custom_fields[field_name] = None
+            else:
+                validated_custom_fields[field_name] = value
+
+        suggestion = suggestion.model_copy(
+            update={"custom_fields": validated_custom_fields}
+        )
+      
     return suggestion
 
 
@@ -765,6 +853,7 @@ class DocumentAnalyzer:
             all_tags=all_tags,
             all_correspondents=all_correspondents,
             all_document_types=all_document_types,
+            custom_field_defs=self._custom_field_defs,
         )
 
         return suggestion
