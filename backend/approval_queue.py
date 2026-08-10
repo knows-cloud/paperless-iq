@@ -786,7 +786,7 @@ class ApprovalQueueService:
                                 selected_id = str(option_id)
                                 break
 
-                     if selected_id is None:
+                    if selected_id is None:
                         logger.warning(
                             "Invalid select value for custom field %r: %r. "
                             "Expected a registered option ID or label; "
@@ -795,9 +795,9 @@ class ApprovalQueueService:
                             value,
                         )
                         value = None
-                     else:
-                         value = selected_id
-          　    else:
+                    else:
+                        value = selected_id
+                else:
                     value = _format_custom_field_value(value, data_type)
 
                 result.append({
