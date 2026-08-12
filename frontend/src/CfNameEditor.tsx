@@ -154,7 +154,7 @@ export default function CfNameEditor({
           }}
           style={{ flex: 1 }}
         />
-    　) : (      
+      ) : (
       <input
         value={String(value ?? "")}
         style={{ ...inputBase, flex: 1 }}
