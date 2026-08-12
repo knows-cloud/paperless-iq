@@ -612,7 +612,7 @@ export default function QueuePage() {
                     const cf = (cfQ.data ?? []).find(
                       (c: PaperlessCustomField) => c.name === key  
                     );
-　　　　　　　　　　　const displayValue =
+                    const displayValue =
                       cf?.data_type === "select"
                         ? cf.extra_data?.select_options?.find(
                             (option: { id?: string; label?: string }) =>
@@ -633,7 +633,7 @@ export default function QueuePage() {
                       onRename={newName => {
                         if (!newName || newName === key) return;
                         
-                      　const cf = { ...item.custom_fields };
+                        const cf = { ...item.custom_fields };
                         const v = cf[key];
                         delete cf[key];
                         cf[newName] = v;
