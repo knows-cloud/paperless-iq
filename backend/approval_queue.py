@@ -741,6 +741,7 @@ class ApprovalQueueService:
                     name_to_info[item.get("name", "").lower()] = {
                         "id": item["id"],
                         "data_type": item.get("data_type", "string"),
+                        "extra_data": item.get("extra_data") or {},
                     }
                 url = data.get("next")
             _entity_cache[cache_key] = (now, name_to_info)
