@@ -2931,7 +2931,7 @@ async def list_document_types() -> list[dict]:
 @app.get("/api/paperless/custom_fields", tags=["paperless"])
 async def list_custom_fields() -> list[dict]:
     """List all custom fields from Paperless NGX."""
-    return await _paperless_list("custom_fields", extra_fields=["data_type"])
+    return await _paperless_list("custom_fields", extra_fields=["data_type", "extra_data"])
 
 
 @app.get("/api/paperless/storage_paths", tags=["paperless"])
