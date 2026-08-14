@@ -5,7 +5,7 @@ description = "AI-powered metadata suggestions for Paperless NGX"
 requires-python = ">=3.12"
 dependencies = [
     "aiosqlite>=0.22.1",
-    "alembic>=1.18.5",
+    "alembic>=1.19.1",
     "anthropic>=0.120.2",
     "boto3>=1.43.62",
     "chromadb>=1.5.5",
