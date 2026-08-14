@@ -610,17 +610,16 @@ export default function QueuePage() {
                   <Text size="xs" fw={600} c="dimmed" mb={4}>{t("analysis.customFields")} {varyMark("custom_fields")}</Text>
                   {cfEntries.map(([key, val]) => {
                     const cf = (cfQ.data ?? []).find(
-                      (c: PaperlessCustomField) => c.name === key  
+                      (c: PaperlessCustomField) => c.name === key
                     );
                     const displayValue =
                       cf?.data_type === "select"
                         ? cf.extra_data?.select_options?.find(
                             (option: { id?: string; label?: string }) =>
                               String(option.id) === String(val)
-                    
                           )?.label ?? val
                         : val;
-                    
+
                     return (
                     <CfNameEditor
                       key={key}
@@ -632,7 +631,7 @@ export default function QueuePage() {
                       options={cf?.extra_data?.select_options}
                       onRename={newName => {
                         if (!newName || newName === key) return;
-                        
+
                         const cf = { ...item.custom_fields };
                         const v = cf[key];
                         delete cf[key];
