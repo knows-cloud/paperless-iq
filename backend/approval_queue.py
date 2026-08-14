@@ -805,7 +805,7 @@ class ApprovalQueueService:
                     "field": info["id"],
                     "value": value,
                 })
-      
+
             elif create_missing:
                 try:
                     resp = await client.post(
@@ -816,7 +816,7 @@ class ApprovalQueueService:
                         },
                     )
                     resp.raise_for_status()
-                  
+
                     new_id = resp.json().get("id")
                     if new_id:
                         result.append({
