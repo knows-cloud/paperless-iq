@@ -1,0 +1,110 @@
+name: Audit sweep
+
+# Full dependency audit of main, on a schedule.
+#
+# The PR gate (check-npm-audit-delta.py) only blocks advisories a PR *introduces*,
+# so something has to watch for advisories published against dependencies we
+# already ship.  That is this workflow.
+#
+# It closes a blind spot the old setup had: when an advisory landed while no PR
+# was open, nobody found out until the next PR went red for unrelated reasons.
+# GHSA-2v37-7h3g-55p8 (nanoid) was published 2026-08-08 and was not acted on
+# until 2026-08-14, and only then as a side effect of triaging twelve red PRs.
+#
+# A failure here opens an issue rather than blocking anyone's merge — the work
+# is "fix main", not "punish whoever opened a PR next".
+#
+# Security: triggered only by schedule/workflow_dispatch, so there is no
+# attacker-controlled event payload.  The only ${{ }} interpolations are
+# secrets.GITHUB_TOKEN and github.{repository,server_url,run_id}, all mapped to
+# env vars before use in run: steps.  Audit output is written to a file and
+# passed via --body-file, never interpolated into a shell command.
+
+on:
+  schedule:
+    # 06:00 UTC daily, ahead of Dependabot's Monday run so a fresh advisory has
+    # a chance to be visible before the weekly bump PRs land.
+    - cron: "0 6 * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  sweep:
+    name: Audit main
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      issues: write
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Set up Node
+        uses: actions/setup-node@v7
+        with:
+          node-version: 24
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+
+      - name: Audit npm dependencies
+        id: npm_audit
+        working-directory: frontend
+        run: |
+          set +e
+          npm audit --audit-level=low > npm-audit.txt 2>&1
+          echo "exit_code=$?" >> "$GITHUB_OUTPUT"
+          cat npm-audit.txt
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v7
+        with:
+          enable-cache: true
+
+      - name: Audit Python dependencies
+        id: pip_audit
+        run: |
+          set +e
+          uvx pip-audit > pip-audit.txt 2>&1
+          echo "exit_code=$?" >> "$GITHUB_OUTPUT"
+          cat pip-audit.txt
+
+      - name: Open or update tracking issue
+        if: steps.npm_audit.outputs.exit_code != '0' || steps.pip_audit.outputs.exit_code != '0'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          REPO: ${{ github.repository }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          set -euo pipefail
+          TITLE="Dependency advisories on main"
+
+          {
+            echo "The daily audit sweep found advisories affecting \`main\`."
+            echo
+            echo "These are **not** blocking any pull request — the PR gate only"
+            echo "blocks newly-introduced advisories. This issue tracks fixing main."
+            echo
+            echo "Run: $RUN_URL"
+            echo
+            echo "## npm"
+            echo '```'
+            cat frontend/npm-audit.txt || echo "(no output)"
+            echo '```'
+            echo
+            echo "## Python (pip-audit)"
+            echo '```'
+            cat pip-audit.txt || echo "(no output)"
+            echo '```'
+          } > body.md
+
+          EXISTING=$(gh issue list --repo "$REPO" --state open \
+            --search "\"$TITLE\" in:title" --json number --jq '.[0].number // empty')
+
+          if [ -n "$EXISTING" ]; then
+            gh issue comment "$EXISTING" --repo "$REPO" --body-file body.md
+            echo "Commented on existing issue #$EXISTING"
+          else
+            gh issue create --repo "$REPO" --title "$TITLE" \
+              --label dependencies --body-file body.md
+          fi
