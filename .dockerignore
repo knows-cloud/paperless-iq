@@ -10,3 +10,10 @@ data/
 *.db
 .kiro
 tests/
+
+# Claude Code session state. .claude/worktrees holds full checkouts of the repo
+# (2.6 GB locally at the time of writing), so leaving it in means every local
+# `docker build` streams gigabytes of unrelated data to the daemon before the
+# first layer runs. CI checks out clean and never sees this, which is exactly
+# why it went unnoticed.
+.claude
