@@ -5,7 +5,7 @@ description = "AI-powered metadata suggestions for Paperless NGX"
 requires-python = ">=3.12"
 dependencies = [
     "aiosqlite>=0.22.1",
-    "alembic>=1.18.5",
+    "alembic>=1.19.1",
     "anthropic>=0.120.2",
     "boto3>=1.43.62",
     "chromadb>=1.5.5",
@@ -19,7 +19,7 @@ dependencies = [
     "pydantic>=2.12.5",
     "Pillow>=10.0",
     "pypdfium2>=5.12.1",
-    "qdrant-client>=1.12",
+    "qdrant-client>=1.19.0",
     "sqlalchemy>=2.0.51",
     "uvicorn>=0.52.1",
 ]
@@ -28,7 +28,7 @@ dependencies = [
 # Local cross-encoder reranker (rerank_method="local"). Heavy (pulls torch);
 # installed only on demand. Imported lazily at runtime — see backend/rerankers.py.
 rerank-local = [
-    "sentence-transformers>=5.6.1",
+    "sentence-transformers>=5.7.0",
 ]
 # Sparse encoder for Qdrant hybrid search (qdrant_hybrid_search). Pulls
 # onnxruntime; imported lazily — see QdrantVectorStore._ensure_sparse_encoder.
