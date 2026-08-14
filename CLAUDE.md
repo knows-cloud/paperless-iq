@@ -177,4 +177,8 @@ reads it at runtime via the installed package dist-info. `frontend/package.json`
 be kept in sync manually — never bump one without the other.
 CI mirrors the lint/test gates (`.github/workflows/test.yml`): the backend job runs
 `ruff check backend`, `bandit -rq backend --severity-level medium`, then pytest; the
-frontend job runs `tsc`, `eslint`, `npm run check:i18n`, and `npm audit`.
+frontend job runs `tsc`, `eslint`, `npm run check:i18n`, and **last** a delta audit
+(`.github/scripts/check-npm-audit-delta.py`) that fails only on advisories the PR
+*introduces*. Advisories already on `main` are caught by the daily
+`.github/workflows/audit-sweep.yml`, which opens a tracking issue instead of blocking
+PRs. The audit step must stay last — see D-26 for why the ordering is load-bearing.
