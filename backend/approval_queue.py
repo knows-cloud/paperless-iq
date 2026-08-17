@@ -741,6 +741,7 @@ class ApprovalQueueService:
                     name_to_info[item.get("name", "").lower()] = {
                         "id": item["id"],
                         "data_type": item.get("data_type", "string"),
+                        "extra_data": item.get("extra_data") or {},
                     }
                 url = data.get("next")
             _entity_cache[cache_key] = (now, name_to_info)
@@ -749,18 +750,77 @@ class ApprovalQueueService:
         for name, value in custom_fields.items():
             info = name_to_info.get(name.lower())
             if info is not None:
-                value = _format_custom_field_value(value, info["data_type"])
-                result.append({"field": info["id"], "value": value})
+                data_type = info["data_type"]
+
+                # Empty value is treated as null.
+                if value is None or (
+                    isinstance(value, str) and not value.strip()
+                ):
+                    value = None
+
+                # Select fields use the human-readable option label.
+                # Convert the label to the corresponding Paperless NGX option ID.
+                elif data_type == "select":
+                    options = (
+                        (info.get("extra_data") or {})
+                        .get("select_options", [])
+                    )
+
+                    selected_id: str | None = None
+                    normalized_value = str(value).strip()
+
+                    # First, resolve an explicit option ID.
+                    for option in options:
+                        option_id = option.get("id")
+                        if (
+                            option_id is not None
+                            and str(option_id) == normalized_value
+                        ):
+                            selected_id = str(option_id)
+                            break
+
+                    # If no ID matched, resolve by option label.
+                    if selected_id is None:
+                        normalized_label = normalized_value.lower()
+                        for option in options:
+                            option_id = option.get("id")
+                            option_label = option.get("label")
+
+                            if (
+                                option_id is not None
+                                and option_label is not None
+                                and str(option_label).strip().lower()
+                                == normalized_label
+                            ):
+                                selected_id = str(option_id)
+                                break
+
+                    if selected_id is None:
+                        value = None
+                    else:
+                        value = selected_id
+                else:
+                    value = _format_custom_field_value(value, data_type)
+
+                result.append({
+                    "field": info["id"],
+                    "value": value,
+                })
+
             elif create_missing:
                 try:
                     resp = await client.post(
                         f"{base_url}/api/custom_fields/",
-                        json={"name": name, "data_type": "string"},
+                        json={
+                            "name": name,
+                            "data_type": "string",
+                        },
                     )
                     resp.raise_for_status()
+
                     new_id = resp.json().get("id")
                     if new_id:
-                        result.append({"field": new_id, "value": value})
+                        result.append({"field": new_id,"value": value})
                         logger.info("Created custom field %r with ID %d", name, new_id)
                 except Exception:
                     logger.warning("Failed to create custom field %r", name, exc_info=True)
