@@ -64,7 +64,7 @@ def _build_output_schema(
         for cf in custom_field_defs:
             field_name = cf["name"]
             data_type = cf.get("data_type", "")
-            
+
             if data_type == "select":
                 options = (cf.get("extra_data") or {}).get("select_options", [])
 
@@ -76,12 +76,14 @@ def _build_output_schema(
 
                 cf_properties[field_name] = {
                     "type": ["string", "null"],
-                    "enum": option_labels + [None],
                     "description": (
                         "Select field. The value MUST be one of the registered "
                         "option labels, or null when no value is selected."
                     ),
                 }
+
+                if option_labels:
+                    cf_properties[field_name]["enum"] = option_labels + [None]
             else:
                 cf_properties[field_name] = {
                     "type": ["string", "null"],
@@ -412,23 +414,25 @@ async def _apply_creation_policy(
                     .get("select_options", [])
                 )
 
-                valid_labels = {
-                    str(option["label"]).strip().lower()
+                # Map normalised label -> the registry's canonical spelling, so
+                # what we store always matches an option label exactly.  The UI
+                # resolves the dropdown by exact label match.
+                label_by_normalized = {
+                    str(option["label"]).strip().lower(): str(option["label"])
                     for option in options
                     if option.get("label")
                 }
 
-                normalized_value = str(value).strip().lower()
+                canonical = label_by_normalized.get(str(value).strip().lower())
 
-                if normalized_value in valid_labels:
-                    validated_custom_fields[field_name] = str(value).strip()
+                if canonical is not None:
+                    validated_custom_fields[field_name] = canonical
                 else:
                     logger.warning(
-                        "Invalid select label for custom field %r: %r. "
-                        "Expected one of registered option labels; "
-                        "setting to null.",
+                        "Invalid select value for custom field %r; expected one of %d "
+                        "registered option label(s). Setting to null.",
                         field_name,
-                        value,
+                        len(options),
                     )
                     validated_custom_fields[field_name] = None
             else:
@@ -437,7 +441,7 @@ async def _apply_creation_policy(
         suggestion = suggestion.model_copy(
             update={"custom_fields": validated_custom_fields}
         )
-      
+
     return suggestion
 
 

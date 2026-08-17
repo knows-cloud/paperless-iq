@@ -43,7 +43,7 @@ export default function CfNameEditor({
   onRename,
   onChangeValue,
   onRemove
-}: CfNameEditorProps) {  
+}: CfNameEditorProps) {
   const [editName, setEditName] = useState(name);
   const [showSuggestions, setShowSuggestions] = useState(false);
   const [selectedIdx, setSelectedIdx] = useState(0);

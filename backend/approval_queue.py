@@ -767,34 +767,35 @@ class ApprovalQueueService:
                     )
 
                     selected_id: str | None = None
+                    normalized_value = str(value).strip()
 
+                    # First, resolve an explicit option ID.
                     for option in options:
                         option_id = option.get("id")
-                        option_label = option.get("label")
+                        if (
+                            option_id is not None
+                            and str(option_id) == normalized_value
+                        ):
+                            selected_id = str(option_id)
+                            break
 
-                        if option_id is not None:
-                            # When the Paperless-ngx select option ID is already provided, use it as-is.
-                            if str(option_id) == str(value).strip():
-                                selected_id = str(option_id)
-                                break
+                    # If no ID matched, resolve by option label.
+                    if selected_id is None:
+                        normalized_label = normalized_value.lower()
+                        for option in options:
+                            option_id = option.get("id")
+                            option_label = option.get("label")
 
-                            # When the option label is provided, convert it to the corresponding option ID as before.
                             if (
-                                option_label is not None
+                                option_id is not None
+                                and option_label is not None
                                 and str(option_label).strip().lower()
-                                == str(value).strip().lower()
+                                == normalized_label
                             ):
                                 selected_id = str(option_id)
                                 break
 
                     if selected_id is None:
-                        logger.warning(
-                            "Invalid select value for custom field %r: %r. "
-                            "Expected a registered option ID or label; "
-                            "setting to null.",
-                            name,
-                            value,
-                        )
                         value = None
                     else:
                         value = selected_id
@@ -819,24 +820,10 @@ class ApprovalQueueService:
 
                     new_id = resp.json().get("id")
                     if new_id:
-                        result.append({
-                          "field": new_id,
-                          "value": value,
-                        })
-                        logger.info(
-                            "Created custom field %r with ID %d",
-                            name,
-                            new_id,
-                        )
+                        result.append({"field": new_id,"value": value})
+                        logger.info("Created custom field %r with ID %d", name, new_id)
                 except Exception:
-                    logger.warning(
-                        "Failed to create custom field %r",
-                        name,
-                        exc_info=True,
-                    )
+                    logger.warning("Failed to create custom field %r", name, exc_info=True)
             else:
-                logger.warning(
-                    "Could not resolve custom field %r to an ID; skipping.",
-                    name,
-                )
+                logger.warning("Could not resolve custom field %r to an ID; skipping.", name)
         return result
