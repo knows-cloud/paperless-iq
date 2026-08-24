@@ -54,6 +54,15 @@ jobs:
         working-directory: frontend
     steps:
       - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+
+      - name: Fetch base branch ref
+        if: github.event_name == 'pull_request'
+        working-directory: ${{ github.workspace }}
+        env:
+          BASE_REF: ${{ github.base_ref }}
+        run: git fetch origin "$BASE_REF" --depth=1
 
       - name: Set up Node
         uses: actions/setup-node@v7
@@ -65,9 +74,6 @@ jobs:
       - name: Install dependencies
         run: npm ci
 
-      - name: Audit dependencies
-        run: npm audit --audit-level=low
-
       - name: TypeScript check
         run: npx tsc --noEmit
 
@@ -76,3 +82,18 @@ jobs:
 
       - name: i18n completeness check
         run: npm run check:i18n
+
+      # Audit runs LAST on purpose.  When it ran first, a single advisory
+      # published against an unchanged dependency (nanoid, 2026-08-08) turned
+      # twelve open PRs red and suppressed all tsc/eslint/i18n signal on every
+      # one of them for six days.  Type and lint results must never be hidden
+      # behind a dependency advisory.
+      #
+      # It also only fails on advisories this PR *introduces*; advisories
+      # already on main are tracked by .github/workflows/audit-sweep.yml.
+      - name: Audit dependencies (new advisories only)
+        if: github.event_name == 'pull_request'
+        working-directory: ${{ github.workspace }}
+        env:
+          GITHUB_BASE_REF: ${{ github.base_ref }}
+        run: python3 .github/scripts/check-npm-audit-delta.py

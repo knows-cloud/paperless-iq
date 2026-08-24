@@ -37,6 +37,28 @@ updates:
       interval: "weekly"
       day: "monday"
     open-pull-requests-limit: 10
+    groups:
+      # Nearly every Python bump rewrites uv.lock, and branch protection
+      # requires branches to be up to date, so ungrouped PRs can only merge one
+      # at a time: each merge invalidates all the others, forcing a rebase and a
+      # full pytest re-run apiece.  Ten separate bumps meant ten serialised
+      # rebase/CI/merge cycles.  Batching minor+patch into one PR makes that a
+      # single rebase, a single CI run and a single merge.
+      #
+      # Majors are deliberately NOT grouped: they carry the real breaking-change
+      # risk (qdrant-client 1.19 removed `add`/`query`; cryptography 50
+      # deprecated FFDH), and one bad major in a batch would block every safe
+      # bump riding along with it.  They keep getting individual PRs so they can
+      # be reviewed, and reverted, on their own.
+      #
+      # `groups` defaults to applies-to: version-updates, so Dependabot's
+      # security PRs stay separate and keep landing immediately.
+      python-minor-patch:
+        patterns:
+          - "*"
+        update-types:
+          - "minor"
+          - "patch"
 
   # GitHub Actions used by the CI/release workflows
   - package-ecosystem: "github-actions"
