@@ -820,10 +820,24 @@ class ApprovalQueueService:
 
                     new_id = resp.json().get("id")
                     if new_id:
-                        result.append({"field": new_id,"value": value})
-                        logger.info("Created custom field %r with ID %d", name, new_id)
+                        result.append({
+                            "field": new_id,
+                            "value": value,
+                        })
+                        logger.info(
+                            "Created custom field %r with ID %d",
+                            name,
+                            new_id,
+                        )
                 except Exception:
-                    logger.warning("Failed to create custom field %r", name, exc_info=True)
+                    logger.warning(
+                        "Failed to create custom field %r",
+                        name,
+                        exc_info=True,
+                    )
             else:
-                logger.warning("Could not resolve custom field %r to an ID; skipping.", name)
+                logger.warning(
+                    "Could not resolve custom field %r to an ID; skipping.",
+                    name,
+                )
         return result

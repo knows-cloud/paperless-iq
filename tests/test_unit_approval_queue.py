@@ -357,3 +357,99 @@ async def test_patch_paperless_passes_per_type_flags(session: AsyncSession) -> N
         "document_types": False,
         "storage_paths": True,
     }
+
+
+# ---------------------------------------------------------------------------
+# 10. select custom fields resolve label / cased label / raw ID to one option
+# ---------------------------------------------------------------------------
+
+class _FakeResponse:
+    def __init__(self, payload: dict[str, Any]) -> None:
+        self.status_code = 200
+        self._payload = payload
+
+    def json(self) -> dict[str, Any]:
+        return self._payload
+
+
+class _FakeCustomFieldsClient:
+    """Stands in for httpx.AsyncClient, serving one page of custom field defs."""
+
+    def __init__(self, results: list[dict[str, Any]]) -> None:
+        self._results = results
+
+    async def get(self, url: str) -> _FakeResponse:
+        return _FakeResponse({"results": self._results, "next": None})
+
+
+_SELECT_FIELD_DEFS = [
+    {
+        "id": 7,
+        "name": "Priority",
+        "data_type": "select",
+        "extra_data": {
+            "select_options": [
+                {"id": "opt-1", "label": "Urgent"},
+                {"id": "opt-2", "label": "Normal"},
+            ]
+        },
+    }
+]
+
+
+@pytest.mark.asyncio
+async def test_resolve_custom_fields_select_label_and_id_matching(
+    session: AsyncSession,
+) -> None:
+    """A registered label, a differently-cased label, and a raw option ID must
+    all resolve to the same Paperless NGX option ID; an unmatched value
+    resolves to null rather than being silently dropped.
+
+    Regression: the LLM's validated value kept its original casing (e.g.
+    "urgent" for a registered "Urgent" label), which the approval-queue
+    resolver matched case-sensitively — so the dropdown showed no value while
+    approval still wrote the wrong (or a stale) option ID underneath it.
+    """
+    svc = ApprovalQueueService(session)
+    base_url = f"http://paperless.test/{uuid4()}"
+    client = _FakeCustomFieldsClient(_SELECT_FIELD_DEFS)
+
+    exact_label = await svc._resolve_custom_fields(
+        client, base_url, {"Priority": "Urgent"},
+    )
+    assert exact_label == [{"field": 7, "value": "opt-1"}]
+
+    cased_label = await svc._resolve_custom_fields(
+        client, base_url, {"Priority": "urgent"},
+    )
+    assert cased_label == [{"field": 7, "value": "opt-1"}]
+
+    raw_option_id = await svc._resolve_custom_fields(
+        client, base_url, {"Priority": "opt-2"},
+    )
+    assert raw_option_id == [{"field": 7, "value": "opt-2"}]
+
+    unmatched = await svc._resolve_custom_fields(
+        client, base_url, {"Priority": "bogus"},
+    )
+    assert unmatched == [{"field": 7, "value": None}]
+
+
+@pytest.mark.asyncio
+async def test_resolve_custom_fields_does_not_log_document_value(
+    session: AsyncSession, caplog: pytest.LogCaptureFixture,
+) -> None:
+    """An unresolved select value must not be logged — it is document-derived
+    and can contain PII (account numbers, tax IDs, patient references).
+    """
+    svc = ApprovalQueueService(session)
+    base_url = f"http://paperless.test/{uuid4()}"
+    client = _FakeCustomFieldsClient(_SELECT_FIELD_DEFS)
+
+    secret_value = "patient-ref-12345"
+    with caplog.at_level("WARNING"):
+        await svc._resolve_custom_fields(
+            client, base_url, {"Priority": secret_value},
+        )
+
+    assert secret_value not in caplog.text
