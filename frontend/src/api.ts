@@ -61,7 +61,18 @@ async function requestBlob(path: string): Promise<Blob> {
 }
 
 export interface PaperlessEntity { id: number; name: string; }
-export interface PaperlessCustomField { id: number; name: string; data_type: string; }
+export interface PaperlessCustomField {
+  id: number;
+  name: string;
+  data_type: string;
+  extra_data?: {
+    select_options?: Array<{
+      id: string;
+      label: string;
+    }>;
+    default_currency?: string | null;
+  };
+}
 export interface DocumentItem {
   id: number; title: string; correspondent: number | null;
   document_type: number | null; tags: number[]; created: string; added: string;

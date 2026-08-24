@@ -1,12 +1,19 @@
 import { useState, useRef, useEffect } from "react";
+import { Select } from "@mantine/core";
 
 interface CfNameEditorProps {
   name: string;
   value: unknown;
   isNew: boolean;
   suggestions: string[];
+
+  dataType?: string;
+  options?: Array<{
+    id: string;
+    label: string;
+  }>;
   onRename: (newName: string) => void;
-  onChangeValue: (value: string) => void;
+  onChangeValue: (value: string | null) => void;
   onRemove: () => void;
 }
 
@@ -26,7 +33,17 @@ const inputBase: React.CSSProperties = {
  * Editable custom field row: name (with autocomplete) + value + remove button.
  * Name changes only commit on blur or suggestion selection, not on every keystroke.
  */
-export default function CfNameEditor({ name, value, isNew, suggestions, onRename, onChangeValue, onRemove }: CfNameEditorProps) {
+export default function CfNameEditor({
+  name,
+  value,
+  isNew,
+  suggestions,
+  dataType,
+  options,
+  onRename,
+  onChangeValue,
+  onRemove
+}: CfNameEditorProps) {
   const [editName, setEditName] = useState(name);
   const [showSuggestions, setShowSuggestions] = useState(false);
   const [selectedIdx, setSelectedIdx] = useState(0);
@@ -115,11 +132,37 @@ export default function CfNameEditor({ name, value, isNew, suggestions, onRename
           </ul>
         )}
       </div>
+      {dataType === "select" ? (
+        <Select
+          value={
+            typeof value === "string"
+              ? options?.find(o => o.id === value)?.id
+                  ?? options?.find(o => o.label === value)?.id
+                  ?? null
+              : null
+          }
+          data={
+            options?.map(o => ({
+              value: o.id,
+              label: o.label,
+            })) ?? []
+          }
+          clearable
+          onChange={(v) => {
+            const option = options?.find(o => o.id === v);
+            onChangeValue(option?.label ?? null);
+          }}
+          style={{ flex: 1 }}
+        />
+      ) : (
       <input
         value={String(value ?? "")}
         style={{ ...inputBase, flex: 1 }}
-        onChange={e => onChangeValue(e.target.value)}
+        onChange={e =>
+          onChangeValue(e.target.value === "" ? null : e.target.value)
+        }
       />
+      )}
       <button
         type="button"
         onClick={onRemove}
