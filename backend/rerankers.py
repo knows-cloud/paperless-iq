@@ -370,14 +370,19 @@ def _rerank_base_url(config: Any) -> str:
 def _rerank_api_key(config: Any) -> str:
     """The rerank API key, inheriting the chat key when empty (D-27).
 
-    Only inherits from an OpenAI-style chat provider — another provider's
-    credentials would be meaningless against a rerank endpoint. An empty key is
-    valid: self-hosted vLLM/TEI usually need no auth at all.
+    Inheritance is deliberately narrow: it applies only when the rerank role
+    has *not* named an endpoint of its own, so the key can only ever travel to
+    the same host the chat provider already talks to. A rerank URL pointing
+    somewhere else must bring its own key — silently forwarding the user's
+    OpenAI key to an arbitrary third-party endpoint would be a credential leak.
+
+    An empty key is valid: self-hosted vLLM and TEI usually need no auth.
     """
     raw = getattr(config, "rerank_api_key", None)
     if raw:
         return raw.decode("latin-1") if isinstance(raw, bytes) else str(raw)
-    if getattr(config, "llm_provider", "") in ("openai", "anthropic"):
+    own_url = (getattr(config, "rerank_base_url", "") or "").strip()
+    if not own_url and getattr(config, "llm_provider", "") == "openai":
         creds = getattr(config, "llm_credentials", None)
         if creds:
             return creds.decode("latin-1") if isinstance(creds, bytes) else str(creds)

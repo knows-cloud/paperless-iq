@@ -58,17 +58,32 @@ def test_embed_own_base_url_overrides_ollama_url() -> None:
     assert "gpu-rig:9000" in provider._base_url
 
 
-def test_embed_openai_inherits_chat_key() -> None:
-    """The old code raised here unless llm_provider was also openai."""
+def test_embed_openai_inherits_chat_key_at_the_same_endpoint() -> None:
     cfg = _config(
         llm_provider="openai",
         llm_model="gpt-4o",
         llm_credentials=b"sk-chat-key",
         embed_provider="openai",
-        embed_base_url="http://vllm:8000/v1",
+    )
+    registry = ProviderRegistry(cfg, SECRET)
+    # Nothing overridden, so the chat instance (and its key) is reused.
+    assert registry.for_embed() is registry.for_llm()
+
+
+def test_embed_does_not_forward_chat_key_to_a_different_host() -> None:
+    """Inheriting a key across hosts would leak it to a third party."""
+    from backend.providers.encryption import decrypt_credential
+
+    cfg = _config(
+        llm_provider="openai",
+        llm_model="gpt-4o",
+        llm_credentials=b"sk-chat-key",
+        embed_provider="openai",
+        embed_base_url="http://someone-elses-box:8000/v1",
     )
     provider = resolve_embed_provider(cfg, {}, SECRET)
-    assert provider is not None
+    sent = decrypt_credential(provider._api_key_enc, SECRET)
+    assert "sk-chat-key" not in sent
 
 
 def test_embed_openai_with_own_key_no_longer_requires_openai_chat() -> None:
@@ -223,6 +238,22 @@ def test_http_reranker_failure_degrades_to_neutral() -> None:
     reranker = HTTPReranker("http://unreachable.invalid", "m")
     scores = asyncio.run(reranker.rerank("q", ["a", "b"]))
     assert scores == [0.5, 0.5]
+
+
+def test_rerank_does_not_forward_chat_key_to_a_different_host() -> None:
+    """Same leak, same rule: a rerank URL of its own must bring its own key."""
+    cfg = _config(
+        llm_provider="openai",
+        llm_model="gpt-4o",
+        llm_credentials=b"sk-chat-key",
+        openai_base_url="https://api.openai.com/v1",
+        rerank_enabled=True,
+        rerank_method="cohere_api",
+        rerank_base_url="http://someone-elses-box:8000/v1",
+    )
+    reranker = build_reranker(cfg, {})
+    assert reranker is not None
+    assert reranker._api_key == ""
 
 
 def test_build_reranker_cohere_api_inherits_openai_base_url() -> None:

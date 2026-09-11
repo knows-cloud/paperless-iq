@@ -256,11 +256,22 @@ def resolve_embed_provider(
                 return provider
 
         api_key = own_creds
-        if not api_key and getattr(config, "llm_provider", "") == "openai":
-            # Inherit the chat key — but only when the chat provider is actually
-            # OpenAI, since another provider's credentials are meaningless here.
+        if not api_key and not own_url and getattr(config, "llm_provider", "") == "openai":
+            # Inherit the chat key only when the chat provider is OpenAI *and*
+            # the embed role has not named a different endpoint. Forwarding the
+            # user's key to a host they only asked us to embed against would be
+            # a credential leak, not a convenience.
             api_key = _as_text(getattr(config, "llm_credentials", None))
-        if not api_key:
+        if not api_key and own_url:
+            # A self-hosted endpoint (vLLM, LocalAI, …) legitimately needs no
+            # key. "EMPTY" is the placeholder those servers document, and the
+            # OpenAI client requires *something* non-empty.
+            logger.info(
+                "embed_provider='openai' with a custom endpoint and no key — "
+                "sending unauthenticated requests to %s.", own_url,
+            )
+            api_key = "EMPTY"
+        elif not api_key:
             raise ValueError(
                 "embed_provider='openai' needs an API key. Set one under the embedding "
                 "settings, or use 'openai' as the LLM provider so the key can be shared."
