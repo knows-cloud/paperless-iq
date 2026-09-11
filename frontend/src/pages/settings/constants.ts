@@ -26,10 +26,15 @@ export const CHUNK_STRATEGIES = [
 ] as const;
 
 export const RERANK_METHODS = [
-  { value: "llm",   labelKey: "aiProvider.search.rerankMethod.llm" },
-  { value: "local", labelKey: "aiProvider.search.rerankMethod.local" },
-  { value: "api",   labelKey: "aiProvider.search.rerankMethod.api" },
+  { value: "llm",        labelKey: "aiProvider.search.rerankMethod.llm" },
+  { value: "local",      labelKey: "aiProvider.search.rerankMethod.local" },
+  { value: "api",        labelKey: "aiProvider.search.rerankMethod.api" },
+  { value: "cohere_api", labelKey: "aiProvider.search.rerankMethod.cohereApi" },
+  { value: "tei",        labelKey: "aiProvider.search.rerankMethod.tei" },
 ] as const;
+
+/** Rerank methods that call an HTTP endpoint and so need a URL + optional key. */
+export const HTTP_RERANK_METHODS: readonly string[] = ["cohere_api", "tei"];
 
 export const QDRANT_MODES = [
   { value: "local", labelKey: "aiProvider.vectorStore.qdrantMode.local" },
