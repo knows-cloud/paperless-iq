@@ -124,39 +124,100 @@ def _parse_bedrock_credentials(raw_creds: Any) -> dict[str, Any]:
     return creds
 
 
-def resolve_embed_provider(config: Any, providers: Any) -> Any | None:
-    """Return the right embedding provider based on ``config.embed_provider``.
+def _as_text(raw: Any) -> str:
+    """Decode a credential blob to text. Empty blobs become ""."""
+    if not raw:
+        return ""
+    if isinstance(raw, bytes):
+        return raw.decode("latin-1")
+    return str(raw)
 
-    - ollama  → fresh OllamaProvider using config.ollama_url + config.embedding_model
-    - bedrock → prefers the existing BedrockProvider instance when llm_provider=bedrock;
-                falls back to building a standalone BedrockProvider from stored credentials
-                so you can use Bedrock embeddings with any LLM (Ollama, Anthropic, etc.)
-    - openai  → reuses the OpenAIProvider instance; requires llm_provider=openai
+
+def role_credentials(config: Any, role: str) -> str:
+    """Credentials for ``role``, falling back to the LLM section when empty.
+
+    Empty means inherit (D-27): an install that predates per-role settings has
+    every role field empty and therefore resolves exactly as it did before.
+    """
+    own = _as_text(getattr(config, f"{role}_credentials", None))
+    if own:
+        return own
+    return _as_text(getattr(config, "llm_credentials", None))
+
+
+def effective_embed_endpoint(config: Any) -> str:
+    """The URL embeddings will actually be requested from.
+
+    Used to decide whether a settings change invalidates the index. Comparing
+    ``embed_provider`` and ``embedding_model`` alone is not enough once the
+    embedding role can carry its own endpoint: the same model name served by a
+    different server is a *different vector space*, and mixing the two in one
+    collection degrades retrieval silently.
+
+    Credentials are deliberately excluded — rotating a key against the same
+    endpoint yields identical vectors and must not prompt a re-index.
     """
     ep = getattr(config, "embed_provider", "ollama")
+    own = (getattr(config, "embed_base_url", "") or "").strip()
+    if own:
+        return own
+    if ep == "ollama":
+        return config.ollama_url or os.environ.get("OLLAMA_URL", "http://localhost:11434")
+    if ep == "openai":
+        return getattr(config, "openai_base_url", "") or ""
+    # Bedrock resolves by region, and a Titan/Cohere model is the same vector
+    # space in every region, so there is no endpoint to compare.
+    return ""
+
+
+def resolve_embed_provider(
+    config: Any, providers: Any, secret_key: str | None = None
+) -> Any | None:
+    """Return the embedding provider for ``config.embed_provider``.
+
+    Each backend honours the per-role ``embed_base_url`` / ``embed_credentials``
+    when set, and inherits the LLM section's endpoint and credentials when they
+    are empty (D-27).
+
+    - ollama  → fresh OllamaProvider on embed_base_url or ollama_url
+    - bedrock → reuses the chat BedrockProvider only when the embed role adds
+                nothing of its own; otherwise builds a standalone instance
+    - openai  → reuses the chat OpenAIProvider only when the embed role adds
+                nothing of its own; otherwise builds a standalone instance
+    """
+    ep = getattr(config, "embed_provider", "ollama")
+    own_url = (getattr(config, "embed_base_url", "") or "").strip()
+    own_creds = _as_text(getattr(config, "embed_credentials", None))
 
     if ep == "ollama":
         embed_model = config.embedding_model or "nomic-embed-text"
-        ollama_url = config.ollama_url or os.environ.get("OLLAMA_URL", "http://localhost:11434")
-        return OllamaProvider(base_url=ollama_url, model=embed_model)
+        base_url = (
+            own_url
+            or config.ollama_url
+            or os.environ.get("OLLAMA_URL", "http://localhost:11434")
+        )
+        return OllamaProvider(base_url=base_url, model=embed_model)
+
+    if secret_key is None:
+        from backend.keystore import get_machine_key
+
+        secret_key = get_machine_key()
 
     if ep == "bedrock":
-        # Case 1: LLM is also Bedrock — reuse the existing provider instance
-        provider = providers.get("bedrock") if providers else None
-        if provider is not None:
-            provider._embed_model = config.embedding_model or "amazon.titan-embed-text-v1"
-            return provider
+        embed_model = config.embedding_model or "amazon.titan-embed-text-v1"
 
-        # Case 2: LLM is something else (Ollama, Anthropic, …) — build a standalone
-        # BedrockProvider from the credentials stored in llm_credentials.
-        raw = getattr(config, "llm_credentials", None)
+        # Reuse the chat instance only when the embed role adds nothing of its
+        # own — otherwise the two roles would share credentials again.
+        if not own_creds:
+            provider = providers.get("bedrock") if providers else None
+            if provider is not None:
+                provider._embed_model = embed_model
+                return provider
+
+        raw = own_creds or _as_text(getattr(config, "llm_credentials", None))
         if raw:
             try:
-                from backend.keystore import get_machine_key
-
-                creds_str = raw.decode("latin-1") if isinstance(raw, bytes) else str(raw)
-                creds = json.loads(creds_str)
-                secret_key = get_machine_key()
+                creds = json.loads(raw)
                 session_token_enc = None
                 if creds.get("session_token"):
                     session_token_enc = encrypt_credential(creds["session_token"], secret_key)
@@ -169,7 +230,7 @@ def resolve_embed_provider(config: Any, providers: Any) -> Any | None:
                     secret_key=secret_key,
                     model="",  # unused — this instance is embed-only
                     session_token_enc=session_token_enc,
-                    embed_model=config.embedding_model or "amazon.titan-embed-text-v1",
+                    embed_model=embed_model,
                 )
             except Exception:
                 logger.warning(
@@ -180,17 +241,39 @@ def resolve_embed_provider(config: Any, providers: Any) -> Any | None:
                 )
         raise ValueError(
             "embed_provider='bedrock' is configured but no Bedrock credentials are stored. "
-            "Go to Settings → LLM Provider and save your AWS credentials."
+            "Go to Settings → LLM Provider and save your AWS credentials, or give the "
+            "embedding role its own credentials."
         )
 
     if ep == "openai":
-        provider = providers.get("openai") if providers else None
-        if provider is None:
+        embed_model = config.embedding_model or "text-embedding-3-small"
+
+        # Reuse the chat instance only when the embed role neither overrides the
+        # endpoint nor brings its own key.
+        if not own_url and not own_creds:
+            provider = providers.get("openai") if providers else None
+            if provider is not None:
+                return provider
+
+        api_key = own_creds
+        if not api_key and getattr(config, "llm_provider", "") == "openai":
+            # Inherit the chat key — but only when the chat provider is actually
+            # OpenAI, since another provider's credentials are meaningless here.
+            api_key = _as_text(getattr(config, "llm_credentials", None))
+        if not api_key:
             raise ValueError(
-                "embed_provider='openai' requires llm_provider='openai' as well "
-                "(credentials are shared). Use 'ollama' as embed_provider to mix providers."
+                "embed_provider='openai' needs an API key. Set one under the embedding "
+                "settings, or use 'openai' as the LLM provider so the key can be shared."
             )
-        return provider
+
+        base_url = own_url or (getattr(config, "openai_base_url", "") or "")
+        return OpenAIProvider(
+            api_key_enc=encrypt_credential(api_key, secret_key),
+            model="",  # unused — this instance is embed-only
+            secret_key=secret_key,
+            base_url=base_url or None,
+            embed_model=embed_model,
+        )
 
     return None
 
@@ -224,7 +307,9 @@ class ProviderRegistry(dict):
         Raises ValueError when embeddings are configured but unsatisfiable.
         """
         if "embed" not in self._role_cache:
-            self._role_cache["embed"] = resolve_embed_provider(self._config, self)
+            self._role_cache["embed"] = resolve_embed_provider(
+                self._config, self, self._secret_key
+            )
         return self._role_cache["embed"]
 
     def for_rerank(self) -> Any | None:

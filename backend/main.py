@@ -77,7 +77,11 @@ from backend.orm_models import (
 )
 from backend.pdf_utils import get_page_count
 from backend.protocols import VectorStore
-from backend.provider_registry import build_providers, resolve_embed_provider
+from backend.provider_registry import (
+    build_providers,
+    effective_embed_endpoint,
+    resolve_embed_provider,
+)
 from backend.rate_limiter import RateLimiter
 from backend.settings_service import SettingsService
 from backend.vector_factory import make_vector_store
@@ -2960,6 +2964,7 @@ async def update_settings(request: Request, body: dict[str, Any] = Body(...)) ->
     old_qdrant_mode = _old.qdrant_mode
     old_embed_provider = _old.embed_provider
     old_embedding_model = _old.embedding_model
+    old_embed_endpoint = effective_embed_endpoint(_old)
     old_chunk_size = _old.chunk_size
     old_chunk_strategy = _old.chunk_strategy
 
@@ -2982,9 +2987,13 @@ async def update_settings(request: Request, body: dict[str, Any] = Body(...)) ->
             and (new_config.qdrant_url != old_qdrant_url or new_config.qdrant_mode != old_qdrant_mode)
         )
     )
+    # Endpoint is part of the identity of a vector space: the same model name
+    # served by a different host produces incompatible vectors, so repointing
+    # embeddings must prompt a re-index just like changing the model does.
     embed_changed = (
         new_config.embed_provider != old_embed_provider
         or new_config.embedding_model != old_embedding_model
+        or effective_embed_endpoint(new_config) != old_embed_endpoint
     )
     chunk_changed = (
         new_config.chunk_size != old_chunk_size
