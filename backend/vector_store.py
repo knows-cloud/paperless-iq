@@ -296,6 +296,21 @@ class _EmbeddingBackedStore:
         """Return True if the embedding provider is reachable."""
         return await self._llm.health_check()
 
+    async def rerank_health_check(self) -> bool | None:
+        """Reachability of the configured rerank endpoint.
+
+        Returns None when there is nothing to probe — reranking is off, or the
+        method runs in-process ('local') or through the chat provider ('llm'),
+        which the LLM indicator already covers.
+        """
+        probe = getattr(getattr(self, "_reranker", None), "health_check", None)
+        if probe is None:
+            return None
+        try:
+            return await probe()
+        except Exception:
+            return False
+
     async def embed_probe(self) -> bool:
         """Attempt a real minimal embed call — same code path as production embeds."""
         try:

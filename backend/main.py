@@ -3275,11 +3275,15 @@ async def get_status(request: Request) -> dict:
     # Use cached health if queue is busy or cache is fresh (< 30s)
     llm_online = False
     embed_online = False
+    # None = no rerank endpoint to probe (off, or 'local'/'llm' which the other
+    # indicators already cover). The UI shows no dot in that case.
+    rerank_online: bool | None = None
 
     if queue and queue.health_cache_age < 60.0 and queue.cached_health:
         # Cache is fresh (< 60 s) — avoid a live check on every poll
         llm_online = queue.cached_health.get("llm", False)
         embed_online = queue.cached_health.get("embed", False)
+        rerank_online = queue.cached_health.get("rerank")
     else:
         # Cache is stale — do a real health check and refresh it
         providers = getattr(request.app.state, "providers", None)
@@ -3301,6 +3305,15 @@ async def get_status(request: Request) -> dict:
                 pass
         if queue:
             queue.update_health_cache("embed", embed_online)
+
+        rerank_probe = getattr(vs, "rerank_health_check", None) if vs is not None else None
+        if rerank_probe is not None:
+            try:
+                rerank_online = await asyncio.wait_for(rerank_probe(), timeout=3.0)
+            except Exception:
+                rerank_online = False
+        if queue:
+            queue.update_health_cache("rerank", rerank_online)
 
     # 3 & 4. Queue counts
     pending_count = 0
@@ -3345,6 +3358,7 @@ async def get_status(request: Request) -> dict:
     base: dict[str, Any] = {
         "llm_online": llm_online,
         "embed_online": embed_online,
+        "rerank_online": rerank_online,
     }
 
     if is_authed:
