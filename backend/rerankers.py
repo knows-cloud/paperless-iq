@@ -207,7 +207,20 @@ class BedrockReranker:
         return scores
 
 
-def build_reranker(config: Any, providers: dict | None) -> Reranker | None:
+def _rerank_provider(providers: Any, config: Any) -> Any | None:
+    """Resolve the provider backing the rerank role.
+
+    Accepts a ``ProviderRegistry`` (role accessor) or a bare name-keyed dict.
+    """
+    if not providers:
+        return None
+    for_rerank = getattr(providers, "for_rerank", None)
+    if for_rerank is not None:
+        return for_rerank()
+    return providers.get(config.llm_provider)
+
+
+def build_reranker(config: Any, providers: Any) -> Reranker | None:
     """Construct the configured reranker, or None when reranking is disabled
     or cannot be satisfied. Never raises — a failure disables reranking."""
     if not getattr(config, "rerank_enabled", False):
@@ -216,7 +229,7 @@ def build_reranker(config: Any, providers: dict | None) -> Reranker | None:
     method = getattr(config, "rerank_method", "llm")
     try:
         if method == "llm":
-            provider = providers.get(config.llm_provider) if providers else None
+            provider = _rerank_provider(providers, config)
             if provider is None:
                 logger.warning(
                     "Rerank method 'llm' selected but provider '%s' is unavailable; "
