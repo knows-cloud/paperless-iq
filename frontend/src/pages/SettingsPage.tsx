@@ -59,6 +59,8 @@ export default function SettingsPage() {
   // Vector store + search tuning
   const [vectorStoreBackend, setVectorStoreBackend] = useState("local");
   const [qdrantApiKey, setQdrantApiKey] = useState("");
+  const [embedCredentials, setEmbedCredentials] = useState("");
+  const [rerankApiKey, setRerankApiKey] = useState("");
   const [rerankEnabled, setRerankEnabled] = useState(false);
   const [rerankMethod, setRerankMethod] = useState("llm");
   const [embedRefreshMode, setEmbedRefreshMode] = useState("immediate");
@@ -370,6 +372,11 @@ export default function SettingsPage() {
       } else {
         values.qdrant_api_key = "__REDACTED__";
       }
+      // Per-role secrets follow the same rule: an untouched field sends the
+      // redacted placeholder, which the backend drops so the stored value
+      // survives. Sending "" would wipe the user's key on every save.
+      values.embed_credentials = embedCredentials.trim() || "__REDACTED__";
+      values.rerank_api_key    = rerankApiKey.trim()    || "__REDACTED__";
       // Pre-flight §3.4: search_ef must cover overfetch candidates
       const ef = vectorStoreBackend === "qdrant"
         ? Number(values.qdrant_hnsw_ef ?? s?.qdrant_hnsw_ef ?? 128)
@@ -566,6 +573,10 @@ export default function SettingsPage() {
               vectorStoreBackend={vectorStoreBackend}
               setVectorStoreBackend={setVectorStoreBackend}
               qdrantApiKey={qdrantApiKey}
+              embedCredentials={embedCredentials}
+              setEmbedCredentials={setEmbedCredentials}
+              rerankApiKey={rerankApiKey}
+              setRerankApiKey={setRerankApiKey}
               setQdrantApiKey={setQdrantApiKey}
               rerankEnabled={rerankEnabled}
               setRerankEnabled={setRerankEnabled}

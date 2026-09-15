@@ -77,7 +77,11 @@ from backend.orm_models import (
 )
 from backend.pdf_utils import get_page_count
 from backend.protocols import VectorStore
-from backend.provider_registry import build_providers
+from backend.provider_registry import (
+    build_providers,
+    effective_embed_endpoint,
+    resolve_embed_provider,
+)
 from backend.rate_limiter import RateLimiter
 from backend.settings_service import SettingsService
 from backend.vector_factory import make_vector_store
@@ -89,77 +93,28 @@ logger = logging.getLogger(__name__)
 _settings_svc = SettingsService()
 
 
-def _resolve_embed_provider(config: Any, providers: dict) -> Any | None:
-    """Return the right embedding provider based on config.embed_provider.
+def _resolve_embed_provider(config: Any, providers: Any) -> Any | None:
+    """Resolve the embedding provider for ``config``.
 
-    - ollama  → fresh OllamaProvider using config.ollama_url + config.embedding_model
-    - bedrock → prefers the existing BedrockProvider instance when llm_provider=bedrock;
-                falls back to building a standalone BedrockProvider from stored credentials
-                so you can use Bedrock embeddings with any LLM (Ollama, Anthropic, etc.)
-    - openai  → reuses the OpenAIProvider instance; requires llm_provider=openai
+    Delegates to the registry's role accessor when given a
+    :class:`ProviderRegistry` (so the result is cached with the config
+    snapshot), and falls back to plain resolution for bare dicts — tests and
+    older callers still pass those.
     """
-    ep = getattr(config, "embed_provider", "ollama")
+    for_embed = getattr(providers, "for_embed", None)
+    if for_embed is not None:
+        return for_embed()
+    return resolve_embed_provider(config, providers)
 
-    if ep == "ollama":
-        from backend.providers.ollama_provider import (
-            OllamaProvider,  # local provider; only load if needed
-        )
-        embed_model = config.embedding_model or "nomic-embed-text"
-        ollama_url = config.ollama_url or os.environ.get("OLLAMA_URL", "http://localhost:11434")
-        return OllamaProvider(base_url=ollama_url, model=embed_model)
 
-    if ep == "bedrock":
-        # Case 1: LLM is also Bedrock — reuse the existing provider instance
-        provider = providers.get("bedrock")
-        if provider is not None:
-            provider._embed_model = config.embedding_model or "amazon.titan-embed-text-v1"
-            return provider
-
-        # Case 2: LLM is something else (Ollama, Anthropic, …) — build a standalone
-        # BedrockProvider from the credentials stored in llm_credentials.
-        raw = getattr(config, "llm_credentials", None)
-        if raw:
-            try:
-                import json as _json
-                creds_str = raw.decode("latin-1") if isinstance(raw, bytes) else str(raw)
-                creds = _json.loads(creds_str)
-                secret_key = get_machine_key()
-                from backend.providers.bedrock import BedrockProvider
-                from backend.providers.encryption import encrypt_credential
-                session_token_enc = None
-                if creds.get("session_token"):
-                    session_token_enc = encrypt_credential(creds["session_token"], secret_key)
-                return BedrockProvider(
-                    region=creds["region"],
-                    access_key_id_enc=encrypt_credential(creds["access_key_id"], secret_key),
-                    secret_access_key_enc=encrypt_credential(creds["secret_access_key"], secret_key),
-                    secret_key=secret_key,
-                    model="",  # unused — this instance is embed-only
-                    session_token_enc=session_token_enc,
-                    embed_model=config.embedding_model or "amazon.titan-embed-text-v1",
-                )
-            except Exception:
-                logger.warning(
-                    "embed_provider='bedrock' requested but could not build a standalone "
-                    "Bedrock embed provider from stored credentials. "
-                    "Check that Bedrock credentials are saved in Settings.",
-                    exc_info=True,
-                )
-        raise ValueError(
-            "embed_provider='bedrock' is configured but no Bedrock credentials are stored. "
-            "Go to Settings → LLM Provider and save your AWS credentials."
-        )
-
-    if ep == "openai":
-        provider = providers.get("openai")
-        if provider is None:
-            raise ValueError(
-                "embed_provider='openai' requires llm_provider='openai' as well "
-                "(credentials are shared). Use 'ollama' as embed_provider to mix providers."
-            )
-        return provider
-
-    return None
+def _llm_provider(providers: Any, config: Any) -> Any | None:
+    """Resolve the chat provider from a registry or a bare name-keyed dict."""
+    if not providers:
+        return None
+    for_llm = getattr(providers, "for_llm", None)
+    if for_llm is not None:
+        return for_llm()
+    return providers.get(config.llm_provider)
 
 
 async def _fetch_all_inbox_doc_ids(
@@ -693,7 +648,7 @@ async def _session_expiry_loop(app: FastAPI) -> None:
 
             if expired:
                 logger.info("Session expiry: processing %d expired session(s)", len(expired))
-                provider = providers.get(config.llm_provider) if providers else None
+                provider = _llm_provider(providers, config)
                 for session in expired:
                     if provider and memory_store:
                         try:
@@ -2176,7 +2131,7 @@ async def delete_discover_session(session_id: str, request: Request) -> dict:
     async with AsyncSessionLocal() as db:
         session = await db.get(ConversationSessionORM, session_id)
         if session and providers and memory_store:
-            provider = providers.get(config.llm_provider)
+            provider = _llm_provider(providers, config)
             if provider:
                 try:
                     await _extract_memories_from_session(session, provider, memory_store, config)
@@ -2315,7 +2270,7 @@ async def discover(body: DiscoverBody, request: Request) -> dict:
         )
 
     config = _settings_svc.config
-    provider = providers.get(config.llm_provider)
+    provider = _llm_provider(providers, config)
     if provider is None:
         raise HTTPException(status_code=503, detail="LLM provider not available.")
 
@@ -3009,6 +2964,7 @@ async def update_settings(request: Request, body: dict[str, Any] = Body(...)) ->
     old_qdrant_mode = _old.qdrant_mode
     old_embed_provider = _old.embed_provider
     old_embedding_model = _old.embedding_model
+    old_embed_endpoint = effective_embed_endpoint(_old)
     old_chunk_size = _old.chunk_size
     old_chunk_strategy = _old.chunk_strategy
 
@@ -3031,9 +2987,13 @@ async def update_settings(request: Request, body: dict[str, Any] = Body(...)) ->
             and (new_config.qdrant_url != old_qdrant_url or new_config.qdrant_mode != old_qdrant_mode)
         )
     )
+    # Endpoint is part of the identity of a vector space: the same model name
+    # served by a different host produces incompatible vectors, so repointing
+    # embeddings must prompt a re-index just like changing the model does.
     embed_changed = (
         new_config.embed_provider != old_embed_provider
         or new_config.embedding_model != old_embedding_model
+        or effective_embed_endpoint(new_config) != old_embed_endpoint
     )
     chunk_changed = (
         new_config.chunk_size != old_chunk_size
@@ -3230,7 +3190,7 @@ async def translate_prompt(body: TranslatePromptBody, request: Request) -> dict:
     if not providers:
         raise HTTPException(status_code=503, detail="LLM provider not configured.")
     config = _settings_svc.config
-    provider = providers.get(config.llm_provider)
+    provider = _llm_provider(providers, config)
     if not provider:
         raise HTTPException(status_code=503, detail="LLM provider not available.")
 
@@ -3315,16 +3275,20 @@ async def get_status(request: Request) -> dict:
     # Use cached health if queue is busy or cache is fresh (< 30s)
     llm_online = False
     embed_online = False
+    # None = no rerank endpoint to probe (off, or 'local'/'llm' which the other
+    # indicators already cover). The UI shows no dot in that case.
+    rerank_online: bool | None = None
 
     if queue and queue.health_cache_age < 60.0 and queue.cached_health:
         # Cache is fresh (< 60 s) — avoid a live check on every poll
         llm_online = queue.cached_health.get("llm", False)
         embed_online = queue.cached_health.get("embed", False)
+        rerank_online = queue.cached_health.get("rerank")
     else:
         # Cache is stale — do a real health check and refresh it
         providers = getattr(request.app.state, "providers", None)
         if providers:
-            provider = providers.get(config.llm_provider)
+            provider = _llm_provider(providers, config)
             if provider:
                 try:
                     llm_online = await asyncio.wait_for(provider.health_check(), timeout=3.0)
@@ -3341,6 +3305,15 @@ async def get_status(request: Request) -> dict:
                 pass
         if queue:
             queue.update_health_cache("embed", embed_online)
+
+        rerank_probe = getattr(vs, "rerank_health_check", None) if vs is not None else None
+        if rerank_probe is not None:
+            try:
+                rerank_online = await asyncio.wait_for(rerank_probe(), timeout=3.0)
+            except Exception:
+                rerank_online = False
+        if queue:
+            queue.update_health_cache("rerank", rerank_online)
 
     # 3 & 4. Queue counts
     pending_count = 0
@@ -3385,6 +3358,7 @@ async def get_status(request: Request) -> dict:
     base: dict[str, Any] = {
         "llm_online": llm_online,
         "embed_online": embed_online,
+        "rerank_online": rerank_online,
     }
 
     if is_authed:
