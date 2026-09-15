@@ -150,6 +150,14 @@ the chat LLM** — embedding models are small and fast.
 | Embedding model | `embedding_model` | `nomic-embed-text` | Per-provider defaults: ollama `nomic-embed-text`, bedrock `amazon.titan-embed-text-v1`, openai `text-embedding-3-small`. 🔁 **Changing the model requires re-indexing** — the vector dimension must match the index, or search fails with a dimension-mismatch error. |
 | Parallel embeddings | `embed_concurrency` | `1` | Embedding API calls in flight at once. For Ollama this is chunks-per-document; for cloud providers it now also overlaps **whole documents** during indexing. `1` is safe for a local Ollama. Raise to **4–8** for a remote/GPU Ollama, and to **~8** for Bedrock (the Bedrock embeddings panel defaults this to 8). The vector store's embed semaphore caps total concurrent calls, so raising it never exceeds this number regardless of how many documents are being indexed. |
 | Embedding batch size | `embed_batch_size` | `32` | Texts sent per embedding API call. **Only Cohere Embed models on Bedrock** batch multiple texts in one call (up to 96) — this cuts request count and cost during indexing. Titan and all non-Bedrock providers ignore it and always send one text per call. |
+| Embedding endpoint | `embed_base_url` | *(empty)* | Point embeddings at a **different server than the chat model** — a GPU box, a local vLLM, a separate OpenAI-compatible host. Empty = inherit the LLM section's endpoint. 🔁 **Changing this requires re-indexing**: the same model name served by a different host produces incompatible vectors, and mixing two vector spaces in one collection degrades retrieval with *no error*. |
+| Embedding API key | `embed_credentials` | *(empty)* | A key just for the embedding endpoint. Empty = reuse the LLM's key, which only applies when the LLM provider is compatible (an OpenAI-style embed role never inherits Bedrock credentials). Self-hosted endpoints such as vLLM usually need no key. Rotating this does **not** trigger a re-index — same endpoint, same vectors. |
+
+> **Mixing providers is now supported.** Earlier versions required
+> `llm_provider = openai` before `embed_provider = openai` would work, because both
+> roles shared one provider instance. Each role now resolves independently
+> ([D-27](DECISIONS.md)), so a local Ollama chat model with OpenAI-compatible
+> embeddings on another host is a valid configuration.
 
 ### Embedding refresh
 
@@ -199,7 +207,9 @@ Ships **OFF**. Adds latency proportional to `rerank_top_k × passage length`.
 | Enable re-ranking | `rerank_enabled` | `false` | Master switch. When on, the reranker's score **overrides** the vector/fusion score everywhere. |
 | Reranker | `rerank_method` | `llm` | See method comparison below. |
 | Re-rank top K | `rerank_top_k` | `20` | Candidates passed to the reranker. Higher = better recall before reranking, more reranker latency. |
-| Model | `rerank_model` | `BAAI/bge-reranker-v2-m3` | HuggingFace ID (for `local`) or Bedrock model ID/ARN (for `api`). The default is multilingual (~560 MB, downloaded on first use). |
+| Model | `rerank_model` | `BAAI/bge-reranker-v2-m3` | HuggingFace ID (for `local`), Bedrock model ID/ARN (for `api`), or the model name the rerank server expects (for `cohere_api`). The default is multilingual (~560 MB, downloaded on first use). **TEI ignores this field** — it serves whichever model it was started with. |
+| Rerank endpoint | `rerank_base_url` | *(empty)* | Base URL of the rerank server, **without** the path — Paperless IQ appends `/v1/rerank` for `cohere_api` and `/rerank` for `tei`. Required for both HTTP methods; empty falls back to the OpenAI base URL when the LLM provider is OpenAI. |
+| Rerank API key | `rerank_api_key` | *(empty)* | Sent as a `Bearer` token. Empty = reuse the LLM API key (OpenAI/Anthropic only), or send none at all. Self-hosted vLLM and TEI usually need no key. |
 
 **Method comparison:**
 
@@ -208,6 +218,8 @@ Ships **OFF**. Adds latency proportional to `rerank_top_k × passage length`.
 | `llm` (your chat LLM, listwise) | None — reuses LLM creds | One extra LLM call per query | Scores are quantised to `rating/10`. Cheapest to operate; recommended default. **If automation is on**, every suggestion also reranks → extra LLM load. |
 | `local` (in-process cross-encoder) | `paperless-iq[rerank-local]` (sentence-transformers + torch) | **CPU-bound and heavy** | ⚠️ The model is **CPU-only here** and saturates all cores. A single shared instance is used by Discovery *and* the automation loop; inference is now **serialised** and the model is **loaded once** ([`rerankers.py`](../backend/rerankers.py)), but on a busy box it still adds seconds per query. The image bundles a **CPU-only torch** build (`PIQ_EXTRAS` includes `rerank-local`) — see [Environment variables](#environment-variables-not-in-the-ui). First use downloads the weights into `HF_HOME` (persisted). |
 | `api` (Amazon Bedrock Rerank) | Bedrock as the LLM provider | Per-call AWS cost | Requires `llm_provider = bedrock`. Enter a Bedrock rerank model ID/ARN (e.g. `amazon.rerank-v1:0`, `cohere.rerank-v3-5:0`). |
+| `cohere_api` (rerank API) | A reachable rerank endpoint | One HTTP call per query | Speaks the **Cohere rerank format**, which Cohere, Jina, **vLLM** and Infinity all share: `POST {base}/v1/rerank`. The best option for a self-hosted GPU reranker — no local CPU cost, no torch dependency. |
+| `tei` (Hugging Face TEI) | A reachable TEI endpoint | One HTTP call per query | Text Embeddings Inference is **not** Cohere-compatible despite often being described as such — it uses `POST {base}/rerank` with a different body and a bare-array response. Pick this rather than `cohere_api` for a TEI server, or every request will fail. |
 
 ---
 
