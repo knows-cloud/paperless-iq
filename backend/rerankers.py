@@ -12,6 +12,13 @@ Ships disabled (``config.rerank_enabled=False``). When enabled,
                 imported lazily on first use; the first run downloads the model
                 weights (progress logged by ``huggingface_hub``).
 - ``"api"``   — AWS Bedrock Rerank using the configured Bedrock credentials.
+- ``"cohere_api"`` — any HTTP endpoint speaking the Cohere rerank format:
+                Cohere itself, Jina, vLLM and Infinity all share it.
+- ``"tei"``   — Hugging Face Text Embeddings Inference, which speaks a
+                *different* shape and so needs its own adapter.
+
+The two HTTP methods take their endpoint and key from ``rerank_base_url`` /
+``rerank_api_key``, falling back to the LLM section when empty (D-27).
 
 All implementations return scores normalised to ``[0, 1]`` in input order and
 degrade gracefully: on any failure they return neutral scores (preserving the
@@ -207,7 +214,195 @@ class BedrockReranker:
         return scores
 
 
-def build_reranker(config: Any, providers: dict | None) -> Reranker | None:
+class _BaseHTTPReranker:
+    """Shared plumbing for the two HTTP rerank wire formats.
+
+    Subclasses supply the request body and pull scores out of the response;
+    everything else — timeouts, auth, index mapping, clamping and the neutral
+    fallback — lives here.
+    """
+
+    _TIMEOUT_SECONDS = 30.0
+
+    def __init__(self, base_url: str, model: str, api_key: str = "") -> None:
+        self._base_url = base_url.rstrip("/")
+        self._model = model
+        self._api_key = api_key
+
+    # --- subclass hooks -------------------------------------------------
+    def _endpoint(self) -> str:
+        raise NotImplementedError
+
+    def _payload(self, query: str, passages: list[str]) -> dict[str, Any]:
+        raise NotImplementedError
+
+    def _extract(self, data: Any) -> list[tuple[int, float]]:
+        """Return (index, score) pairs from a decoded response body."""
+        raise NotImplementedError
+
+    # --- shared ---------------------------------------------------------
+    def _headers(self) -> dict[str, str]:
+        headers = {"Content-Type": "application/json"}
+        if self._api_key:
+            headers["Authorization"] = f"Bearer {self._api_key}"
+        return headers
+
+    async def health_check(self) -> bool:
+        """Probe the endpoint with a one-passage rerank.
+
+        Uses the real request path rather than a bare GET, so a reachable host
+        serving a different API still reports as down — which is the failure
+        users actually hit when pointing at the wrong rerank flavour.
+        """
+        try:
+            import httpx
+
+            async with httpx.AsyncClient(timeout=5.0) as client:
+                resp = await client.post(
+                    f"{self._base_url}{self._endpoint()}",
+                    json=self._payload("ping", ["ping"]),
+                    headers=self._headers(),
+                )
+            return resp.is_success
+        except Exception:
+            return False
+
+    async def rerank(self, query: str, passages: list[str]) -> list[float]:
+        if not passages:
+            return []
+        try:
+            import httpx
+
+            async with httpx.AsyncClient(timeout=self._TIMEOUT_SECONDS) as client:
+                resp = await client.post(
+                    f"{self._base_url}{self._endpoint()}",
+                    json=self._payload(query, passages),
+                    headers=self._headers(),
+                )
+                resp.raise_for_status()
+                pairs = self._extract(resp.json())
+        except Exception:
+            logger.warning(
+                "%s failed; preserving vector order.", type(self).__name__, exc_info=True
+            )
+            return [0.5] * len(passages)
+
+        # Responses come back sorted by relevance, but the Reranker protocol
+        # requires scores in *input* order — map back through the index.
+        scores = [0.0] * len(passages)
+        for idx, score in pairs:
+            if 0 <= idx < len(passages):
+                scores[idx] = max(0.0, min(1.0, score))
+        return scores
+
+
+class HTTPReranker(_BaseHTTPReranker):
+    """Cohere-style rerank API — also spoken by Jina, vLLM and Infinity.
+
+    ``POST {base_url}/v1/rerank`` with ``{model, query, documents, top_n}``,
+    answering ``{"results": [{"index": int, "relevance_score": float}]}``.
+    """
+
+    def __init__(
+        self, base_url: str, model: str, api_key: str = "", path: str = "/v1/rerank"
+    ) -> None:
+        super().__init__(base_url, model, api_key)
+        self._path = path
+
+    def _endpoint(self) -> str:
+        return self._path
+
+    def _payload(self, query: str, passages: list[str]) -> dict[str, Any]:
+        return {
+            "model": self._model,
+            "query": query,
+            "documents": passages,
+            # Ask for every passage back: a truncated response would leave the
+            # missing ones scored 0.0 and sink them below genuinely bad hits.
+            "top_n": len(passages),
+            "return_documents": False,
+        }
+
+    def _extract(self, data: Any) -> list[tuple[int, float]]:
+        out: list[tuple[int, float]] = []
+        for item in data.get("results", []):
+            idx = item.get("index")
+            if isinstance(idx, int):
+                score = item.get("relevance_score", item.get("score", 0.0))
+                out.append((idx, float(score)))
+        return out
+
+
+class TEIReranker(_BaseHTTPReranker):
+    """Hugging Face Text Embeddings Inference rerank API.
+
+    TEI is *not* Cohere-compatible despite often being described as such:
+    ``POST {base_url}/rerank`` takes ``{query, texts, raw_scores}`` and answers
+    with a bare array of ``{index, score}`` — no model field, no wrapper object.
+    ``raw_scores`` stays false so scores arrive already in [0, 1].
+    """
+
+    def _endpoint(self) -> str:
+        return "/rerank"
+
+    def _payload(self, query: str, passages: list[str]) -> dict[str, Any]:
+        return {"query": query, "texts": passages, "raw_scores": False}
+
+    def _extract(self, data: Any) -> list[tuple[int, float]]:
+        out: list[tuple[int, float]] = []
+        for item in data if isinstance(data, list) else []:
+            idx = item.get("index")
+            if isinstance(idx, int):
+                out.append((idx, float(item.get("score", 0.0))))
+        return out
+
+
+def _rerank_base_url(config: Any) -> str:
+    """The rerank endpoint, inheriting the OpenAI base URL when empty (D-27)."""
+    own = (getattr(config, "rerank_base_url", "") or "").strip()
+    if own:
+        return own
+    if getattr(config, "llm_provider", "") == "openai":
+        return (getattr(config, "openai_base_url", "") or "").strip()
+    return ""
+
+
+def _rerank_api_key(config: Any) -> str:
+    """The rerank API key, inheriting the chat key when empty (D-27).
+
+    Inheritance is deliberately narrow: it applies only when the rerank role
+    has *not* named an endpoint of its own, so the key can only ever travel to
+    the same host the chat provider already talks to. A rerank URL pointing
+    somewhere else must bring its own key — silently forwarding the user's
+    OpenAI key to an arbitrary third-party endpoint would be a credential leak.
+
+    An empty key is valid: self-hosted vLLM and TEI usually need no auth.
+    """
+    raw = getattr(config, "rerank_api_key", None)
+    if raw:
+        return raw.decode("latin-1") if isinstance(raw, bytes) else str(raw)
+    own_url = (getattr(config, "rerank_base_url", "") or "").strip()
+    if not own_url and getattr(config, "llm_provider", "") == "openai":
+        creds = getattr(config, "llm_credentials", None)
+        if creds:
+            return creds.decode("latin-1") if isinstance(creds, bytes) else str(creds)
+    return ""
+
+
+def _rerank_provider(providers: Any, config: Any) -> Any | None:
+    """Resolve the provider backing the rerank role.
+
+    Accepts a ``ProviderRegistry`` (role accessor) or a bare name-keyed dict.
+    """
+    if not providers:
+        return None
+    for_rerank = getattr(providers, "for_rerank", None)
+    if for_rerank is not None:
+        return for_rerank()
+    return providers.get(config.llm_provider)
+
+
+def build_reranker(config: Any, providers: Any) -> Reranker | None:
     """Construct the configured reranker, or None when reranking is disabled
     or cannot be satisfied. Never raises — a failure disables reranking."""
     if not getattr(config, "rerank_enabled", False):
@@ -216,7 +411,7 @@ def build_reranker(config: Any, providers: dict | None) -> Reranker | None:
     method = getattr(config, "rerank_method", "llm")
     try:
         if method == "llm":
-            provider = providers.get(config.llm_provider) if providers else None
+            provider = _rerank_provider(providers, config)
             if provider is None:
                 logger.warning(
                     "Rerank method 'llm' selected but provider '%s' is unavailable; "
@@ -238,6 +433,19 @@ def build_reranker(config: Any, providers: dict | None) -> Reranker | None:
                 "reranking disabled."
             )
             return None
+
+        if method in ("cohere_api", "tei"):
+            base_url = _rerank_base_url(config)
+            if not base_url:
+                logger.warning(
+                    "Rerank method '%s' needs a rerank endpoint. Set one under "
+                    "Settings → AI Provider, or configure an OpenAI-compatible base "
+                    "URL to inherit. Reranking disabled.", method,
+                )
+                return None
+            api_key = _rerank_api_key(config)
+            cls = HTTPReranker if method == "cohere_api" else TEIReranker
+            return cls(base_url, config.rerank_model, api_key)
     except Exception:
         logger.warning("Failed to build reranker (method=%s); reranking disabled.", method, exc_info=True)
         return None

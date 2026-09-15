@@ -7,6 +7,7 @@ import {
   VECTOR_STORE_BACKENDS,
   CHUNK_STRATEGIES,
   RERANK_METHODS,
+  HTTP_RERANK_METHODS,
   QDRANT_MODES,
   QDRANT_QUANTIZATIONS,
   EMBED_REFRESH_MODES,
@@ -36,6 +37,10 @@ interface Props {
   vectorStoreBackend: string;
   setVectorStoreBackend: (v: string) => void;
   qdrantApiKey: string;
+  embedCredentials: string;
+  setEmbedCredentials: (v: string) => void;
+  rerankApiKey: string;
+  setRerankApiKey: (v: string) => void;
   setQdrantApiKey: (v: string) => void;
   // Reranker
   rerankEnabled: boolean;
@@ -62,6 +67,8 @@ export function AIProviderTab({
   bedrockSessionToken, setBedrockSessionToken,
   vectorStoreBackend, setVectorStoreBackend,
   qdrantApiKey, setQdrantApiKey,
+  embedCredentials, setEmbedCredentials,
+  rerankApiKey, setRerankApiKey,
   rerankEnabled, setRerankEnabled,
   rerankMethod, setRerankMethod,
   embedRefreshMode, setEmbedRefreshMode,
@@ -70,6 +77,8 @@ export function AIProviderTab({
   const { t } = useTranslation();
 
   const qdrantApiKeyStored = Boolean((s as Record<string, unknown>)?.qdrant_api_key_stored);
+  const embedCredentialsStored = Boolean((s as Record<string, unknown>)?.embed_credentials_stored);
+  const rerankApiKeyStored = Boolean((s as Record<string, unknown>)?.rerank_api_key_stored);
 
   return (
     <Stack gap="md">
@@ -278,6 +287,13 @@ export function AIProviderTab({
                   description={t("aiProvider.embeddings.ollama.urlEmbed.description")}
                 />
               )}
+              <TextInput
+                label={<InfoLabel label={t("aiProvider.embeddings.baseUrl.label")} tip={t("aiProvider.embeddings.baseUrl.tip")} />}
+                name="embed_base_url"
+                defaultValue={String(s.embed_base_url ?? "")}
+                placeholder={ollamaUrl || "http://localhost:11434"}
+                description={t("aiProvider.embeddings.baseUrl.description")}
+              />
             </>
           )}
 
@@ -333,9 +349,27 @@ export function AIProviderTab({
                 max={16}
                 defaultValue={Number(s.embed_concurrency ?? 1)}
               />
-              <Text size="sm" c="dimmed" p="sm" style={{ background: "var(--mantine-color-teal-0)", borderRadius: "var(--mantine-radius-sm)" }}>
-                {t("aiProvider.embeddings.openai.hint")}
-              </Text>
+              <TextInput
+                label={<InfoLabel label={t("aiProvider.embeddings.baseUrl.label")} tip={t("aiProvider.embeddings.baseUrl.tip")} />}
+                name="embed_base_url"
+                defaultValue={String(s.embed_base_url ?? "")}
+                placeholder={String(s.openai_base_url ?? "https://api.openai.com/v1")}
+                description={t("aiProvider.embeddings.baseUrl.description")}
+              />
+              <PasswordInput
+                label={
+                  <span>
+                    <InfoLabel label={t("aiProvider.embeddings.apiKey.label")} tip={t("aiProvider.embeddings.apiKey.tip")} />
+                    {embedCredentialsStored && (
+                      <Badge size="xs" color="teal" variant="light" ml={6}>{t("common.credential.stored")}</Badge>
+                    )}
+                  </span>
+                }
+                value={embedCredentials}
+                onChange={e => setEmbedCredentials(e.target.value)}
+                placeholder={embedCredentialsStored ? t("common.credential.keepExisting") : t("aiProvider.embeddings.apiKey.placeholder")}
+                description={t("aiProvider.embeddings.apiKey.description")}
+              />
             </>
           )}
         </Stack>
@@ -600,6 +634,43 @@ export function AIProviderTab({
                   placeholder="amazon.rerank-v1:0"
                   description={t("aiProvider.search.rerankApiDescription")}
                 />
+              )}
+              {HTTP_RERANK_METHODS.includes(rerankMethod) && (
+                <>
+                  <Text size="sm" c="dimmed" p="sm" style={{ background: "var(--mantine-color-teal-0)", borderRadius: "var(--mantine-radius-sm)" }}>
+                    {rerankMethod === "tei"
+                      ? t("aiProvider.search.rerankTeiHint")
+                      : t("aiProvider.search.rerankCohereHint")}
+                  </Text>
+                  <TextInput
+                    label={<InfoLabel label={t("aiProvider.search.rerankBaseUrl.label")} tip={t("aiProvider.search.rerankBaseUrl.tip")} />}
+                    name="rerank_base_url"
+                    defaultValue={String(s.rerank_base_url ?? "")}
+                    placeholder={rerankMethod === "tei" ? "http://tei:80" : "http://vllm:8000/v1"}
+                    description={t("aiProvider.search.rerankBaseUrl.description")}
+                  />
+                  <TextInput
+                    label={<InfoLabel label={t("aiProvider.search.rerankModel.label")} tip={t("aiProvider.search.rerankModel.tip")} />}
+                    name="rerank_model"
+                    defaultValue={String(s.rerank_model ?? "BAAI/bge-reranker-v2-m3")}
+                    placeholder="BAAI/bge-reranker-v2-m3"
+                    description={t("aiProvider.search.rerankHttpModelDescription")}
+                  />
+                  <PasswordInput
+                    label={
+                      <span>
+                        <InfoLabel label={t("aiProvider.search.rerankApiKey.label")} tip={t("aiProvider.search.rerankApiKey.tip")} />
+                        {rerankApiKeyStored && (
+                          <Badge size="xs" color="teal" variant="light" ml={6}>{t("common.credential.stored")}</Badge>
+                        )}
+                      </span>
+                    }
+                    value={rerankApiKey}
+                    onChange={e => setRerankApiKey(e.target.value)}
+                    placeholder={rerankApiKeyStored ? t("common.credential.keepExisting") : t("aiProvider.search.rerankApiKey.placeholder")}
+                    description={t("aiProvider.search.rerankApiKey.description")}
+                  />
+                </>
               )}
             </Stack>
           )}
