@@ -133,9 +133,16 @@ class PaperlessIQConfig(BaseModel):
     chunk_overlap: int = 200  # overlap between chunks
     chunk_strategy: Literal["char", "sentence"] = "char"
     rerank_enabled: bool = False  # master switch (ships OFF)
-    rerank_method: Literal["llm", "local", "api"] = "llm"  # which reranker when enabled
+    # "llm"/"local"/"api" predate per-role routing and keep their meaning.
+    # "cohere_api" covers Cohere, Jina, vLLM and Infinity (one wire format);
+    # "tei" is Hugging Face Text Embeddings Inference, which differs.
+    rerank_method: Literal["llm", "local", "api", "cohere_api", "tei"] = "llm"
     rerank_top_k: int = 20  # how many candidates to rerank
     rerank_model: str = "BAAI/bge-reranker-v2-m3"  # default local cross-encoder (multilingual)
+    # Per-role endpoint/credential for HTTP reranking. Empty = inherit from the
+    # LLM section (D-27). rerank_api_key is Fernet-encrypted; never returned to UI.
+    rerank_base_url: str = ""
+    rerank_api_key: EncryptedBlob = b""
 
     # --- Search tuning: CHROMA-specific ---
     chroma_hnsw_search_ef: int = 100  # recall vs latency at query time
@@ -159,6 +166,11 @@ class PaperlessIQConfig(BaseModel):
     frequency_fallback_count: int = 20  # top-N most frequent entities as fallback
     embed_provider: Literal["ollama", "bedrock", "openai"] = "ollama"  # provider used for embeddings
     embedding_model: str = "nomic-embed-text"  # embedding model name (used when embed_provider=ollama)
+    # Per-role endpoint/credential for embeddings. Empty = inherit from the LLM
+    # section (D-27), which is what every pre-existing install has, so behaviour
+    # is unchanged until a value is set. embed_credentials is Fernet-encrypted.
+    embed_base_url: str = ""
+    embed_credentials: EncryptedBlob = b""
     embed_concurrency: int = 1  # parallel embed calls; 1 is safe for local Ollama, raise for remote/GPU
     # Deferred re-embedding — controls when metadata-change re-embeds are flushed.
     # "immediate" = current behaviour (re-embed on every change, zero latency).
