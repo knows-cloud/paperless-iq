@@ -23,7 +23,7 @@ Paperless IQ goes deeper on every dimension — more providers, more control, st
 | **Per-field prompt control** | — | Per-field instructions + per-document-type prompt templates |
 | **Non-English metadata output** | — | Configurable output language, independent of UI language |
 | **Multilingual search quality** | — | **bge-reranker-v2-m3** cross-encoder covers 100+ languages |
-| **Re-ranking** | — | LLM · local cross-encoder · Amazon Bedrock Rerank |
+| **Re-ranking** | — | LLM · local cross-encoder · Amazon Bedrock Rerank · Cohere-format HTTP · Hugging Face TEI |
 | **Search tuning** | — | Chunk size/overlap · HNSW parameters · overfetch · min-score |
 | **Audit log** | — | Field-level history with configurable retention |
 | **Runs fully air-gapped** | Yes (with Ollama) | Yes — Ollama + local ChromaDB/Qdrant, no outbound calls |
@@ -108,7 +108,8 @@ Most tools give you one knob. Paperless IQ gives you a control panel:
 
 - **Chunk size and overlap** — configurable text chunking for indexing and retrieval
 - **Overfetch + min-score** — retrieve more candidates than you need, then filter by minimum similarity score
-- **Re-ranking** — optionally re-score the top-K retrieved chunks with a cross-encoder: `llm` (uses your configured LLM), `local` (bge-reranker-v2-m3 runs on-device), or `api` (Amazon Bedrock Rerank)
+- **Re-ranking** — optionally re-score the top-K retrieved chunks with a cross-encoder: `llm` (uses your configured LLM), `local` (bge-reranker-v2-m3 runs on-device), `api` (Amazon Bedrock Rerank), `cohere_api` (any endpoint speaking the Cohere rerank format — Cohere, Jina, vLLM, Infinity), or `tei` (Hugging Face Text Embeddings Inference)
+- **Per-role endpoints** — point embeddings and re-ranking at their own server with their own credentials, independently of the chat model; empty means "inherit from the LLM section"
 - **Context window cap** — limit how many characters the LLM sees per request
 - **Embedding concurrency** — control how many parallel embedding requests the backend sends
 - **LLM timeout** — prevent runaway requests from blocking the queue
@@ -152,7 +153,7 @@ Most tools give you one knob. Paperless IQ gives you a control panel:
 ### Vector Store & Search Quality
 - **Three backends** — ChromaDB (embedded, zero-config), Qdrant (local Docker or Qdrant Cloud), Amazon Bedrock Knowledge Base
 - **Qdrant hybrid search** — dense + sparse BM25 vectors fused with Reciprocal Rank Fusion for better recall on exact terms
-- **Re-ranking** — optional cross-encoder re-ranking via LLM, local bge-reranker-v2-m3, or Amazon Bedrock Rerank API
+- **Re-ranking** — optional cross-encoder re-ranking via LLM, local bge-reranker-v2-m3, Amazon Bedrock Rerank API, a Cohere-format HTTP endpoint (Jina, vLLM, Infinity), or Hugging Face TEI
 - **HNSW tuning** — configurable `ef`, `M`, and `construction_ef` for both ChromaDB and Qdrant
 - **Qdrant quantisation** — scalar or binary quantisation to reduce memory footprint
 - **Live backend switching** — changing vector store backends migrates embeddings automatically without re-embedding
@@ -340,6 +341,8 @@ Set `SECRET_KEY` explicitly only if you need to restore an encrypted database fr
 | `PIQ_LLM_TIMEOUT_SECONDS` | `120` | LLM request timeout |
 | `PIQ_EMBED_PROVIDER` | `ollama` | Embedding provider: `ollama` · `openai` · `bedrock` |
 | `PIQ_EMBEDDING_MODEL` | `nomic-embed-text` | Embedding model name |
+| `PIQ_EMBED_BASE_URL` | — | Endpoint for the embedding role, when it differs from the chat model's. Empty inherits the LLM section. 🔁 Changing this requires re-indexing — the same model name on a different host produces incompatible vectors. |
+| `PIQ_EMBED_CREDENTIALS` | — | API key for the embedding endpoint. Empty reuses the LLM key, but only when the role has *not* named its own endpoint. Self-hosted servers such as vLLM usually need none. |
 | `PIQ_EMBED_CONCURRENCY` | `4` | Parallel embedding requests |
 | `PIQ_CONTEXT_WINDOW_CHARS` | `128000` | Max characters sent to LLM per request |
 
@@ -377,9 +380,11 @@ Set `SECRET_KEY` explicitly only if you need to restore an encrypted database fr
 | `PIQ_CHUNK_OVERLAP` | `200` | Overlap between consecutive chunks |
 | `PIQ_CHUNK_STRATEGY` | `fixed` | Chunking strategy |
 | `PIQ_RERANK_ENABLED` | `false` | Enable cross-encoder re-ranking |
-| `PIQ_RERANK_METHOD` | `llm` | `llm` · `local` (bge-reranker-v2-m3) · `api` (Bedrock) |
+| `PIQ_RERANK_METHOD` | `llm` | `llm` · `local` (bge-reranker-v2-m3) · `api` (Bedrock) · `cohere_api` (Cohere rerank format: Cohere, Jina, vLLM, Infinity) · `tei` (Hugging Face TEI) |
 | `PIQ_RERANK_TOP_K` | `20` | Candidates passed to the reranker |
-| `PIQ_RERANK_MODEL` | `BAAI/bge-reranker-v2-m3` | Local cross-encoder model |
+| `PIQ_RERANK_MODEL` | `BAAI/bge-reranker-v2-m3` | HuggingFace ID (`local`), Bedrock model ID/ARN (`api`), or the server's model name (`cohere_api`). TEI ignores it — it serves whichever model it was started with. |
+| `PIQ_RERANK_BASE_URL` | — | Base URL of the rerank server, **without** the path — `/v1/rerank` is appended for `cohere_api`, `/rerank` for `tei`. Required for both HTTP methods. |
+| `PIQ_RERANK_API_KEY` | — | Sent as a `Bearer` token. Empty reuses the LLM key only when no separate endpoint is set; self-hosted vLLM and TEI usually need none. |
 | `PIQ_CHROMA_HNSW_SEARCH_EF` | `100` | ChromaDB HNSW search ef |
 | `PIQ_CHROMA_HNSW_M` | `16` | ChromaDB HNSW M parameter |
 | `PIQ_CHROMA_HNSW_CONSTRUCTION_EF` | `100` | ChromaDB HNSW construction ef |
