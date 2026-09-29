@@ -467,7 +467,9 @@ async def _background_index(
                         await vector_store.upsert(doc_id, content, meta)
                         if queue:
                             queue.record_embed_success()
-                        await _record_document_embed(doc_id, meta.get("title"), "system:index")
+                        await _record_document_embed(
+                            doc_id, meta.get("title"), "system:index", tag_ids=meta.get("tag_ids"),
+                        )
                         indexed += 1
                         if queue:
                             queue.set_embedding_progress(
@@ -671,15 +673,24 @@ async def _session_expiry_loop(app: FastAPI) -> None:
         await asyncio.sleep(3600)
 
 
-async def _record_document_embed(doc_id: int, title: str | None, source: str) -> None:
-    """Stamp ``last_embedded_at`` and write an ``embedded`` audit event.
+async def _record_document_embed(
+    doc_id: int, title: str | None, source: str, tag_ids: list[int] | None = None,
+) -> None:
+    """Stamp ``last_embedded_at``/``last_tag_ids_json`` and write an ``embedded`` audit event.
 
     Called after every successful document embed so the audit log carries a
     full embed history (with the document title) — making double-embeds
     (e.g. webhook-on-add + post-approval) visible — and so the content-drift
     reindex has a per-document "vector last refreshed at" to compare against.
     ``source`` is the trigger: ``"system:index"``, ``"approval"``, ``"webhook"``,
-    ``"system:flush"``, ``"drift"``, …
+    ``"system:flush"``, ``"drift"``, ``"tag_drift"``, …
+
+    ``tag_ids`` snapshots the tag IDs embedded *this* time, so the tag-drift
+    reindex can later detect a removal (bulk-edit or a whole tag deletion)
+    that fired neither the webhook nor a ``modified`` bump. Pass it whenever
+    the caller has the document's current tags to hand; omit it only where
+    they're genuinely unavailable — a missing snapshot just means the
+    tag-drift scan skips that document rather than treating it as changed.
     """
     try:
         async with AsyncSessionLocal() as db:
@@ -689,6 +700,8 @@ async def _record_document_embed(doc_id: int, title: str | None, source: str) ->
                 tracking = DocumentTrackingORM(document_id=doc_id, first_seen_at=now)
                 db.add(tracking)
             tracking.last_embedded_at = now
+            if tag_ids is not None:
+                tracking.last_tag_ids_json = _json.dumps(sorted(set(tag_ids)))
             await AuditLogService(db).record_event(
                 action_type="embedded",
                 change_source=source,
@@ -724,7 +737,7 @@ async def schedule_reembed(
     mode = getattr(_settings_svc.config, "embed_refresh_mode", "immediate")
     if mode == "immediate":
         await vs.upsert(doc_id, content, meta)
-        await _record_document_embed(doc_id, meta.get("title"), source)
+        await _record_document_embed(doc_id, meta.get("title"), source, tag_ids=meta.get("tag_ids"))
         return
 
     # Stamp dirty for later flush
@@ -877,7 +890,7 @@ async def _flush_dirty_reembeds(vs: Any, pc: Any) -> None:
                 if t:
                     t.reembed_dirty_since = None
                     await db.commit()
-            await _record_document_embed(doc_id, doc.get("title"), "system:flush")
+            await _record_document_embed(doc_id, doc.get("title"), "system:flush", tag_ids=doc_tags)
             flushed += 1
         except httpx.HTTPStatusError as exc:
             if exc.response.status_code == 404:
@@ -1013,10 +1026,116 @@ async def _run_content_drift_reindex(app: FastAPI) -> None:
     )
 
 
+async def _run_tag_drift_reindex(app: FastAPI) -> None:
+    """Re-embed documents whose current tags no longer match what was embedded —
+    a safety net for tag removals that content-drift can't see.
+
+    Paperless NGX's bulk-edit ``remove_tag``/``modify_tags`` (and, by extension,
+    deleting a tag outright, which cascades through every document that carried
+    it) does neither of the two things this app otherwise relies on to notice a
+    change: it doesn't fire the ``document_updated`` webhook trigger (that only
+    fires for the single-document edit path), and it doesn't bump the
+    document's ``modified`` timestamp (the tag M2M is changed without a model
+    ``.save()``). So a bulk tag removal is invisible to both the webhook and
+    the content-drift reindex above, and stale tags linger forever in already-
+    embedded chunks (D-18's metadata prefix).
+
+    This scans *every* document's current tag IDs — not just recently-modified
+    ones, since "recently modified" is exactly what a tag-only bulk edit isn't —
+    and compares them against ``document_tracking.last_tag_ids_json``, the
+    snapshot taken at the document's last embed. A mismatch schedules a
+    re-embed. Documents with no snapshot yet (pre-migration embeds) are
+    skipped rather than treated as changed; they get a snapshot the next time
+    anything re-embeds them.
+    """
+    config = _settings_svc.config
+    days = getattr(config, "content_drift_reindex_days", 0)
+    if days <= 0:
+        return
+    vs = getattr(app.state, "vector_store", None)
+    pc = getattr(app.state, "paperless_client", None)
+    if not vs or not pc:
+        return
+
+    base, headers = pc._base_url, pc._headers
+
+    tag_names: dict[int, str] = {}
+    corr_names: dict[int, str] = {}
+    dt_names: dict[int, str] = {}
+    cf_names: dict[int, str] = {}
+    async with httpx.AsyncClient(headers=headers, timeout=30) as lc:
+        for entity, lookup in (
+            ("tags", tag_names), ("correspondents", corr_names),
+            ("document_types", dt_names), ("custom_fields", cf_names),
+        ):
+            eurl: str | None = f"{base}/api/{entity}/?page_size=100"
+            while eurl:
+                r = await lc.get(eurl)
+                if r.status_code != 200:
+                    break
+                d = r.json()
+                for item in d.get("results", []):
+                    lookup[item["id"]] = item.get("name", "")
+                eurl = d.get("next")
+
+    checked = reembedded = 0
+    url: str | None = f"{base}/api/documents/?page_size=100"
+    async with httpx.AsyncClient(headers=headers, timeout=60) as client:
+        while url:
+            r = await client.get(url)
+            if r.status_code != 200:
+                logger.warning("Tag-drift reindex: Paperless returned %d.", r.status_code)
+                break
+            data = r.json()
+            for doc in data.get("results", []):
+                doc_id = doc["id"]
+                checked += 1
+                doc_tags = doc.get("tags") or []
+                current = _json.dumps(sorted(set(doc_tags)))
+                async with AsyncSessionLocal() as db:
+                    t = await db.get(DocumentTrackingORM, doc_id)
+                    last_snapshot = t.last_tag_ids_json if t else None
+                if last_snapshot is None or last_snapshot == current:
+                    continue  # no baseline yet, or tags unchanged since last embed
+
+                content = doc.get("content", "")
+                if not content:
+                    continue
+                raw_cfs = doc.get("custom_fields") or []
+                custom_fields: dict[str, Any] = {}
+                for cf_entry in raw_cfs:
+                    fid = cf_entry.get("field")
+                    val = cf_entry.get("value")
+                    name = cf_names.get(fid, "") if fid is not None else ""
+                    if name and val is not None:
+                        custom_fields[name] = val
+                meta = {
+                    "title": doc.get("title", ""),
+                    "tags": [tag_names.get(tid, "") for tid in doc_tags if tag_names.get(tid)],
+                    "tag_ids": doc_tags,
+                    "correspondent": corr_names.get(doc.get("correspondent") or 0, ""),
+                    "document_type": dt_names.get(doc.get("document_type") or 0, ""),
+                    "custom_fields": custom_fields,
+                }
+                try:
+                    await schedule_reembed(doc_id, content, meta, vs, source="tag_drift")
+                    reembedded += 1
+                except Exception:
+                    logger.warning("Tag-drift re-embed failed for doc %d", doc_id, exc_info=True)
+            url = data.get("next")
+    logger.info(
+        "Tag-drift reindex: checked %d doc(s), re-embedded %d with changed tags.",
+        checked, reembedded,
+    )
+
+
 async def _content_drift_loop(app: FastAPI) -> None:
-    """Periodic content-drift safety net. Idles when content_drift_reindex_days
-    <= 0. First run one interval after startup, then every interval — the
-    webhook stays the primary, real-time re-embed path."""
+    """Periodic content- and tag-drift safety net. Idles when
+    content_drift_reindex_days <= 0. First run one interval after startup,
+    then every interval — the webhook stays the primary, real-time re-embed
+    path for both content edits and single-document tag edits; this loop only
+    catches what it missed (OCR/content edits with no bumped webhook, and bulk
+    tag removals/deletions, which bump neither `modified` nor the webhook)."""
     days0 = getattr(_settings_svc.config, "content_drift_reindex_days", 7) or 7
     next_run = datetime.now(UTC) + timedelta(days=days0)
     while True:
@@ -1027,6 +1146,7 @@ async def _content_drift_loop(app: FastAPI) -> None:
                 continue
             if datetime.now(UTC) >= next_run:
                 await _run_content_drift_reindex(app)
+                await _run_tag_drift_reindex(app)
                 next_run = datetime.now(UTC) + timedelta(days=days)
         except Exception:
             logger.warning("Content-drift loop error", exc_info=True)
