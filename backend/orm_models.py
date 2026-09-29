@@ -99,6 +99,14 @@ class DocumentTrackingORM(Base):
     last_embedded_at: Mapped[datetime | None] = mapped_column(
         DateTime(timezone=True), nullable=True
     )
+    # JSON list of tag IDs the document carried at its last successful embed.
+    # Tag removals (bulk-edit remove_tag/modify_tags, or deleting a tag outright)
+    # fire neither the document_updated webhook trigger nor bump `modified`, so
+    # neither the webhook nor the content-drift reindex notices them. Comparing
+    # a document's *current* tags against this snapshot is what does. NULL means
+    # no snapshot yet (pre-migration embeds) — the tag-drift scan skips those
+    # rather than treating "unknown" as "changed".
+    last_tag_ids_json: Mapped[str | None] = mapped_column(Text, nullable=True)
 
 
 class SettingsORM(Base):

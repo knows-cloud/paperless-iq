@@ -1,11 +1,15 @@
-"""Embed audit events + last_embedded_at + content-drift reindex.
+"""Embed audit events + last_embedded_at + content-drift + tag-drift reindex.
 
 Covers:
 - _record_document_embed writes an 'embedded' audit row (with title) and stamps
-  last_embedded_at, creating the tracking row if absent
+  last_embedded_at (+ last_tag_ids_json when tag_ids is passed), creating the
+  tracking row if absent
 - schedule_reembed (immediate) records the embed; deferred mode does not
 - _run_content_drift_reindex re-embeds only docs whose Paperless `modified` is
   newer than last_embedded_at (no double-embed of unchanged docs)
+- _run_tag_drift_reindex re-embeds only docs whose current tags no longer match
+  last_tag_ids_json (bulk tag removal/deletion fires neither the webhook nor a
+  `modified` bump, so this is the only thing that catches it)
 - _parse_paperless_dt parsing
 """
 
@@ -52,6 +56,20 @@ async def test_record_document_embed_writes_audit_and_stamp(db_engine, monkeypat
 
         t = await db.get(DocumentTrackingORM, 2440)
         assert t is not None and t.last_embedded_at is not None  # tracking row created + stamped
+        assert t.last_tag_ids_json is None  # no tag_ids passed → no snapshot
+
+
+@pytest.mark.asyncio
+async def test_record_document_embed_stamps_tag_snapshot(db_engine, monkeypatch) -> None:
+    """Passing tag_ids stamps a sorted-JSON snapshot for the tag-drift scan."""
+    import backend.main as m
+    factory = _patch_session(monkeypatch, db_engine)
+
+    await m._record_document_embed(9, "Doc 9", "webhook", tag_ids=[5, 3, 3, 1])
+
+    async with factory() as db:
+        t = await db.get(DocumentTrackingORM, 9)
+        assert t.last_tag_ids_json == "[1, 3, 5]"  # sorted, deduplicated
 
 
 @pytest.mark.asyncio
@@ -196,4 +214,69 @@ async def test_drift_disabled_when_days_zero(db_engine, monkeypatch) -> None:
     app = SimpleNamespace(state=SimpleNamespace(
         vector_store=vs, paperless_client=SimpleNamespace(_base_url="x", _headers={})))
     await m._run_content_drift_reindex(app)
+    vs.upsert.assert_not_awaited()
+
+
+# ---------------------------------------------------------------------------
+# Tag-drift reindex
+#
+# Bulk-edit remove_tag/modify_tags (and, by extension, deleting a tag outright)
+# fires neither the document_updated webhook trigger nor a `modified` bump, so
+# it's invisible to the webhook and to _run_content_drift_reindex above. This
+# is the safety net that catches it: it compares every document's *current*
+# tags against the last_tag_ids_json snapshot taken at its last embed.
+# ---------------------------------------------------------------------------
+
+@pytest.mark.asyncio
+async def test_tag_drift_reembeds_only_changed_tags(db_engine, monkeypatch) -> None:
+    factory = _patch_session(monkeypatch, db_engine)
+    t0 = datetime(2026, 6, 1, tzinfo=timezone.utc)
+
+    async with factory() as db:
+        # Doc 1: current tags [1,2] match snapshot → skip.
+        db.add(DocumentTrackingORM(document_id=1, first_seen_at=t0, last_tag_ids_json="[1, 2]"))
+        # Doc 2: snapshot [1,2,99] but tag 99 (e.g. "Jahr") was bulk-removed → re-embed.
+        db.add(DocumentTrackingORM(document_id=2, first_seen_at=t0, last_tag_ids_json="[1, 2, 99]"))
+        # Doc 3: no snapshot yet (pre-migration embed) → skip, don't treat as changed.
+        db.add(DocumentTrackingORM(document_id=3, first_seen_at=t0, last_tag_ids_json=None))
+        await db.commit()
+
+    docs = [
+        {"id": 1, "title": "Unchanged", "content": "c1", "tags": [1, 2]},
+        {"id": 2, "title": "Tag removed", "content": "c2", "tags": [2, 1]},
+        {"id": 3, "title": "No baseline", "content": "c3", "tags": [1]},
+    ]
+    m, app, vs = _drift_app(db_engine, monkeypatch, docs)
+
+    await m._run_tag_drift_reindex(app)
+
+    embedded_ids = sorted(call.args[0] for call in vs.upsert.await_args_list)
+    assert embedded_ids == [2]
+
+
+@pytest.mark.asyncio
+async def test_tag_drift_skips_docs_with_no_content(db_engine, monkeypatch) -> None:
+    factory = _patch_session(monkeypatch, db_engine)
+    t0 = datetime(2026, 6, 1, tzinfo=timezone.utc)
+    async with factory() as db:
+        db.add(DocumentTrackingORM(document_id=4, first_seen_at=t0, last_tag_ids_json="[1]"))
+        await db.commit()
+
+    docs = [{"id": 4, "title": "No OCR", "content": "", "tags": []}]
+    m, app, vs = _drift_app(db_engine, monkeypatch, docs)
+
+    await m._run_tag_drift_reindex(app)
+
+    vs.upsert.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_tag_drift_disabled_when_days_zero(db_engine, monkeypatch) -> None:
+    import backend.main as m
+    _patch_session(monkeypatch, db_engine)
+    monkeypatch.setattr(m._settings_svc, "_config", SimpleNamespace(content_drift_reindex_days=0))
+    vs = SimpleNamespace(upsert=AsyncMock())
+    app = SimpleNamespace(state=SimpleNamespace(
+        vector_store=vs, paperless_client=SimpleNamespace(_base_url="x", _headers={})))
+    await m._run_tag_drift_reindex(app)
     vs.upsert.assert_not_awaited()

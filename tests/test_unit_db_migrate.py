@@ -73,8 +73,8 @@ def _table_names(db_path) -> set[str]:
         con.close()
 
 
-# Head of the migration chain (001 → 002 → 003).
-_HEAD_REVISION = "003"
+# Head of the migration chain (001 → 002 → 003 → 004).
+_HEAD_REVISION = "004"
 
 
 def test_fresh_db_migrates_to_head(temp_db):
