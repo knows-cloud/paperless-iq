@@ -2,7 +2,7 @@
 
 Production and dev both manage schema through Alembic — a single source of truth.
 The migration tree is the numbered chain ``001`` (initial schema) → ``002``
-(grooming objects) → ``003`` (``last_embedded_at``).
+(grooming objects) → ``003`` (``last_embedded_at``) → ``004`` (``last_tag_ids_json``).
 
 This runner self-heals two classes of database that a plain ``upgrade`` can't
 advance:
@@ -83,6 +83,7 @@ def _run_migrations_sync() -> None:
                 #   001 — initial schema
                 #   002 — grooming objects (entity_descriptions + can_groom column)
                 #   003 — document_tracking.last_embedded_at column
+                #   004 — document_tracking.last_tag_ids_json column
                 user_perm_cols = (
                     {c["name"] for c in inspector.get_columns("user_permissions")}
                     if "user_permissions" in tables
@@ -95,7 +96,10 @@ def _run_migrations_sync() -> None:
                 )
                 has_grooming = "entity_descriptions" in tables and "can_groom" in user_perm_cols
                 has_last_embedded = "last_embedded_at" in dt_cols
-                if has_grooming and has_last_embedded:
+                has_last_tag_ids = "last_tag_ids_json" in dt_cols
+                if has_grooming and has_last_embedded and has_last_tag_ids:
+                    baseline = "004"
+                elif has_grooming and has_last_embedded:
                     baseline = "003"
                 elif has_grooming:
                     baseline = "002"
