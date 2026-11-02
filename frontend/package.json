@@ -23,8 +23,8 @@
     "i18next-browser-languagedetector": "^8.2.1",
     "postcss": "^8.5.28",
     "postcss-preset-mantine": "^1.18.0",
-    "react": "^19.3.0",
-    "react-dom": "^19.3.0",
+    "react": "^19.3.1",
+    "react-dom": "^19.3.1",
     "react-i18next": "^17.1.7"
   },
   "devDependencies": {
